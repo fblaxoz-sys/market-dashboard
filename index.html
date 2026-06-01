@@ -1,0 +1,1421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Market Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#0a0a0f;--surface:#111118;--surface2:#18181f;
+  --border:#ffffff0f;--border2:#ffffff18;
+  --text:#e8e8f0;--muted:#6b6b80;
+  --accent:#7c6af7;--accent2:#a594f9;
+  --green:#2dd4a0;--green-dim:#2dd4a015;
+  --red:#f0526a;--red-dim:#f0526a15;
+  --amber:#f5a623;--amber-dim:#f5a62315;
+  --blue:#60a5fa;
+  --mono:'Space Mono',monospace;--sans:'Syne',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;}
+body::before{content:'';position:fixed;inset:0;
+  background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);
+  background-size:40px 40px;pointer-events:none;z-index:0;}
+
+/* NAV */
+.nav{position:relative;z-index:10;background:var(--surface);border-bottom:1px solid var(--border2);
+  display:flex;align-items:center;padding:0 24px;gap:4px;}
+.nav-brand{font-size:15px;font-weight:800;margin-right:24px;padding:16px 0;
+  background:linear-gradient(135deg,#fff 30%,var(--accent2));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;white-space:nowrap;}
+.tab-btn{background:none;border:none;color:var(--muted);font-family:var(--mono);font-size:11px;
+  padding:16px 18px;cursor:pointer;letter-spacing:0.5px;transition:color 0.15s;
+  border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;}
+.tab-btn:hover{color:var(--text);}
+.tab-btn.active{color:var(--accent2);border-bottom-color:var(--accent2);}
+
+/* LAYOUT */
+.tab-panel{display:none;position:relative;z-index:1;}
+.tab-panel.active{display:block;}
+.wrap{max-width:1200px;margin:0 auto;padding:28px 24px 80px;}
+
+/* BUTTONS */
+.btn{background:var(--surface2);border:1px solid var(--border2);color:var(--text);
+  font-family:var(--mono);font-size:11px;padding:8px 16px;border-radius:6px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:6px;transition:all 0.15s;letter-spacing:0.3px;white-space:nowrap;}
+.btn:hover{border-color:var(--accent);color:var(--accent2);}
+.btn:disabled{opacity:.4;pointer-events:none;}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+.btn-primary:hover{background:var(--accent2);border-color:var(--accent2);color:#fff;}
+
+/* CONFIG BARS */
+.config-bar{background:var(--surface);border:1px solid var(--border2);border-radius:10px;
+  padding:14px 20px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+.config-bar label{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;white-space:nowrap;}
+.config-bar input{flex:1;min-width:200px;background:var(--surface2);border:1px solid var(--border2);
+  border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:8px 12px;
+  outline:none;transition:border-color .15s;}
+.config-bar input:focus{border-color:var(--accent);}
+.config-bar input::placeholder{color:var(--muted);}
+.key-badge{font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:4px;}
+.key-ok{background:#2dd4a022;color:var(--green);border:1px solid #2dd4a044;}
+.key-err{background:#f0526a22;color:var(--red);border:1px solid #f0526a44;}
+
+/* PROGRESS */
+.progress-wrap{background:var(--surface);border:1px solid var(--border2);border-radius:10px;
+  padding:14px 20px;margin-bottom:20px;display:none;}
+.progress-wrap.visible{display:block;}
+.progress-label{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:8px;}
+.progress-track{background:var(--surface2);border-radius:4px;height:5px;overflow:hidden;}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:4px;transition:width .3s;}
+
+/* STATS */
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px;}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;position:relative;overflow:hidden;}
+.stat-card::after{content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:10px 10px 0 0;}
+.sc-green::after{background:var(--green);}.sc-red::after{background:var(--red);}
+.sc-amber::after{background:var(--amber);}.sc-purple::after{background:var(--accent);}
+.sc-blue::after{background:var(--blue);}
+.stat-label{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;}
+.stat-value{font-size:26px;font-weight:800;line-height:1;}
+.sc-green .stat-value{color:var(--green);}.sc-red .stat-value{color:var(--red);}
+.sc-amber .stat-value{color:var(--amber);}.sc-purple .stat-value{color:var(--accent2);}
+.sc-blue .stat-value{color:var(--blue);}
+.stat-sub{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:5px;}
+
+/* SECTION HEADERS */
+.section-header{display:flex;align-items:center;justify-content:space-between;margin:28px 0 12px;}
+.section-title{font-size:13px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--muted);display:flex;align-items:center;gap:8px;}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;}
+.dot-green{background:var(--green);box-shadow:0 0 6px var(--green);}
+.dot-red{background:var(--red);box-shadow:0 0 6px var(--red);}
+.dot-amber{background:var(--amber);box-shadow:0 0 6px var(--amber);}
+.dot-purple{background:var(--accent);box-shadow:0 0 6px var(--accent);}
+.dot-blue{background:var(--blue);box-shadow:0 0 6px var(--blue);}
+
+/* TABLES */
+.table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px;}
+thead tr{border-bottom:1px solid var(--border2);}
+th{padding:11px 14px;text-align:left;font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;font-weight:400;white-space:nowrap;}
+th.r{text-align:right;}
+tbody tr{border-bottom:1px solid var(--border);transition:background .1s;animation:rowIn .3s ease both;}
+tbody tr:last-child{border-bottom:none;}
+tbody tr:hover{background:var(--surface2);}
+@keyframes rowIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+td{padding:12px 14px;white-space:nowrap;}
+td.r{text-align:right;}
+.ticker-cell{font-weight:700;font-size:13px;color:#fff;letter-spacing:.5px;}
+.wl-badge{display:inline-block;font-size:9px;padding:2px 6px;border-radius:3px;margin-left:6px;
+  background:#7c6af722;color:var(--accent2);border:1px solid #7c6af744;vertical-align:middle;}
+.c-green{color:var(--green);}.c-red{color:var(--red);}
+.c-amber{color:var(--amber);}.c-muted{color:var(--muted);}
+.score-bar-wrap{display:flex;align-items:center;gap:8px;justify-content:flex-end;}
+.score-bar{width:54px;height:4px;background:var(--surface2);border-radius:2px;overflow:hidden;}
+.score-fill{height:100%;border-radius:2px;}
+.rank{color:var(--muted);font-size:11px;}
+.empty-state{padding:44px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12px;line-height:2;}
+.skeleton{background:linear-gradient(90deg,var(--surface2) 25%,var(--border2) 50%,var(--surface2) 75%);
+  background-size:200% 100%;animation:shimmer 1.2s infinite;border-radius:4px;height:13px;}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.spinner{width:11px;height:11px;border:2px solid var(--border2);border-top-color:var(--accent2);
+  border-radius:50%;animation:spin .6s linear infinite;display:inline-block;}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* TAGS */
+.tag-list{display:flex;flex-wrap:wrap;gap:6px;}
+.tag{background:#7c6af722;border:1px solid #7c6af755;color:var(--accent2);font-family:var(--mono);
+  font-size:11px;padding:4px 10px;border-radius:4px;display:flex;align-items:center;gap:6px;}
+.tag button{background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;line-height:1;padding:0;}
+.tag button:hover{color:var(--red);}
+
+/* INFLATION SPECIFIC */
+.pred-hero{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;}
+@media(max-width:640px){.pred-hero{grid-template-columns:1fr;}}
+.pred-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px 28px;position:relative;overflow:hidden;}
+.pred-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;}
+.pred-current::before{background:linear-gradient(90deg,var(--accent),var(--accent2));}
+.pred-next::before{background:linear-gradient(90deg,var(--amber),var(--green));}
+.pred-label{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:12px;}
+.pred-value{font-size:48px;font-weight:800;line-height:1;letter-spacing:-2px;}
+.pred-current .pred-value{color:var(--accent2);}
+.pred-next .pred-value{color:var(--amber);}
+.pred-sub{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:8px;}
+.pred-dir{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;margin-top:10px;padding:4px 10px;border-radius:20px;}
+.dir-up{background:var(--red-dim);color:var(--red);}
+.dir-down{background:var(--green-dim);color:var(--green);}
+.dir-flat{background:var(--amber-dim);color:var(--amber);}
+.drivers-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:24px;}
+.driver-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;}
+.driver-name{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.5px;margin-bottom:6px;}
+.driver-val{font-size:18px;font-weight:800;}
+.driver-chg{font-family:var(--mono);font-size:10px;margin-top:4px;}
+.driver-bar-track{background:var(--surface2);border-radius:2px;height:3px;margin-top:8px;overflow:hidden;}
+.driver-bar-fill{height:100%;border-radius:2px;transition:width .6s;}
+.chart-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:24px;}
+.chart-wrap canvas{max-height:260px;}
+.bt-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;}
+.bt-controls label{font-family:var(--mono);font-size:11px;color:var(--muted);}
+.bt-controls select{background:var(--surface2);border:1px solid var(--border2);color:var(--text);
+  font-family:var(--mono);font-size:11px;padding:7px 10px;border-radius:6px;outline:none;cursor:pointer;}
+.accuracy-pills{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;}
+.pill{font-family:var(--mono);font-size:11px;padding:6px 14px;border-radius:20px;border:1px solid;}
+.pill-green{background:var(--green-dim);color:var(--green);border-color:#2dd4a033;}
+.pill-amber{background:var(--amber-dim);color:var(--amber);border-color:#f5a62333;}
+.pill-blue{background:#60a5fa15;color:var(--blue);border-color:#60a5fa33;}
+.bt-ok{color:var(--green);}.bt-err{color:var(--red);}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-brand">&#9889; Market Dashboard</div>
+  <button class="tab-btn active" onclick="switchTab('momentum')">&#128200; Momentum Tracker</button>
+  <button class="tab-btn" onclick="switchTab('inflation')">&#127777; Inflation Predictor</button>
+  <button class="tab-btn" onclick="switchTab('gdp')">&#128202; GDP Predictor</button>
+</nav>
+
+<!-- ── TAB 1: MOMENTUM ── -->
+<div class="tab-panel active" id="tab-momentum">
+<div class="wrap">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <h2 style="font-size:22px;font-weight:800;">S&amp;P 500 Momentum</h2>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Powered by Polygon.io &mdash; loads ~1 ticker/sec on free tier</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span id="mom-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <button class="btn btn-primary" id="mom-refresh-btn" onclick="loadMomentum()">
+        <span id="mom-refresh-icon">&#8635;</span> Refresh
+      </button>
+    </div>
+  </div>
+
+  <div class="config-bar">
+    <label>POLYGON KEY</label>
+    <input id="poly-key" type="password" placeholder="Paste Polygon.io API key" />
+    <button class="btn" onclick="savePolyKey()">Save</button>
+    <span id="poly-badge" class="key-badge" style="display:none"></span>
+  </div>
+
+  <div class="config-bar">
+    <label>&#xff0b; WATCHLIST</label>
+    <input id="wl-input" type="text" placeholder="Add tickers e.g. NVDA, PLTR" onkeydown="if(event.key==='Enter')addWL()" />
+    <button class="btn" onclick="addWL()">Add</button>
+    <div class="tag-list" id="wl-tags"></div>
+  </div>
+
+  <div class="progress-wrap" id="mom-prog">
+    <div class="progress-label" id="mom-prog-lbl">Loading...</div>
+    <div class="progress-track"><div class="progress-fill" id="mom-prog-fill" style="width:0%"></div></div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-card sc-green"><div class="stat-label">Bullish</div><div class="stat-value" id="m-bull">&#8212;</div><div class="stat-sub">RSI&gt;55 or ROC&gt;0</div></div>
+    <div class="stat-card sc-red"><div class="stat-label">Bearish</div><div class="stat-value" id="m-bear">&#8212;</div><div class="stat-sub">RSI&lt;45 or ROC&lt;0</div></div>
+    <div class="stat-card sc-amber"><div class="stat-label">Overbought</div><div class="stat-value" id="m-over">&#8212;</div><div class="stat-sub">RSI &gt; 70</div></div>
+    <div class="stat-card sc-purple"><div class="stat-label">Oversold</div><div class="stat-value" id="m-under">&#8212;</div><div class="stat-sub">RSI &lt; 30</div></div>
+  </div>
+
+  <div id="wl-section" style="display:none;">
+    <div class="section-header"><div class="section-title"><span class="dot dot-purple"></span>Your Watchlist</div></div>
+    <div class="table-wrap" id="wl-table"></div>
+  </div>
+  <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Top 10 Momentum</div></div>
+  <div class="table-wrap" id="top-table"><div class="empty-state">Enter your Polygon key above and hit Refresh</div></div>
+  <div class="section-header"><div class="section-title"><span class="dot dot-red"></span>Bottom 5 Momentum</div></div>
+  <div class="table-wrap" id="bot-table"><div class="empty-state">Enter your Polygon key above and hit Refresh</div></div>
+</div>
+</div>
+
+<!-- ── TAB 3: GDP ── -->
+<div class="tab-panel" id="tab-gdp">
+<div class="wrap">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <h2 style="font-size:22px;font-weight:800;">GDP Predictor</h2>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Live FRED data &mdash; weighted leading-indicator model (quarterly)</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span id="gdp-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <button class="btn" id="gdp-ml-btn" onclick="runMLNowcast()" style="display:none;">
+        <span id="gdp-ml-icon">&#9881;</span> ML Nowcast
+      </button>
+      <button class="btn btn-primary" id="gdp-refresh-btn" onclick="loadGDP()">
+        <span id="gdp-refresh-icon">&#8635;</span> Refresh
+      </button>
+    </div>
+  </div>
+
+  <div class="config-bar">
+    <label>FRED API KEY</label>
+    <input id="gdp-fred-key" type="password" placeholder="Paste FRED API key" />
+    <button class="btn" onclick="saveGdpFredKey()">Save</button>
+    <span id="gdp-fred-badge" class="key-badge" style="display:none"></span>
+  </div>
+
+  <div class="progress-wrap" id="gdp-prog">
+    <div class="progress-label" id="gdp-prog-lbl">Fetching FRED data...</div>
+    <div class="progress-track"><div class="progress-fill" id="gdp-prog-fill" style="width:0%"></div></div>
+  </div>
+
+  <!-- Ensemble is the primary prediction — visible immediately, populated after ML runs -->
+  <div class="pred-hero">
+    <div class="pred-card" style="border-top:3px solid var(--red);">
+      <div class="pred-label">Current quarter GDP YoY &mdash; <strong style="color:var(--red)">Ensemble Prediction</strong></div>
+      <div class="pred-value" id="gdp-ens-cur-val" style="color:var(--red);">&#8212;</div>
+      <div class="pred-sub" id="gdp-ens-cur-sub">Run ML Nowcast to generate ensemble</div>
+      <div id="gdp-ens-cur-dir"></div>
+    </div>
+    <div class="pred-card" style="border-top:3px solid var(--red);">
+      <div class="pred-label">Next quarter GDP YoY &mdash; <strong style="color:var(--red)">Ensemble Prediction</strong></div>
+      <div class="pred-value" id="gdp-ens-nxt-val" style="color:var(--red);">&#8212;</div>
+      <div class="pred-sub" id="gdp-ens-nxt-sub">Run ML Nowcast to generate ensemble</div>
+      <div id="gdp-ens-nxt-dir"></div>
+    </div>
+  </div>
+
+  <!-- Simple model sub-cards -->
+  <div class="pred-hero" style="margin-top:-8px;">
+    <div class="pred-card" style="border-top:2px solid var(--green);padding:14px 20px;">
+      <div class="pred-label" style="font-size:9px;">SIMPLE MODEL &mdash; Current quarter</div>
+      <div style="display:flex;align-items:baseline;gap:10px;">
+        <div class="stat-value" id="gdp-pred-cur-val" style="color:var(--green);font-size:20px;">&#8212;</div>
+        <div class="stat-sub" id="gdp-pred-cur-sub" style="font-size:10px;"></div>
+      </div>
+      <div id="gdp-pred-cur-dir"></div>
+    </div>
+    <div class="pred-card" style="border-top:2px solid var(--blue);padding:14px 20px;">
+      <div class="pred-label" style="font-size:9px;">SIMPLE MODEL &mdash; Next quarter</div>
+      <div style="display:flex;align-items:baseline;gap:10px;">
+        <div class="stat-value" id="gdp-pred-nxt-val" style="color:var(--blue);font-size:20px;">&#8212;</div>
+        <div class="stat-sub" id="gdp-pred-nxt-sub" style="font-size:10px;"></div>
+      </div>
+      <div id="gdp-pred-nxt-dir"></div>
+    </div>
+  </div>
+
+  <div id="gdp-ensemble-section" style="display:none;"></div>
+
+  <!-- ML Nowcast result card — hidden until model runs -->
+  <div id="gdp-ml-section" style="display:none;margin-bottom:24px;">
+    <div class="section-header">
+      <div class="section-title"><span class="dot dot-amber"></span>DFM + Ridge ML Nowcast</div>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">Dynamic Factor Model &rarr; Bridge Equation (statsmodels + scikit-learn)</span>
+    </div>
+    <div class="pred-hero" style="margin-bottom:12px;">
+      <div class="pred-card" style="border-top:3px solid var(--amber);">
+        <div class="pred-label">ML Nowcast — <span id="gdp-ml-quarter">—</span></div>
+        <div class="pred-value" id="gdp-ml-val" style="color:var(--amber);">&#8212;</div>
+        <div class="pred-sub" id="gdp-ml-sub">Running model…</div>
+        <div id="gdp-ml-dir"></div>
+      </div>
+      <div class="pred-card" style="border-top:3px solid var(--green);display:flex;flex-direction:column;gap:10px;justify-content:center;">
+        <div class="accuracy-pills" id="gdp-ml-pills" style="flex-wrap:wrap;"></div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.8;">
+          <div>RMSE (in-sample) <span id="gdp-ml-rmse-in" style="color:var(--text);">—</span></div>
+          <div>RMSE (out-of-sample) <span id="gdp-ml-rmse-out" style="color:var(--text);">—</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>ML Model — Backtest vs Actual</div></div>
+    <div class="table-wrap" id="gdp-ml-bt-table"></div>
+  </div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-blue"></span>Leading Indicators</div></div>
+  <div class="drivers-grid" id="gdp-drivers-grid"><div class="empty-state" style="grid-column:1/-1;padding:32px;">Hit Refresh to load FRED data</div></div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Real GDP YoY Trend + Predictions</div></div>
+  <div class="chart-wrap"><canvas id="gdp-chart"></canvas></div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-purple"></span>Simple Model Backtest &mdash; Accuracy</div></div>
+  <div class="bt-controls">
+    <label>Quarters to backtest:</label>
+    <select id="gdp-bt-quarters" onchange="runGDPBacktest()">
+      <option value="8">8 quarters</option>
+      <option value="12" selected>12 quarters</option>
+      <option value="16">16 quarters</option>
+    </select>
+    <div class="accuracy-pills" id="gdp-acc-pills"></div>
+  </div>
+  <div class="table-wrap" id="gdp-bt-table"><div class="empty-state">Load data first, then backtest runs automatically</div></div>
+</div>
+</div>
+
+<!-- ── TAB 2: INFLATION ── -->
+<div class="tab-panel" id="tab-inflation">
+<div class="wrap">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <h2 style="font-size:22px;font-weight:800;">Inflation Predictor</h2>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Live FRED data &mdash; weighted leading-indicator model</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="inf-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <button class="btn btn-primary" id="inf-refresh-btn" onclick="loadInflation()">
+        <span id="inf-refresh-icon">&#8635;</span> Refresh
+      </button>
+    </div>
+  </div>
+
+  <div class="config-bar">
+    <label>FRED API KEY</label>
+    <input id="fred-key" type="password" placeholder="Paste FRED API key" />
+    <button class="btn" onclick="saveFredKey()">Save</button>
+    <span id="fred-badge" class="key-badge" style="display:none"></span>
+  </div>
+
+  <div class="progress-wrap" id="inf-prog">
+    <div class="progress-label" id="inf-prog-lbl">Fetching FRED data...</div>
+    <div class="progress-track"><div class="progress-fill" id="inf-prog-fill" style="width:0%"></div></div>
+  </div>
+
+  <div class="pred-hero">
+    <div class="pred-card pred-current">
+      <div class="pred-label">Current month CPI YoY (predicted)</div>
+      <div class="pred-value" id="pred-cur-val">&#8212;</div>
+      <div class="pred-sub" id="pred-cur-sub">Load data to see prediction</div>
+      <div id="pred-cur-dir"></div>
+    </div>
+    <div class="pred-card pred-next">
+      <div class="pred-label">Next month CPI YoY (predicted)</div>
+      <div class="pred-value" id="pred-nxt-val">&#8212;</div>
+      <div class="pred-sub" id="pred-nxt-sub">Load data to see prediction</div>
+      <div id="pred-nxt-dir"></div>
+    </div>
+  </div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-blue"></span>Leading Indicators</div></div>
+  <div class="drivers-grid" id="drivers-grid"><div class="empty-state" style="grid-column:1/-1;padding:32px;">Hit Refresh to load FRED data</div></div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>CPI Trend + Predictions</div></div>
+  <div class="chart-wrap"><canvas id="cpi-chart"></canvas></div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-purple"></span>Backtest &mdash; Model Accuracy</div></div>
+  <div class="bt-controls">
+    <label>Months to backtest:</label>
+    <select id="bt-months" onchange="runBacktest()">
+      <option value="12">12 months</option>
+      <option value="24" selected>24 months</option>
+      <option value="36">36 months</option>
+    </select>
+    <div class="accuracy-pills" id="acc-pills"></div>
+  </div>
+  <div class="table-wrap" id="bt-table"><div class="empty-state">Load data first, then backtest runs automatically</div></div>
+</div>
+</div>
+
+<script>
+// ── SHARED STATE ──────────────────────────────────────
+let polyKey  = localStorage.getItem('poly_key')  || '';
+let fredKey  = localStorage.getItem('fred_key')  || '';
+let watchlist= JSON.parse(localStorage.getItem('wl') || '[]');
+let momData  = [];
+let fredData = {};
+let cpiChart = null;
+const sleep  = ms => new Promise(r => setTimeout(r, ms));
+
+function switchTab(id) {
+  const ids = ['momentum','inflation','gdp'];
+  document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', ids[i] === id));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-'+id));
+}
+
+function showBadge(id, ok) {
+  const el = document.getElementById(id);
+  el.style.display = '';
+  el.className = 'key-badge ' + (ok ? 'key-ok' : 'key-err');
+  el.innerHTML = ok ? '&#10003; saved' : '&#10007; error';
+}
+
+// ════════════════════════════════════════════════════════
+// TAB 1 — MOMENTUM
+// ════════════════════════════════════════════════════════
+const SP500 = [
+  "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","BRK-B","AVGO","JPM",
+  "LLY","UNH","V","XOM","MA","COST","HD","PG","JNJ","ORCL","ABBV","BAC",
+  "KO","NFLX","CVX","MRK","CRM","AMD","PEP","TMO","ACN","LIN","CSCO","ABT",
+  "MCD","WMT","DIS","PM","ADBE","INTC","WFC","TXN","QCOM","DHR","GE","CAT",
+  "IBM","INTU","AMGN","SPGI"
+];
+
+function savePolyKey() {
+  const v = document.getElementById('poly-key').value.trim();
+  if (!v) return;
+  polyKey = v;
+  localStorage.setItem('poly_key', v);
+  showBadge('poly-badge', true);
+}
+
+function renderWLTags() {
+  document.getElementById('wl-tags').innerHTML = watchlist.map(t =>
+    `<div class="tag">${t}<button onclick="removeWL('${t}')">&#215;</button></div>`
+  ).join('');
+}
+
+function addWL() {
+  const inp = document.getElementById('wl-input');
+  inp.value.toUpperCase().replace(/[^A-Z0-9.\-,\s]/g,'').split(/[\s,]+/).filter(Boolean)
+    .forEach(t => { if (!watchlist.includes(t)) watchlist.push(t); });
+  inp.value = '';
+  localStorage.setItem('wl', JSON.stringify(watchlist));
+  renderWLTags();
+}
+
+function removeWL(t) {
+  watchlist = watchlist.filter(x => x !== t);
+  localStorage.setItem('wl', JSON.stringify(watchlist));
+  renderWLTags();
+  if (momData.length) renderMomTables(momData);
+}
+
+// Momentum math
+function calcRSI(closes, p=14) {
+  if (closes.length < p+2) return null;
+  const d = closes.slice(1).map((v,i) => v - closes[i]);
+  let ag = d.slice(0,p).filter(x=>x>0).reduce((a,b)=>a+b,0)/p;
+  let al = d.slice(0,p).filter(x=>x<0).map(x=>-x).reduce((a,b)=>a+b,0)/p;
+  for (let i=p; i<d.length; i++) {
+    ag = (ag*(p-1) + (d[i]>0?d[i]:0)) / p;
+    al = (al*(p-1) + (d[i]<0?-d[i]:0)) / p;
+  }
+  return al===0 ? 100 : +(100 - 100/(1 + ag/al)).toFixed(1);
+}
+
+function calcROC(closes, p=20) {
+  if (closes.length < p+1) return null;
+  return +((closes[closes.length-1]/closes[closes.length-1-p]-1)*100).toFixed(2);
+}
+
+function calcMA(closes) {
+  if (closes.length < 200) return 'N/A';
+  const ma = n => closes.slice(-n).reduce((a,b)=>a+b)/n;
+  const m50=ma(50), m200=ma(200);
+  if (m50 > m200*1.005) return 'Golden &#9989;';
+  if (m50 < m200*0.995) return 'Death &#10060;';
+  return 'Neutral &#10135;';
+}
+
+function calcScore(r, c) {
+  return +((( r??50)*0.4 + (c??0)*0.6)).toFixed(2);
+}
+
+async function fetchTicker(ticker) {
+  const to = new Date(), from = new Date();
+  from.setFullYear(from.getFullYear()-1);
+  const fmt = d => d.toISOString().split('T')[0];
+  try {
+    const res = await fetch(
+      `https://api.polygon.io/v2/aggs/ticker/${ticker}/range/1/day/${fmt(from)}/${fmt(to)}?adjusted=true&sort=asc&limit=300&apiKey=${polyKey}`
+    );
+    if (res.status === 429) return 'RATE_LIMIT';
+    const j = await res.json();
+    return j.results ? j.results.map(x => x.c) : null;
+  } catch { return null; }
+}
+
+async function loadMomentum() {
+  if (!polyKey) { alert('Enter your Polygon API key first.'); return; }
+  const btn = document.getElementById('mom-refresh-btn');
+  btn.disabled = true;
+  document.getElementById('mom-refresh-icon').innerHTML = '<span class="spinner"></span>';
+  setMomSkeleton();
+
+  const prog = document.getElementById('mom-prog');
+  const fill = document.getElementById('mom-prog-fill');
+  const lbl  = document.getElementById('mom-prog-lbl');
+  prog.classList.add('visible');
+
+  const tickers = [...new Set([...SP500, ...watchlist.map(t=>t.toUpperCase())])];
+  const results = [];
+  let done = 0;
+
+  for (const ticker of tickers) {
+    lbl.textContent = `Fetching ${ticker}... (${done+1}/${tickers.length})`;
+    fill.style.width = Math.round((done/tickers.length)*100) + '%';
+
+    let closes = await fetchTicker(ticker);
+
+    if (closes === 'RATE_LIMIT') {
+      lbl.textContent = `Rate limited — waiting 15s, then retrying ${ticker}...`;
+      await sleep(15000);
+      closes = await fetchTicker(ticker);
+    }
+
+    done++;
+
+    if (closes && closes !== 'RATE_LIMIT' && closes.length >= 25) {
+      const r = calcRSI(closes), roc = calcROC(closes);
+      results.push({
+        ticker,
+        price:  +closes[closes.length-1].toFixed(2),
+        rsi:    r,
+        roc:    roc,
+        ma:     calcMA(closes),
+        score:  calcScore(r, roc),
+        source: watchlist.map(x=>x.toUpperCase()).includes(ticker) ? 'wl' : 'sp500'
+      });
+    }
+
+    // Show partial results every 5 tickers
+    if (done % 5 === 0 && results.length) {
+      const sorted = [...results].sort((a,b) => b.score-a.score);
+      renderMomStats(sorted);
+      renderMomTables(sorted);
+    }
+
+    await sleep(12000); // 5 req/min for free tier
+  }
+
+  results.sort((a,b) => b.score-a.score);
+  momData = results;
+  renderMomStats(results);
+  renderMomTables(results);
+  prog.classList.remove('visible');
+  document.getElementById('mom-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  btn.disabled = false;
+  document.getElementById('mom-refresh-icon').textContent = '\u21BB';
+}
+
+function renderMomStats(d) {
+  const sp = d.filter(x => x.source==='sp500');
+  document.getElementById('m-bull').textContent  = sp.filter(x=>(x.rsi??50)>55||(x.roc??0)>0).length;
+  document.getElementById('m-bear').textContent  = sp.filter(x=>(x.rsi??50)<45||(x.roc??0)<0).length;
+  document.getElementById('m-over').textContent  = sp.filter(x=>(x.rsi??50)>70).length;
+  document.getElementById('m-under').textContent = sp.filter(x=>(x.rsi??50)<30).length;
+}
+
+function renderMomTables(data) {
+  const sp  = data.filter(d=>d.source==='sp500');
+  const wl  = data.filter(d=>d.source==='wl');
+  const max = Math.max(...data.map(d=>d.score),1);
+  const min = Math.min(...data.map(d=>d.score));
+  const rng = max-min || 1;
+  const wlSec = document.getElementById('wl-section');
+  if (wl.length) { wlSec.style.display=''; document.getElementById('wl-table').innerHTML=buildMomTable(wl,max,min,rng); }
+  else wlSec.style.display='none';
+  document.getElementById('top-table').innerHTML = buildMomTable(sp.slice(0,10), max, min, rng);
+  document.getElementById('bot-table').innerHTML = buildMomTable([...sp].reverse().slice(0,5), max, min, rng);
+}
+
+function buildMomTable(rows, maxS, minS, rng) {
+  if (!rows.length) return '<div class="empty-state">No data</div>';
+  const head = `<thead><tr><th>#</th><th>Ticker</th><th class="r">Price</th><th class="r">RSI (14)</th><th class="r">ROC 20d</th><th>MA Cross</th><th class="r">Score</th></tr></thead>`;
+  const body = rows.map((d,i) => {
+    const rc = d.rsi==null?'c-muted':d.rsi>70?'c-amber':d.rsi<30?'c-green':'c-muted';
+    const cc = d.roc==null?'':d.roc>=0?'c-green':'c-red';
+    const mc = d.ma.includes('Golden')?'c-green':d.ma.includes('Death')?'c-red':'c-muted';
+    const pct= Math.max(0,Math.min(100,((d.score-minS)/rng)*100));
+    const bc = pct>60?'var(--green)':pct>35?'var(--amber)':'var(--red)';
+    const badge = d.source==='wl'?'<span class="wl-badge">&#9733;</span>':'';
+    const rsiFlag = d.rsi>70?' &#128293;':d.rsi<30?' &#129398;':'';
+    return `<tr style="animation-delay:${i*25}ms">
+      <td class="rank">${i+1}</td>
+      <td class="ticker-cell">${d.ticker}${badge}</td>
+      <td class="r">$${d.price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td class="r ${rc}">${d.rsi??'&#8212;'}${rsiFlag}</td>
+      <td class="r ${cc}">${d.roc!=null?(d.roc>=0?'+':'')+d.roc+'%':'&#8212;'}</td>
+      <td class="${mc}">${d.ma}</td>
+      <td class="r"><div class="score-bar-wrap">
+        <div class="score-bar"><div class="score-fill" style="width:${pct}%;background:${bc}"></div></div>
+        <span style="min-width:40px;text-align:right">${d.score}</span>
+      </div></td>
+    </tr>`;
+  }).join('');
+  return `<table>${head}<tbody>${body}</tbody></table>`;
+}
+
+function setMomSkeleton() {
+  const s = `<table><thead><tr>${['#','Ticker','Price','RSI','ROC','MA','Score'].map(h=>`<th>${h}</th>`).join('')}</tr></thead>
+    <tbody>${Array(5).fill(`<tr>${Array(7).fill('<td><div class="skeleton"></div></td>').join('')}</tr>`).join('')}</tbody></table>`;
+  document.getElementById('top-table').innerHTML = s;
+  document.getElementById('bot-table').innerHTML = s;
+}
+
+// ════════════════════════════════════════════════════════
+// TAB 2 — INFLATION PREDICTOR
+// ════════════════════════════════════════════════════════
+const FRED_SERIES = [
+  {id:'CPIAUCSL', label:'CPI All Items',          lag:0, weight:0,     fmt:'index'},
+  {id:'PPIACO',   label:'PPI All Commodities',    lag:1, weight:0.28,  fmt:'index'},
+  {id:'CPILFESL', label:'Core CPI',               lag:0, weight:0.22,  fmt:'index'},
+  {id:'MICH',     label:'Inflation Expectations', lag:1, weight:0.18,  fmt:'pct'},
+  {id:'M2SL',     label:'M2 Money Supply',        lag:3, weight:0.12,  fmt:'bil'},
+  {id:'GASDESW',  label:'Gas Prices',             lag:1, weight:0.10,  fmt:'usd'},
+  {id:'UNRATE',   label:'Unemployment Rate',      lag:2, weight:-0.06, fmt:'pct'},
+  {id:'FEDFUNDS', label:'Fed Funds Rate',         lag:2, weight:-0.04, fmt:'pct'},
+];
+
+function saveFredKey() {
+  const v = document.getElementById('fred-key').value.trim();
+  if (!v) return;
+  fredKey = v;
+  localStorage.setItem('fred_key', v);
+  showBadge('fred-badge', true);
+}
+
+function fetchJSONP(url) {
+  return new Promise((resolve, reject) => {
+    const cb = 'fred_' + Math.random().toString(36).slice(2);
+    window[cb] = data => { delete window[cb]; script.remove(); resolve(data); };
+    const script = document.createElement('script');
+    script.src = url + '&callback=' + cb;
+    script.onerror = () => { delete window[cb]; script.remove(); reject(new Error('JSONP error')); };
+    document.head.appendChild(script);
+  });
+}
+
+async function fetchFRED(seriesId) {
+  const fredUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${fredKey}&sort_order=desc&limit=60&file_type=json`;
+  const url = `/fred-proxy?url=${encodeURIComponent(fredUrl)}`;
+  try {
+    const res = await fetch(url);
+    const j = await res.json();
+    if (!j.observations) return null;
+    return j.observations
+      .filter(o => o.value !== '.')
+      .map(o => ({ date: o.date, value: parseFloat(o.value) }))
+      .reverse();
+  } catch(e) {
+    console.error('FRED fetch failed for', seriesId, e);
+    return null;
+  }
+}
+
+async function loadInflation() {
+  if (!fredKey) { alert('Enter your FRED API key first.'); return; }
+  const btn  = document.getElementById('inf-refresh-btn');
+  btn.disabled = true;
+  document.getElementById('inf-refresh-icon').innerHTML = '<span class="spinner"></span>';
+
+  const prog = document.getElementById('inf-prog');
+  const fill = document.getElementById('inf-prog-fill');
+  const lbl  = document.getElementById('inf-prog-lbl');
+  prog.classList.add('visible');
+  fredData = {};
+
+  for (let i=0; i<FRED_SERIES.length; i++) {
+    const s = FRED_SERIES[i];
+    lbl.textContent  = `Fetching ${s.label}... (${i+1}/${FRED_SERIES.length})`;
+    fill.style.width = Math.round(((i+1)/FRED_SERIES.length)*100) + '%';
+    const obs = await fetchFRED(s.id);
+    if (obs && obs.length) fredData[s.id] = obs;
+    await sleep(250);
+  }
+
+  prog.classList.remove('visible');
+
+  if (!fredData['CPIAUCSL'] || !fredData['CPIAUCSL'].length) {
+    showBadge('fred-badge', false);
+    btn.disabled = false;
+    document.getElementById('inf-refresh-icon').textContent = '\u21BB';
+    alert('Could not load CPI data. Please check your FRED API key.');
+    return;
+  }
+
+  showBadge('fred-badge', true);
+  renderDrivers();
+  const preds = buildPredictions();
+  const btRows = computeBacktest(parseInt(document.getElementById('bt-months').value) || 24);
+  renderPredHero(preds);
+  renderCPIChart(preds, btRows);
+  runBacktest();
+
+  document.getElementById('inf-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  btn.disabled = false;
+  document.getElementById('inf-refresh-icon').textContent = '\u21BB';
+}
+
+// Prediction model
+function getYoY(seriesId) {
+  const d = fredData[seriesId];
+  if (!d || d.length < 13) return null;
+  return +((d[d.length-1].value / d[d.length-13].value - 1)*100).toFixed(2);
+}
+
+function getMoM(seriesId) {
+  const d = fredData[seriesId];
+  if (!d || d.length < 2) return null;
+  return +((d[d.length-1].value / d[d.length-2].value - 1)*100).toFixed(2);
+}
+
+function predictCPI(overrideFredData, offsetMonths=0) {
+  const src = overrideFredData || fredData;
+  const cpi = src['CPIAUCSL'];
+  if (!cpi || cpi.length < 14) return null;
+
+  const cpiNow = cpi[cpi.length-1].value;
+  const cpi12  = cpi[cpi.length-13].value;
+  const baseYoY = (cpiNow/cpi12 - 1)*100;
+
+  let signal=0, totalW=0;
+  FRED_SERIES.filter(s=>s.weight!==0).forEach(s=>{
+    const d = src[s.id];
+    if (!d || d.length < 14) return;
+    const yoy = s.fmt==='pct'
+      ? (d[d.length-1].value - d[d.length-13].value)
+      : (d[d.length-1].value / d[d.length-13].value - 1)*100;
+    signal += yoy * s.weight;
+    totalW += Math.abs(s.weight);
+  });
+  if (totalW > 0) signal /= totalW;
+
+  const blended = baseYoY*0.6 + signal*0.4;
+  const pred = blended + (2.5-blended)*0.08*(offsetMonths+1);
+  return +pred.toFixed(2);
+}
+
+function buildPredictions() {
+  const cpi = fredData['CPIAUCSL'];
+  if (!cpi) return [];
+  const history = cpi.slice(-24).map((o,i,arr) => ({
+    date: o.date,
+    actual: i>=12 ? +((o.value/arr[i-12].value-1)*100).toFixed(2) : null,
+    predicted: null
+  }));
+  const predCur = predictCPI(null, 0);
+  const predNxt = predictCPI(null, 1);
+  const last = new Date(cpi[cpi.length-1].date);
+  const d1 = new Date(last); d1.setMonth(d1.getMonth()+1);
+  const d2 = new Date(last); d2.setMonth(d2.getMonth()+2);
+  history.push({date:d1.toISOString().slice(0,7), actual:null, predicted:predCur});
+  history.push({date:d2.toISOString().slice(0,7), actual:null, predicted:predNxt});
+  return history;
+}
+
+function renderPredHero(preds) {
+  const predPts   = preds.filter(p=>p.predicted!=null);
+  const actualPts = preds.filter(p=>p.actual!=null);
+  if (predPts.length < 2) return;
+  const cur  = predPts[0].predicted;
+  const nxt  = predPts[1].predicted;
+  const prev = actualPts.length ? actualPts[actualPts.length-1].actual : null;
+
+  document.getElementById('pred-cur-val').textContent = cur + '%';
+  document.getElementById('pred-nxt-val').textContent = nxt + '%';
+  document.getElementById('pred-cur-sub').textContent = prev!=null
+    ? `Previous: ${prev}% | Change: ${(cur-prev).toFixed(2)}pp` : 'Based on leading indicators';
+  document.getElementById('pred-nxt-sub').textContent = `From current predicted: ${(nxt-cur).toFixed(2)}pp`;
+
+  const dirHtml = (val, base) => {
+    if (base==null) return '';
+    const diff = val-base;
+    if (Math.abs(diff)<0.05) return `<span class="pred-dir dir-flat">&#8594; Flat</span>`;
+    return diff>0
+      ? `<span class="pred-dir dir-up">&#9650; Rising +${diff.toFixed(2)}pp</span>`
+      : `<span class="pred-dir dir-down">&#9660; Falling ${diff.toFixed(2)}pp</span>`;
+  };
+  document.getElementById('pred-cur-dir').innerHTML = dirHtml(cur, prev);
+  document.getElementById('pred-nxt-dir').innerHTML = dirHtml(nxt, cur);
+}
+
+function renderDrivers() {
+  document.getElementById('drivers-grid').innerHTML = FRED_SERIES
+    .filter(s=>s.id!=='CPIAUCSL')
+    .map(s=>{
+      const d = fredData[s.id];
+      if (!d||!d.length) return '';
+      const latest = d[d.length-1];
+      const yoy    = getYoY(s.id);
+      const isPos  = (yoy??0) >= 0;
+      const barPct = Math.min(100, Math.abs(yoy??0)*8);
+      const barClr = s.weight<0 ? (isPos?'var(--red)':'var(--green)') : (isPos?'var(--green)':'var(--red)');
+      const valStr = s.fmt==='usd' ? '$'+latest.value.toFixed(2)
+                   : s.fmt==='pct' ? latest.value.toFixed(2)+'%'
+                   : latest.value.toFixed(1);
+      return `<div class="driver-card">
+        <div class="driver-name">${s.label}</div>
+        <div class="driver-val">${valStr}</div>
+        <div class="driver-chg" style="color:${isPos?'var(--green)':'var(--red)'}">
+          ${yoy!=null ? (isPos?'&#9650; +':'&#9660; ')+Math.abs(yoy)+'% YoY' : '&#8212;'}
+        </div>
+        <div class="driver-bar-track"><div class="driver-bar-fill" style="width:${barPct}%;background:${barClr}"></div></div>
+      </div>`;
+    }).join('');
+}
+
+function renderCPIChart(preds, btRows=[]) {
+  const ctx = document.getElementById('cpi-chart').getContext('2d');
+  if (cpiChart) cpiChart.destroy();
+
+  // Build a date→predicted lookup from backtest rows
+  const btMap = {};
+  btRows.forEach(r => { btMap[r.date.slice(0,7)] = r.predicted; });
+
+  // Align past predictions to chart labels (null where no backtest data)
+  const pastPred = preds.map(p => btMap[p.date.slice(0,7)] ?? null);
+
+  cpiChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: preds.map(p=>p.date.slice(0,7)),
+      datasets: [
+        {label:'Actual CPI YoY %', data:preds.map(p=>p.actual),
+          borderColor:'#a594f9', backgroundColor:'#a594f910', tension:0.4,
+          pointRadius:3, pointBackgroundColor:'#a594f9', spanGaps:false},
+        {label:'Past Model Predictions', data:pastPred,
+          borderColor:'#60a5fa', backgroundColor:'#60a5fa12', tension:0.4,
+          borderDash:[4,4], pointRadius:3, pointBackgroundColor:'#60a5fa', spanGaps:false},
+        {label:'Forward Prediction', data:preds.map(p=>p.predicted),
+          borderColor:'#f5a623', backgroundColor:'#f5a62318', tension:0.4,
+          borderDash:[6,3], pointRadius:5, pointBackgroundColor:'#f5a623', spanGaps:false},
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:true,
+      plugins:{
+        legend:{labels:{color:'#6b6b80',font:{family:"'Space Mono'",size:11}}},
+        tooltip:{backgroundColor:'#18181f',borderColor:'#ffffff18',borderWidth:1,
+          titleColor:'#e8e8f0',bodyColor:'#6b6b80',
+          callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.y!=null?c.parsed.y+'%':'—'}`}}
+      },
+      scales:{
+        x:{grid:{color:'#ffffff08'},ticks:{color:'#6b6b80',font:{family:"'Space Mono'",size:10},maxRotation:45,maxTicksLimit:12}},
+        y:{grid:{color:'#ffffff08'},ticks:{color:'#6b6b80',font:{family:"'Space Mono'",size:10},callback:v=>v+'%'},
+          title:{display:true,text:'YoY %',color:'#6b6b80',font:{size:11}}}
+      }
+    }
+  });
+}
+
+function computeBacktest(months) {
+  const cpi = fredData['CPIAUCSL'];
+  if (!cpi || cpi.length < 26) return [];
+  const rows = [];
+  for (let i=Math.max(13, cpi.length-months); i<cpi.length-1; i++) {
+    const snap = { CPIAUCSL: cpi.slice(0,i+1) };
+    const cutDate = cpi[i].date;
+    FRED_SERIES.filter(s=>s.id!=='CPIAUCSL').forEach(s=>{
+      const d = fredData[s.id];
+      if (d) snap[s.id] = d.filter(o=>o.date<=cutDate);
+    });
+    const pred      = predictCPI(snap, 0);
+    const actualNow = i>=12 ? +((cpi[i].value/cpi[i-12].value-1)*100).toFixed(2) : null;
+    const actualNxt = i+1<cpi.length && i+1>=13 ? +((cpi[i+1].value/cpi[i+1-12].value-1)*100).toFixed(2) : null;
+    if (pred==null || actualNow==null || actualNxt==null) continue;
+    const err     = +(pred - actualNxt).toFixed(2);
+    const dirOk   = ((actualNxt-actualNow)>=0 && (pred-actualNow)>=0) || ((actualNxt-actualNow)<0 && (pred-actualNow)<0);
+    rows.push({date:cpi[i+1].date, actual:actualNxt, predicted:pred, err, absErr:Math.abs(err), dirOk});
+  }
+  return rows;
+}
+
+function runBacktest() {
+  const months = parseInt(document.getElementById('bt-months').value) || 24;
+  const rows = computeBacktest(months);
+
+  if (!rows.length) return;
+
+  // Sync chart with new backtest range
+  if (cpiChart) {
+    const preds = buildPredictions();
+    renderCPIChart(preds, rows);
+  }
+  const mae      = +(rows.reduce((a,b)=>a+b.absErr,0)/rows.length).toFixed(2);
+  const dirAcc   = +((rows.filter(r=>r.dirOk).length/rows.length)*100).toFixed(0);
+  const within50 = +((rows.filter(r=>r.absErr<=0.5).length/rows.length)*100).toFixed(0);
+
+  document.getElementById('acc-pills').innerHTML = `
+    <span class="pill pill-green">MAE: &plusmn;${mae}pp</span>
+    <span class="pill pill-blue">Direction: ${dirAcc}% correct</span>
+    <span class="pill pill-amber">Within &plusmn;0.5pp: ${within50}%</span>`;
+
+  document.getElementById('bt-table').innerHTML = `<table>
+    <thead><tr><th>Month</th><th class="r">Actual CPI YoY</th><th class="r">Predicted</th><th class="r">Error</th><th>Direction</th></tr></thead>
+    <tbody>${[...rows].reverse().map((r,i)=>`
+      <tr style="animation-delay:${i*15}ms">
+        <td>${r.date.slice(0,7)}</td>
+        <td class="r">${r.actual}%</td>
+        <td class="r c-amber">${r.predicted}%</td>
+        <td class="r ${Math.abs(r.err)<=0.3?'c-green':Math.abs(r.err)<=0.7?'c-amber':'c-red'}">${r.err>=0?'+':''}${r.err}pp</td>
+        <td class="${r.dirOk?'bt-ok':'bt-err'}">${r.dirOk?'&#10003; Correct':'&#10007; Wrong'}</td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+// ════════════════════════════════════════════════════════
+// TAB 3 — GDP PREDICTOR
+// ════════════════════════════════════════════════════════
+const GDP_SERIES = [
+  {id:'GDPC1',      label:'Real GDP',              weight:0,     fmt:'bil',   freq:null},
+  {id:'INDPRO',     label:'Industrial Production', weight:0.14,  fmt:'index', freq:null},
+  {id:'PAYEMS',     label:'Nonfarm Payrolls',       weight:0.12,  fmt:'thou',  freq:null},
+  {id:'UMCSENT',    label:'Consumer Sentiment',     weight:0.10,  fmt:'index', freq:null},
+  {id:'RSAFS',      label:'Retail Sales',           weight:0.09,  fmt:'bil',   freq:null},
+  {id:'TCU',        label:'Capacity Utilization',   weight:0.07,  fmt:'pct',   freq:null},
+  {id:'HOUST',      label:'Housing Starts',         weight:0.04,  fmt:'thou',  freq:null},
+  {id:'FEDFUNDS',   label:'Fed Funds Rate',         weight:-0.05, fmt:'pct',   freq:null},
+  {id:'T10Y2Y',     label:'Yield Curve (10Y-2Y)',   weight:0.14,  fmt:'pct',   freq:'m'},
+  {id:'BAA10YM',    label:'Credit Spreads (Baa)',   weight:-0.12, fmt:'pct',   freq:null},
+  {id:'ICSA',       label:'Initial Claims',         weight:-0.09, fmt:'thou',  freq:'m'},
+  {id:'VIXCLS',     label:'VIX (Market Fear)',      weight:-0.06, fmt:'index', freq:'m'},
+  {id:'NASDAQCOM',  label:'NASDAQ Composite',       weight:0.08,  fmt:'index', freq:'m'},
+];
+
+let gdpData = {};
+let gdpChart = null;
+
+function saveGdpFredKey() {
+  const v = document.getElementById('gdp-fred-key').value.trim();
+  if (!v) return;
+  fredKey = v;
+  localStorage.setItem('fred_key', v);
+  showBadge('gdp-fred-badge', true);
+  // sync to inflation key field too
+  document.getElementById('fred-key').value = v;
+  showBadge('fred-badge', true);
+}
+
+async function fetchGDPSeries(seriesId, limit=96, freq=null) {
+  const freqParam = freq ? `&frequency=${freq}&aggregation_method=avg` : '';
+  const fredUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${fredKey}&sort_order=desc&limit=${limit}&file_type=json${freqParam}`;
+  const url = `/fred-proxy?url=${encodeURIComponent(fredUrl)}`;
+  try {
+    const res = await fetch(url);
+    const j   = await res.json();
+    if (!j.observations) return null;
+    return j.observations
+      .filter(o => o.value !== '.')
+      .map(o => ({ date: o.date, value: parseFloat(o.value) }))
+      .reverse();
+  } catch(e) {
+    console.error('GDP FRED fetch failed for', seriesId, e);
+    return null;
+  }
+}
+
+async function loadGDP() {
+  if (!fredKey) { alert('Enter your FRED API key first.'); return; }
+  const btn = document.getElementById('gdp-refresh-btn');
+  btn.disabled = true;
+  document.getElementById('gdp-refresh-icon').innerHTML = '<span class="spinner"></span>';
+  const prog = document.getElementById('gdp-prog');
+  const fill = document.getElementById('gdp-prog-fill');
+  const lbl  = document.getElementById('gdp-prog-lbl');
+  prog.classList.add('visible');
+  gdpData = {};
+
+  for (let i=0; i<GDP_SERIES.length; i++) {
+    const s = GDP_SERIES[i];
+    lbl.textContent  = `Fetching ${s.label}... (${i+1}/${GDP_SERIES.length})`;
+    fill.style.width = Math.round(((i+1)/GDP_SERIES.length)*100) + '%';
+    const obs = await fetchGDPSeries(s.id, s.id==='GDPC1' ? 80 : 96, s.freq || null);
+    if (obs && obs.length) gdpData[s.id] = obs;
+    await sleep(250);
+  }
+
+  prog.classList.remove('visible');
+
+  if (!gdpData['GDPC1'] || gdpData['GDPC1'].length < 5) {
+    showBadge('gdp-fred-badge', false);
+    btn.disabled = false;
+    document.getElementById('gdp-refresh-icon').textContent = '↻';
+    alert('Could not load GDP data. Please check your FRED API key.');
+    return;
+  }
+
+  showBadge('gdp-fred-badge', true);
+  renderGDPDrivers();
+  const preds  = buildGDPPredictions();
+  const btRows = computeGDPBacktest(parseInt(document.getElementById('gdp-bt-quarters').value) || 12);
+  renderGDPPredHero(preds);
+  renderGDPChart(preds, btRows);
+  runGDPBacktest();
+
+  document.getElementById('gdp-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  // Show ML button after FRED rate-limit window clears (~15s)
+  setTimeout(() => { document.getElementById('gdp-ml-btn').style.display = ''; }, 15000);
+  btn.disabled = false;
+  document.getElementById('gdp-refresh-icon').textContent = '↻';
+}
+
+function gdpYoY(data, idx) {
+  // GDP is quarterly so look back 4 periods; monthly indicators look back 12
+  if (!data || idx < 4) return null;
+  const s = GDP_SERIES.find(x => x.id === 'GDPC1');
+  return +((data[idx].value / data[idx-4].value - 1) * 100).toFixed(2);
+}
+
+function indicatorYoY(seriesId, data) {
+  if (!data || data.length < 13) return null;
+  const s = GDP_SERIES.find(x => x.id === seriesId);
+  if (!s) return null;
+  return s.fmt === 'pct'
+    ? +(data[data.length-1].value - data[data.length-13].value).toFixed(2)
+    : +((data[data.length-1].value / data[data.length-13].value - 1)*100).toFixed(2);
+}
+
+function predictGDP(overrideData, offsetQuarters=0) {
+  const src = overrideData || gdpData;
+  const gdp = src['GDPC1'];
+  if (!gdp || gdp.length < 6) return null;
+
+  const cur  = gdpYoY(gdp, gdp.length-1);
+  const prev = gdpYoY(gdp, gdp.length-2);
+  if (cur === null || prev === null) return null;
+
+  // Acceleration/deceleration of GDP YoY — strong predictor of direction
+  const momentum = cur - prev;
+
+  // Use 3-month changes for indicators: faster-acting than YoY, less stale
+  let signal = 0, totalW = 0;
+  GDP_SERIES.filter(s => s.weight !== 0).forEach(s => {
+    const d = src[s.id];
+    if (!d || d.length < 4) return;
+    const lb = Math.min(3, d.length - 1);
+    const chg = s.fmt === 'pct'
+      ? d[d.length-1].value - d[d.length-1-lb].value
+      : (d[d.length-1].value / d[d.length-1-lb].value - 1) * 100;
+    if (!isFinite(chg)) return;
+    signal += chg * s.weight;
+    totalW += Math.abs(s.weight);
+  });
+  if (totalW > 0) signal /= totalW;
+
+  // Strong AR + momentum + small indicator nudge + gentle mean reversion
+  const longRun = 2.3;
+  const pred = cur      * 0.68
+             + momentum * 0.20
+             + signal   * 0.12
+             + (longRun - cur) * 0.05 * (offsetQuarters + 1);
+  return +pred.toFixed(2);
+}
+
+function buildGDPPredictions() {
+  const gdp = gdpData['GDPC1'];
+  if (!gdp) return [];
+  const history = gdp.slice(-20).map((o,i,arr) => ({
+    date: o.date.slice(0,7),
+    actual: i>=4 ? +((o.value/arr[i-4].value-1)*100).toFixed(2) : null,
+    predicted: null
+  }));
+  const predCur = predictGDP(null, 0);
+  const predNxt = predictGDP(null, 1);
+  const last = new Date(gdp[gdp.length-1].date);
+  const d1 = new Date(last); d1.setMonth(d1.getMonth()+3);
+  const d2 = new Date(last); d2.setMonth(d2.getMonth()+6);
+  history.push({date: d1.toISOString().slice(0,7), actual: null, predicted: predCur});
+  history.push({date: d2.toISOString().slice(0,7), actual: null, predicted: predNxt});
+  return history;
+}
+
+function renderGDPPredHero(preds) {
+  const predPts   = preds.filter(p => p.predicted != null);
+  const actualPts = preds.filter(p => p.actual != null);
+  if (predPts.length < 2) return;
+  const cur  = predPts[0].predicted;
+  const nxt  = predPts[1].predicted;
+  const prev = actualPts.length ? actualPts[actualPts.length-1].actual : null;
+
+  document.getElementById('gdp-pred-cur-val').textContent = cur + '%';
+  document.getElementById('gdp-pred-nxt-val').textContent = nxt + '%';
+  document.getElementById('gdp-pred-cur-sub').textContent = prev != null
+    ? `Previous: ${prev}% | Change: ${(cur-prev).toFixed(2)}pp` : 'Based on leading indicators';
+  document.getElementById('gdp-pred-nxt-sub').textContent = `From current predicted: ${(nxt-cur).toFixed(2)}pp`;
+
+  const dirHtml = (val, base) => {
+    if (base == null) return '';
+    const diff = val - base;
+    if (Math.abs(diff) < 0.05) return `<span class="pred-dir dir-flat">&#8594; Flat</span>`;
+    return diff > 0
+      ? `<span class="pred-dir dir-up">&#9650; Accelerating +${diff.toFixed(2)}pp</span>`
+      : `<span class="pred-dir dir-down">&#9660; Slowing ${diff.toFixed(2)}pp</span>`;
+  };
+  document.getElementById('gdp-pred-cur-dir').innerHTML = dirHtml(cur, prev);
+  document.getElementById('gdp-pred-nxt-dir').innerHTML = dirHtml(nxt, cur);
+  updateEnsembleCards();
+}
+
+function renderGDPDrivers() {
+  document.getElementById('gdp-drivers-grid').innerHTML = GDP_SERIES
+    .filter(s => s.id !== 'GDPC1')
+    .map(s => {
+      const d = gdpData[s.id];
+      if (!d || !d.length) return '';
+      const latest = d[d.length-1];
+      const yoy    = indicatorYoY(s.id, d);
+      const isPos  = (yoy ?? 0) >= 0;
+      const barPct = Math.min(100, Math.abs(yoy ?? 0) * 5);
+      const barClr = s.weight < 0 ? (isPos ? 'var(--red)' : 'var(--green)') : (isPos ? 'var(--green)' : 'var(--red)');
+      const valStr = s.fmt === 'usd' ? '$' + latest.value.toFixed(2)
+                   : s.fmt === 'pct' ? latest.value.toFixed(2) + '%'
+                   : s.fmt === 'thou' ? (latest.value/1000).toFixed(1) + 'K'
+                   : s.fmt === 'bil'  ? '$' + latest.value.toFixed(1) + 'B'
+                   : latest.value.toFixed(1);
+      return `<div class="driver-card">
+        <div class="driver-name">${s.label}</div>
+        <div class="driver-val">${valStr}</div>
+        <div class="driver-chg" style="color:${isPos?'var(--green)':'var(--red)'}">
+          ${yoy != null ? (isPos?'&#9650; +':'&#9660; ')+Math.abs(yoy)+'% YoY' : '&#8212;'}
+        </div>
+        <div class="driver-bar-track"><div class="driver-bar-fill" style="width:${barPct}%;background:${barClr}"></div></div>
+      </div>`;
+    }).join('');
+}
+
+let mlHistory    = [];
+let mlNowcastVal = null;  // latest ML prediction, used for ensemble
+
+function updateEnsembleCards() {
+  const simCur = parseFloat(document.getElementById('gdp-pred-cur-val').textContent);
+  const simNxt = parseFloat(document.getElementById('gdp-pred-nxt-val').textContent);
+  if (!mlNowcastVal || isNaN(simCur) || isNaN(simNxt)) return;
+
+  const ensCur = +((simCur + mlNowcastVal) / 2).toFixed(2);
+  const ensNxt = +((simNxt + mlNowcastVal) / 2).toFixed(2);
+
+  document.getElementById('gdp-ensemble-section').style.display = '';
+  document.getElementById('gdp-ens-cur-val').textContent = ensCur + '%';
+  document.getElementById('gdp-ens-nxt-val').textContent = ensNxt + '%';
+  document.getElementById('gdp-ens-cur-sub').textContent =
+    `Simple: ${simCur}%  |  ML: ${mlNowcastVal}%`;
+  document.getElementById('gdp-ens-nxt-sub').textContent =
+    `Simple: ${simNxt}%  |  ML: ${mlNowcastVal}%`;
+
+  const dirHtml = (val, base) => {
+    if (base == null) return '';
+    const diff = (val - base).toFixed(2);
+    if (Math.abs(diff) < 0.05) return `<span class="pred-dir dir-flat">&#8594; Flat</span>`;
+    return diff > 0
+      ? `<span class="pred-dir dir-up">&#9650; Accelerating +${diff}pp</span>`
+      : `<span class="pred-dir dir-down">&#9660; Slowing ${diff}pp</span>`;
+  };
+  const prev = parseFloat(document.getElementById('gdp-pred-cur-sub').textContent);
+  document.getElementById('gdp-ens-cur-dir').innerHTML = dirHtml(ensCur, isNaN(prev) ? null : prev);
+  document.getElementById('gdp-ens-nxt-dir').innerHTML = dirHtml(ensNxt, ensCur);
+}
+
+async function runMLNowcast() {
+  if (!fredKey) { alert('Enter your FRED API key first.'); return; }
+  const btn = document.getElementById('gdp-ml-btn');
+  btn.disabled = true;
+  document.getElementById('gdp-ml-icon').innerHTML = '<span class="spinner"></span>';
+  document.getElementById('gdp-ml-section').style.display = '';
+  document.getElementById('gdp-ml-val').innerHTML = '<span class="spinner"></span>';
+  document.getElementById('gdp-ml-sub').textContent = 'Running DFM + Ridge model… (30–60 s)';
+
+  const quarters = document.getElementById('gdp-bt-quarters').value || 12;
+  try {
+    const res = await fetch(`/gdp-nowcast?fred_key=${encodeURIComponent(fredKey)}&quarters=${quarters}`);
+    const d   = await res.json();
+    if (d.error) throw new Error(d.error);
+
+    // Hero card
+    document.getElementById('gdp-ml-quarter').textContent = d.nowcast.quarter;
+    document.getElementById('gdp-ml-val').textContent     = d.nowcast.value + '%';
+    const diff = (d.nowcast.value - d.nowcast.last_actual).toFixed(2);
+    document.getElementById('gdp-ml-sub').textContent =
+      `Last actual: ${d.nowcast.last_actual}% | Change: ${diff > 0 ? '+' : ''}${diff}pp`;
+    const absDiff = Math.abs(diff);
+    document.getElementById('gdp-ml-dir').innerHTML = absDiff < 0.05
+      ? `<span class="pred-dir dir-flat">&#8594; Flat</span>`
+      : diff > 0
+        ? `<span class="pred-dir dir-up">&#9650; Accelerating +${Math.abs(diff)}pp</span>`
+        : `<span class="pred-dir dir-down">&#9660; Slowing ${Math.abs(diff)}pp</span>`;
+
+    // Metrics
+    const m = d.metrics;
+    document.getElementById('gdp-ml-rmse-in').textContent  = `±${m.rmse_in}pp`;
+    document.getElementById('gdp-ml-rmse-out').textContent = `±${m.rmse_out}pp`;
+    const ridgeLabel = m.ridge_rmse ? ` · Ridge ±${m.ridge_rmse}pp · GBM ±${m.gbm_rmse}pp` : '';
+    document.getElementById('gdp-ml-pills').innerHTML = `
+      <span class="pill pill-green">Ensemble MAE: ±${m.mae}pp</span>
+      <span class="pill pill-blue">Direction: ${m.dir_acc}% correct</span>
+      <span class="pill pill-amber">${m.n_features} features${ridgeLabel}</span>`;
+
+    // Feature importance bar chart (inline)
+    if (m.feat_imp && Object.keys(m.feat_imp).length) {
+      const maxImp = Math.max(...Object.values(m.feat_imp));
+      const impHtml = Object.entries(m.feat_imp).map(([k,v]) => `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--muted);width:110px;text-align:right;flex-shrink:0;">${k}</div>
+          <div style="flex:1;background:var(--surface2);border-radius:2px;height:6px;overflow:hidden;">
+            <div style="width:${Math.round(v/maxImp*100)}%;height:100%;background:var(--amber);border-radius:2px;"></div>
+          </div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--muted);width:38px;">${(v*100).toFixed(1)}%</div>
+        </div>`).join('');
+      const impEl = document.createElement('div');
+      impEl.style.cssText = 'margin-top:14px;';
+      impEl.innerHTML = `<div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:8px;">FEATURE IMPORTANCE (GBM)</div>${impHtml}`;
+      document.getElementById('gdp-ml-section').querySelector('.pred-hero').after(impEl);
+    }
+
+    // ML backtest table
+    document.getElementById('gdp-ml-bt-table').innerHTML = `<table>
+      <thead><tr><th>Quarter</th><th class="r">Actual GDP YoY</th><th class="r">ML Predicted</th><th class="r">Error</th><th>Direction</th></tr></thead>
+      <tbody>${[...d.bt_rows].reverse().map((r,i)=>`
+        <tr style="animation-delay:${i*15}ms">
+          <td>${r.date}</td>
+          <td class="r">${r.actual}%</td>
+          <td class="r c-amber">${r.predicted}%</td>
+          <td class="r ${Math.abs(r.err)<=0.3?'c-green':Math.abs(r.err)<=0.7?'c-amber':'c-red'}">${r.err>=0?'+':''}${r.err}pp</td>
+          <td class="${r.dir_ok?'bt-ok':'bt-err'}">${r.dir_ok?'&#10003; Correct':'&#10007; Wrong'}</td>
+        </tr>`).join('')}
+      </tbody></table>`;
+
+    // Store ML value and update ensemble cards
+    mlNowcastVal = d.nowcast.value;
+    updateEnsembleCards();
+
+    // Update chart with ML line
+    mlHistory = d.history;
+    const preds  = buildGDPPredictions();
+    const btRows = computeGDPBacktest(parseInt(quarters));
+    renderGDPChart(preds, btRows, mlHistory);
+
+  } catch(e) {
+    document.getElementById('gdp-ml-val').textContent = 'Error';
+    document.getElementById('gdp-ml-sub').textContent = e.message.slice(0, 120);
+    console.error(e);
+  }
+
+  btn.disabled = false;
+  document.getElementById('gdp-ml-icon').textContent = '⚙';
+}
+
+function renderGDPChart(preds, btRows=[], mlData=[]) {
+  const ctx = document.getElementById('gdp-chart').getContext('2d');
+  if (gdpChart) gdpChart.destroy();
+
+  const btMap = {};
+  btRows.forEach(r => { btMap[r.date.slice(0,7)] = r.predicted; });
+  const pastPred = preds.map(p => btMap[p.date] ?? null);
+
+  // Align ML history to chart labels
+  const mlMap = {};
+  mlData.forEach(r => { mlMap[r.date] = r.predicted; });
+  const mlPred = preds.map(p => p.date in mlMap ? mlMap[p.date] : null);
+
+  // For forward (future) positions, fall back to mlNowcastVal directly
+  // because date-key alignment can miss when server & client GDPC1 differ by a quarter
+  const resolvedMlPred = preds.map((p, i) => {
+    if (mlPred[i] != null) return mlPred[i];
+    if (p.actual === null && mlNowcastVal != null) return mlNowcastVal;
+    return null;
+  });
+
+  const ensemble = mlData.length ? preds.map((p, i) => {
+    const s = pastPred[i] ?? (p.actual === null ? p.predicted : null);
+    const m = resolvedMlPred[i];
+    return (s != null && m != null) ? +((s + m) / 2).toFixed(2) : null;
+  }) : [];
+
+  const datasets = [
+    // Actual — always first reference line
+    {label:'Actual GDP YoY %', data:preds.map(p=>p.actual),
+      borderColor:'#2dd4a0', backgroundColor:'#2dd4a010', tension:0.4,
+      borderWidth:2, pointRadius:4, pointBackgroundColor:'#2dd4a0', spanGaps:false},
+    // Simple model — thin dashed, background context
+    {label:'Simple Model', data:pastPred.map((v,i) => v ?? preds[i].predicted),
+      borderColor:'#60a5fa', backgroundColor:'transparent', tension:0.4,
+      borderWidth:1.5, borderDash:[5,4], pointRadius:2, pointBackgroundColor:'#60a5fa', spanGaps:false},
+  ];
+
+  if (mlData.length) {
+    // ML — thin dashed, background context
+    datasets.push({
+      label:'ML Nowcast (DFM + Ridge)',
+      data: resolvedMlPred,
+      borderColor:'#f5a623', backgroundColor:'transparent', tension:0.4,
+      borderWidth:1.5, borderDash:[3,3], pointRadius:2, pointBackgroundColor:'#f5a623', spanGaps:false,
+    });
+    // Ensemble — solid, thick, on top
+    datasets.push({
+      label:'Ensemble Average',
+      data: ensemble,
+      borderColor:'#f0526a', backgroundColor:'#f0526a15', tension:0.4,
+      borderWidth:3, pointRadius:5, pointBackgroundColor:'#f0526a',
+      pointBorderColor:'#fff', pointBorderWidth:1.5, spanGaps:false,
+    });
+  }
+
+  gdpChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: preds.map(p => p.date), datasets },
+    options:{
+      responsive:true, maintainAspectRatio:true,
+      plugins:{
+        legend:{labels:{color:'#6b6b80',font:{family:"'Space Mono'",size:11}}},
+        tooltip:{backgroundColor:'#18181f',borderColor:'#ffffff18',borderWidth:1,
+          titleColor:'#e8e8f0',bodyColor:'#6b6b80',
+          callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.y!=null?c.parsed.y+'%':'—'}`}}
+      },
+      scales:{
+        x:{grid:{color:'#ffffff08'},ticks:{color:'#6b6b80',font:{family:"'Space Mono'",size:10},maxRotation:45,maxTicksLimit:12}},
+        y:{grid:{color:'#ffffff08'},ticks:{color:'#6b6b80',font:{family:"'Space Mono'",size:10},callback:v=>v+'%'},
+          title:{display:true,text:'YoY %',color:'#6b6b80',font:{size:11}}}
+      }
+    }
+  });
+}
+
+function computeGDPBacktest(quarters) {
+  const gdp = gdpData['GDPC1'];
+  if (!gdp || gdp.length < 10) return [];
+  const rows = [];
+  for (let i=Math.max(5, gdp.length-quarters); i<gdp.length-1; i++) {
+    const snap = { GDPC1: gdp.slice(0,i+1) };
+    const cutDate = gdp[i].date;
+    GDP_SERIES.filter(s => s.id !== 'GDPC1').forEach(s => {
+      const d = gdpData[s.id];
+      if (d) snap[s.id] = d.filter(o => o.date <= cutDate);
+    });
+    const pred      = predictGDP(snap, 0);
+    const actualNow = i >= 4 ? gdpYoY(gdp, i) : null;
+    const actualNxt = i+1 < gdp.length && i+1 >= 5 ? gdpYoY(gdp, i+1) : null;
+    if (pred==null || actualNow==null || actualNxt==null) continue;
+    const err   = +(pred - actualNxt).toFixed(2);
+    const dirOk = ((actualNxt-actualNow)>=0 && (pred-actualNow)>=0) || ((actualNxt-actualNow)<0 && (pred-actualNow)<0);
+    rows.push({date:gdp[i+1].date, actual:actualNxt, predicted:pred, err, absErr:Math.abs(err), dirOk});
+  }
+  return rows;
+}
+
+function runGDPBacktest() {
+  const quarters = parseInt(document.getElementById('gdp-bt-quarters').value) || 12;
+  const rows = computeGDPBacktest(quarters);
+  if (!rows.length) return;
+
+  if (gdpChart) {
+    const preds = buildGDPPredictions();
+    renderGDPChart(preds, rows, mlHistory);
+  }
+
+  const mae      = +(rows.reduce((a,b)=>a+b.absErr,0)/rows.length).toFixed(2);
+  const dirAcc   = +((rows.filter(r=>r.dirOk).length/rows.length)*100).toFixed(0);
+  const within50 = +((rows.filter(r=>r.absErr<=0.5).length/rows.length)*100).toFixed(0);
+
+  document.getElementById('gdp-acc-pills').innerHTML = `
+    <span class="pill pill-green">MAE: &plusmn;${mae}pp</span>
+    <span class="pill pill-blue">Direction: ${dirAcc}% correct</span>
+    <span class="pill pill-amber">Within &plusmn;0.5pp: ${within50}%</span>`;
+
+  document.getElementById('gdp-bt-table').innerHTML = `<table>
+    <thead><tr><th>Quarter</th><th class="r">Actual GDP YoY</th><th class="r">Predicted</th><th class="r">Error</th><th>Direction</th></tr></thead>
+    <tbody>${[...rows].reverse().map((r,i)=>`
+      <tr style="animation-delay:${i*15}ms">
+        <td>${r.date.slice(0,7)}</td>
+        <td class="r">${r.actual}%</td>
+        <td class="r c-amber">${r.predicted}%</td>
+        <td class="r ${Math.abs(r.err)<=0.3?'c-green':Math.abs(r.err)<=0.7?'c-amber':'c-red'}">${r.err>=0?'+':''}${r.err}pp</td>
+        <td class="${r.dirOk?'bt-ok':'bt-err'}">${r.dirOk?'&#10003; Correct':'&#10007; Wrong'}</td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+// ── INIT ──────────────────────────────────────────────
+(function init(){
+  if (polyKey) { document.getElementById('poly-key').value=polyKey; showBadge('poly-badge',true); }
+  if (fredKey) {
+    document.getElementById('fred-key').value=fredKey; showBadge('fred-badge',true);
+    document.getElementById('gdp-fred-key').value=fredKey; showBadge('gdp-fred-badge',true);
+  }
+  renderWLTags();
+})();
+</script>
+</body>
+</html>
