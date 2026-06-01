@@ -752,20 +752,31 @@ function predictCPI(overrideFredData, offsetMonths=0) {
   const cpi12  = cpi[cpi.length-13].value;
   const baseYoY = (cpiNow/cpi12 - 1)*100;
 
+  // Average signal over last 3 months to prevent single volatile readings
+  // (e.g. weekly gas prices, PPI revisions) from swinging the prediction
   let signal=0, totalW=0;
   FRED_SERIES.filter(s=>s.weight!==0).forEach(s=>{
     const d = src[s.id];
-    if (!d || d.length < 14) return;
-    const yoy = s.fmt==='pct'
-      ? (d[d.length-1].value - d[d.length-13].value)
-      : (d[d.length-1].value / d[d.length-13].value - 1)*100;
-    signal += yoy * s.weight;
+    if (!d || d.length < 15) return;
+    const yoys = [];
+    for (let lag=0; lag<3; lag++) {
+      const i = d.length - 1 - lag;
+      if (i < 12) break;
+      const y = s.fmt==='pct'
+        ? (d[i].value - d[i-12].value)
+        : (d[i].value / d[i-12].value - 1)*100;
+      yoys.push(y);
+    }
+    if (!yoys.length) return;
+    const avgYoY = yoys.reduce((a,b)=>a+b,0) / yoys.length;
+    signal += avgYoY * s.weight;
     totalW += Math.abs(s.weight);
   });
   if (totalW > 0) signal /= totalW;
 
-  const blended = baseYoY*0.6 + signal*0.4;
-  const pred = blended + (2.5-blended)*0.08*(offsetMonths+1);
+  // Blend: weight base CPI trend more heavily (0.7) for stability
+  const blended = baseYoY*0.7 + signal*0.3;
+  const pred = blended + (2.5-blended)*0.06*(offsetMonths+1);
   return +pred.toFixed(2);
 }
 
