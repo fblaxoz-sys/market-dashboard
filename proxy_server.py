@@ -177,69 +177,7 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
     X_tr, y_tr = train[feat_cols].values, train['gdp'].values
     X_te, y_te = test[feat_cols].values,  test['gdp'].values
 
-    # ── Ridge baseline ────────────────────────────────────────────────────
-    ridge      = Ridge(alpha=1.0).fit(X_tr, y_tr)
-    ridge_te   = ridge.predict(X_te)
-    ridge_rmse = float(np.sqrt(mean_squared_error(y_te, ridge_te)))
-    print(f"  Ridge OOS RMSE: {ridge_rmse:.3f}")
-
-    # ── Gradient Boosting with TimeSeriesSplit CV ─────────────────────────
-    tscv = TimeSeriesSplit(n_splits=4)
-
-    if HAS_XGB:
-        ModelClass = XGBRegressor
-        param_grid = [
-            {'n_estimators': n, 'learning_rate': lr, 'max_depth': d,
-             'subsample': 0.8, 'colsample_bytree': 0.8, 'random_state': 42, 'verbosity': 0}
-            for n in [50, 100, 200]
-            for lr in [0.03, 0.05, 0.1]
-            for d in [2, 3]
-        ]
-    else:
-        ModelClass = HistGradientBoostingRegressor
-        param_grid = [
-            {'max_iter': n, 'learning_rate': lr, 'max_depth': d, 'random_state': 42}
-            for n in [50, 100, 200]
-            for lr in [0.03, 0.05, 0.1]
-            for d in [2, 3, None]
-        ]
-
-    best_cv, best_params = float('inf'), param_grid[0]
-    for params in param_grid:
-        scores = []
-        for tr_idx, val_idx in tscv.split(X_tr):
-            if len(val_idx) < 2: continue
-            m = ModelClass(**params)
-            m.fit(X_tr[tr_idx], y_tr[tr_idx])
-            scores.append(np.sqrt(mean_squared_error(
-                y_tr[val_idx], m.predict(X_tr[val_idx]))))
-        if scores and np.mean(scores) < best_cv:
-            best_cv, best_params = np.mean(scores), params
-
-    print(f"  CV best RMSE: {best_cv:.3f} | params: { {k:v for k,v in best_params.items() if k not in ('random_state','verbosity')} }")
-    gbm = ModelClass(**best_params).fit(X_tr, y_tr)
-    gbm_te   = gbm.predict(X_te)
-    gbm_rmse = float(np.sqrt(mean_squared_error(y_te, gbm_te)))
-    print(f"  GBM OOS RMSE: {gbm_rmse:.3f}")
-
-    # ── Inverse-RMSE weighted ensemble (Ridge + GBM) ──────────────────────
-    w_r = 1.0 / (ridge_rmse + 1e-6)
-    w_g = 1.0 / (gbm_rmse  + 1e-6)
-    w_r /= (w_r + w_g); w_g /= (w_r + w_g)
-
-    pred_tr_blend = w_r * ridge.predict(X_tr) + w_g * gbm.predict(X_tr)
-    pred_te_blend = w_r * ridge_te             + w_g * gbm_te
-    blend_rmse    = float(np.sqrt(mean_squared_error(y_te, pred_te_blend)))
-    print(f"  Blend OOS RMSE: {blend_rmse:.3f} (w_ridge={w_r:.2f}, w_gbm={w_g:.2f})")
-
-    # Feature importance from GBM
-    if HAS_XGB:
-        feat_imp = dict(zip(feat_cols, gbm.feature_importances_.tolist()))
-    else:
-        feat_imp = dict(zip(feat_cols,
-            (gbm.feature_importances_ / gbm.feature_importances_.sum()).tolist()))
-
-    # ── Build nowcast feature row ─────────────────────────────────────────
+    # ── Build nowcast feature row (every model predicts this) ─────────────
     def last(series, n=1):
         s = series.dropna()
         return float(s.iloc[-n]) if len(s) >= n else float('nan')
@@ -258,11 +196,139 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
         nc_row['vix'] = last(vix_q)
     if eq_q is not None and 'equity_ret' in df.columns:
         nc_row['equity_ret'] = float(df['equity_ret'].iloc[-1])
+    nc_X = np.array([[nc_row.get(c, 0.0) for c in feat_cols]])
 
-    nc_X  = np.array([[nc_row.get(c, 0.0) for c in feat_cols]])
-    nc_r  = float(ridge.predict(nc_X)[0])
-    nc_g  = float(gbm.predict(nc_X)[0])
-    nowcast_val = w_r * nc_r + w_g * nc_g
+    # Scaled features for the linear models
+    fscaler = StandardScaler().fit(X_tr)
+    Xs_tr, Xs_te, nc_Xs = fscaler.transform(X_tr), fscaler.transform(X_te), fscaler.transform(nc_X)
+
+    tscv     = TimeSeriesSplit(n_splits=4)
+    models   = {}        # name -> {tr, te, nc, rmse}
+    feat_imp = None      # filled by first available tree model
+
+    def register(name, tr, te, nc):
+        rmse = float(np.sqrt(mean_squared_error(y_te, te)))
+        models[name] = {'tr': np.asarray(tr, float), 'te': np.asarray(te, float),
+                        'nc': float(nc), 'rmse': rmse}
+        print(f"  {name:14s} OOS RMSE: {rmse:.3f}")
+
+    def fit_tabular(name, est, scaled=False):
+        Xtr = Xs_tr if scaled else X_tr
+        Xte = Xs_te if scaled else X_te
+        Xnc = nc_Xs if scaled else nc_X
+        est.fit(Xtr, y_tr)
+        register(name, est.predict(Xtr), est.predict(Xte), est.predict(Xnc)[0])
+        return est
+
+    # ── 1) Ridge (linear) ─────────────────────────────────────────────────
+    fit_tabular('Ridge', Ridge(alpha=1.0), scaled=True)
+
+    # ── 2) ElasticNet (linear, auto feature selection) ────────────────────
+    from sklearn.linear_model import ElasticNet
+    fit_tabular('ElasticNet', ElasticNet(alpha=0.3, l1_ratio=0.5, max_iter=5000), scaled=True)
+
+    # ── 3) Random Forest ──────────────────────────────────────────────────
+    from sklearn.ensemble import RandomForestRegressor
+    rf = fit_tabular('RandomForest',
+                     RandomForestRegressor(n_estimators=300, max_depth=4,
+                                           min_samples_leaf=2, random_state=42))
+
+    # ── 4) XGBoost (TimeSeriesSplit CV-tuned) ─────────────────────────────
+    if HAS_XGB:
+        grid = [{'n_estimators': n, 'learning_rate': lr, 'max_depth': d,
+                 'subsample': 0.8, 'colsample_bytree': 0.8, 'random_state': 42, 'verbosity': 0}
+                for n in [50, 100, 200] for lr in [0.03, 0.05, 0.1] for d in [2, 3]]
+        best_cv, best_params = float('inf'), grid[0]
+        for params in grid:
+            sc = []
+            for tr_idx, val_idx in tscv.split(X_tr):
+                if len(val_idx) < 2: continue
+                m = XGBRegressor(**params); m.fit(X_tr[tr_idx], y_tr[tr_idx])
+                sc.append(np.sqrt(mean_squared_error(y_tr[val_idx], m.predict(X_tr[val_idx]))))
+            if sc and np.mean(sc) < best_cv: best_cv, best_params = np.mean(sc), params
+        xgb = fit_tabular('XGBoost', XGBRegressor(**best_params))
+        feat_imp = dict(zip(feat_cols, xgb.feature_importances_.tolist()))
+    else:
+        fit_tabular('HistGBM', HistGradientBoostingRegressor(
+            max_iter=200, learning_rate=0.05, max_depth=3, random_state=42))
+
+    # ── 5) LightGBM (optional) ────────────────────────────────────────────
+    try:
+        from lightgbm import LGBMRegressor
+        lgbm = fit_tabular('LightGBM', LGBMRegressor(
+            n_estimators=200, learning_rate=0.05, max_depth=3,
+            num_leaves=15, verbose=-1, random_state=42))
+        if feat_imp is None:
+            imp = lgbm.feature_importances_.astype(float)
+            feat_imp = dict(zip(feat_cols, (imp / max(imp.sum(), 1e-9)).tolist()))
+    except Exception as e:
+        print(f"  LightGBM skipped: {e}")
+
+    # ── 6) CatBoost (optional) ────────────────────────────────────────────
+    try:
+        from catboost import CatBoostRegressor
+        fit_tabular('CatBoost', CatBoostRegressor(
+            iterations=200, learning_rate=0.05, depth=3, verbose=0, random_state=42))
+    except Exception as e:
+        print(f"  CatBoost skipped: {e}")
+
+    # ── 7) ARIMA (univariate on GDP YoY, AIC-selected order) ──────────────
+    try:
+        from statsmodels.tsa.arima.model import ARIMA as _ARIMA
+        best_aic, best_order, best_fit = float('inf'), None, None
+        for order in [(1,0,0), (1,0,1), (2,0,1), (2,0,2), (1,1,1)]:
+            try:
+                f = _ARIMA(y_tr, order=order).fit()
+                if f.aic < best_aic: best_aic, best_order, best_fit = f.aic, order, f
+            except Exception: pass
+        if best_fit is not None:
+            tr_pred = np.asarray(best_fit.predict(start=0, end=len(y_tr)-1), float)
+            te_pred = np.asarray(best_fit.forecast(steps=n_test), float)
+            full_fit = _ARIMA(df['gdp'].values, order=best_order).fit()
+            nc_pred  = float(np.asarray(full_fit.forecast(steps=1), float)[0])
+            register(f'ARIMA{best_order}', tr_pred, te_pred, nc_pred)
+    except Exception as e:
+        print(f"  ARIMA skipped: {e}")
+
+    # ── 8) VAR (GDP YoY + common factor move together) ────────────────────
+    try:
+        from statsmodels.tsa.api import VAR as _VAR
+        vdat = df[['gdp', 'factor']].dropna()
+        vtr  = vdat.iloc[:-n_test]
+        vfit = _VAR(vtr).fit(maxlags=2, ic='aic')
+        k    = max(vfit.k_ar, 1)
+        fitted  = vfit.fittedvalues['gdp'].values
+        tr_pred = np.concatenate([vtr['gdp'].values[:k], fitted])[:len(y_tr)]
+        te_pred = vfit.forecast(vtr.values[-k:], steps=n_test)[:, 0]
+        vfull   = _VAR(vdat).fit(maxlags=2, ic='aic')
+        kf      = max(vfull.k_ar, 1)
+        nc_pred = float(vfull.forecast(vdat.values[-kf:], steps=1)[0, 0])
+        register('VAR', tr_pred, te_pred, nc_pred)
+    except Exception as e:
+        print(f"  VAR skipped: {e}")
+
+    # ── Pruned, inverse-RMSE² weighted ensemble ───────────────────────────
+    # Drop any model whose error is >2.5x the best model's (they'd only add
+    # noise). Weight the rest by 1/RMSE² so accurate models dominate.
+    all_names = list(models.keys())
+    best_rmse = min(models[n]['rmse'] for n in all_names)
+    kept      = [n for n in all_names if models[n]['rmse'] <= 2.5 * best_rmse]
+
+    raw_w   = {n: 1.0 / (models[n]['rmse']**2 + 1e-6) for n in kept}
+    wsum    = sum(raw_w.values())
+    weights = {n: (raw_w[n] / wsum if n in kept else 0.0) for n in all_names}
+
+    pred_tr_blend = sum(weights[n] * models[n]['tr'] for n in kept)
+    pred_te_blend = sum(weights[n] * models[n]['te'] for n in kept)
+    nowcast_val   = float(sum(weights[n] * models[n]['nc'] for n in kept))
+    blend_rmse    = float(np.sqrt(mean_squared_error(y_te, pred_te_blend)))
+    dropped = [n for n in all_names if n not in kept]
+    print(f"  ── Ensemble of {len(kept)}/{len(all_names)} models — OOS RMSE: {blend_rmse:.3f}"
+          + (f" (dropped: {', '.join(dropped)})" if dropped else ""))
+    names = all_names   # for metrics reporting
+
+    if feat_imp is None:
+        feat_imp = {c: 0.0 for c in feat_cols}
 
     last_gdp_date  = gdpc1.index[-1]
     nowcast_date   = last_gdp_date + pd.DateOffset(months=3)
@@ -308,13 +374,12 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
         'metrics': {
             'rmse_in':    rmse_in,
             'rmse_out':   round(blend_rmse, 3),
-            'ridge_rmse': round(ridge_rmse, 3),
-            'gbm_rmse':   round(gbm_rmse, 3),
             'mae':        mae,
             'dir_acc':    dir_acc,
             'n_features': len(feat_cols),
-            'w_ridge':    round(w_r, 2),
-            'w_gbm':      round(w_g, 2),
+            'n_models':   len(names),
+            'model_rmse': {n: round(models[n]['rmse'], 3) for n in names},
+            'model_wt':   {n: round(weights[n], 3) for n in names},
             'feat_imp':   {k: round(v, 3) for k, v in
                            sorted(feat_imp.items(), key=lambda x: -x[1])},
         },
@@ -374,7 +439,8 @@ class Handler(SimpleHTTPRequestHandler):
         pass
 
 
-PORT = int(os.environ.get('PORT', 8765))
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-print(f'Server → http://0.0.0.0:{PORT}')
-HTTPServer(('', PORT), Handler).serve_forever()
+if __name__ == '__main__':
+    PORT = int(os.environ.get('PORT', 8765))
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    print(f'Server → http://0.0.0.0:{PORT}')
+    HTTPServer(('', PORT), Handler).serve_forever()

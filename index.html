@@ -1371,11 +1371,39 @@ async function runMLNowcast() {
     const m = d.metrics;
     document.getElementById('gdp-ml-rmse-in').textContent  = `±${m.rmse_in}pp`;
     document.getElementById('gdp-ml-rmse-out').textContent = `±${m.rmse_out}pp`;
-    const ridgeLabel = m.ridge_rmse ? ` · Ridge ±${m.ridge_rmse}pp · GBM ±${m.gbm_rmse}pp` : '';
     document.getElementById('gdp-ml-pills').innerHTML = `
       <span class="pill pill-green">Ensemble MAE: ±${m.mae}pp</span>
       <span class="pill pill-blue">Direction: ${m.dir_acc}% correct</span>
-      <span class="pill pill-amber">${m.n_features} features${ridgeLabel}</span>`;
+      <span class="pill pill-amber">${m.n_models||'?'} models · ${m.n_features} features</span>`;
+
+    // Per-model leaderboard (sorted best→worst by RMSE; dropped models greyed out)
+    if (m.model_rmse) {
+      const rows = Object.entries(m.model_rmse).sort((a,b)=>a[1]-b[1]);
+      const best = rows[0][1];
+      const lb = rows.map(([name,rmse]) => {
+        const wt = (m.model_wt && m.model_wt[name]) || 0;
+        const dropped = wt === 0;
+        const barW = Math.round((best/rmse)*100);   // closer to best = longer bar
+        const clr  = dropped ? 'var(--muted)' : wt>0.2 ? 'var(--green)' : wt>0.1 ? 'var(--amber)' : 'var(--blue)';
+        return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;opacity:${dropped?0.45:1};">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--text);width:120px;text-align:right;flex-shrink:0;">${name}</div>
+          <div style="flex:1;background:var(--surface2);border-radius:2px;height:6px;overflow:hidden;">
+            <div style="width:${barW}%;height:100%;background:${clr};border-radius:2px;"></div>
+          </div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--muted);width:62px;">±${rmse}pp</div>
+          <div style="font-family:var(--mono);font-size:10px;color:${dropped?'var(--muted)':'var(--text)'};width:60px;">${dropped?'dropped':(wt*100).toFixed(0)+'% wt'}</div>
+        </div>`;
+      }).join('');
+      const lbEl = document.createElement('div');
+      lbEl.style.cssText = 'margin-top:14px;';
+      lbEl.innerHTML = `<div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:8px;">MODEL LEADERBOARD (out-of-sample RMSE · ensemble weight)</div>${lb}`;
+      const heroEl = document.getElementById('gdp-ml-section').querySelector('.pred-hero');
+      // remove any prior leaderboard before inserting
+      const prev = document.getElementById('gdp-ml-leaderboard');
+      if (prev) prev.remove();
+      lbEl.id = 'gdp-ml-leaderboard';
+      heroEl.after(lbEl);
+    }
 
     // Feature importance bar chart (inline)
     if (m.feat_imp && Object.keys(m.feat_imp).length) {
@@ -1388,10 +1416,13 @@ async function runMLNowcast() {
           </div>
           <div style="font-family:var(--mono);font-size:10px;color:var(--muted);width:38px;">${(v*100).toFixed(1)}%</div>
         </div>`).join('');
+      const prevImp = document.getElementById('gdp-ml-featimp');
+      if (prevImp) prevImp.remove();
       const impEl = document.createElement('div');
+      impEl.id = 'gdp-ml-featimp';
       impEl.style.cssText = 'margin-top:14px;';
-      impEl.innerHTML = `<div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:8px;">FEATURE IMPORTANCE (GBM)</div>${impHtml}`;
-      document.getElementById('gdp-ml-section').querySelector('.pred-hero').after(impEl);
+      impEl.innerHTML = `<div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:8px;">FEATURE IMPORTANCE (tree model)</div>${impHtml}`;
+      (document.getElementById('gdp-ml-leaderboard') || document.getElementById('gdp-ml-section').querySelector('.pred-hero')).after(impEl);
     }
 
     // ML backtest table
