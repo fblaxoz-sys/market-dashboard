@@ -41,6 +41,11 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
         'ICSA':      ('m',   96),   # Initial Claims (weekly → monthly avg)
         'VIXCLS':    ('m',   96),   # VIX (daily → monthly avg)
         'NASDAQCOM': ('m',   96),   # NASDAQ Composite (daily → monthly avg)
+        # ── added via 25-yr feature discovery (strongest GDP leads) ──
+        'NEWORDER':  (None,  96),   # Core capital-goods orders (capex lead)
+        'TOTALSA':   (None,  96),   # Total vehicle sales
+        'CSUSHPINSA':(None,  96),   # Case-Shiller home prices
+        'PERMIT':    (None,  96),   # Building permits (housing lead)
     }
     CORE_IDS = ['INDPRO', 'PAYEMS', 'RSAFS', 'UMCSENT']  # go into DFM
 
@@ -167,6 +172,20 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
     if eq_q is not None:
         df['equity_ret'] = eq_q.pct_change(1) * 100
 
+    # ── Discovery-added leading indicators ────────────────────────────────
+    no_q = to_q('NEWORDER')                   # core capex orders, YoY
+    if no_q is not None:
+        df['neworder_yoy'] = (no_q / no_q.shift(4) - 1) * 100
+    veh_q = to_q('TOTALSA')                   # vehicle sales, YoY
+    if veh_q is not None:
+        df['vehicles_yoy'] = (veh_q / veh_q.shift(4) - 1) * 100
+    hp_q = to_q('CSUSHPINSA')                 # home prices, YoY
+    if hp_q is not None:
+        df['homeprice_yoy'] = (hp_q / hp_q.shift(4) - 1) * 100
+    perm_q = to_q('PERMIT')                   # building permits, YoY
+    if perm_q is not None:
+        df['permits_yoy'] = (perm_q / perm_q.shift(4) - 1) * 100
+
     df = df.dropna()
     feat_cols = [c for c in df.columns if c != 'gdp']
     print(f"  Feature set ({len(feat_cols)}): {feat_cols}")
@@ -196,6 +215,15 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
         nc_row['vix'] = last(vix_q)
     if eq_q is not None and 'equity_ret' in df.columns:
         nc_row['equity_ret'] = float(df['equity_ret'].iloc[-1])
+
+    def last_yoy(q):
+        qq = q.dropna()
+        return float(qq.iloc[-1] / qq.iloc[-5] - 1) * 100 if len(qq) >= 5 else 0.0
+
+    if 'neworder_yoy'  in df.columns: nc_row['neworder_yoy']  = last_yoy(no_q)
+    if 'vehicles_yoy'  in df.columns: nc_row['vehicles_yoy']  = last_yoy(veh_q)
+    if 'homeprice_yoy' in df.columns: nc_row['homeprice_yoy'] = last_yoy(hp_q)
+    if 'permits_yoy'   in df.columns: nc_row['permits_yoy']   = last_yoy(perm_q)
     nc_X = np.array([[nc_row.get(c, 0.0) for c in feat_cols]])
 
     # Scaled features for the linear models

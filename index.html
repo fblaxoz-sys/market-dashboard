@@ -780,11 +780,14 @@ function setMomSkeleton() {
 // ════════════════════════════════════════════════════════
 const FRED_SERIES = [
   {id:'CPIAUCSL', label:'CPI All Items',          lag:0, weight:0,     fmt:'index'},
-  {id:'PPIACO',   label:'PPI All Commodities',    lag:1, weight:0.28,  fmt:'index'},
-  {id:'CPILFESL', label:'Core CPI',               lag:0, weight:0.22,  fmt:'index'},
-  {id:'MICH',     label:'Inflation Expectations', lag:1, weight:0.18,  fmt:'pct'},
-  {id:'M2SL',     label:'M2 Money Supply',        lag:3, weight:0.12,  fmt:'bil'},
-  {id:'MCOILWTICO',label:'WTI Crude Oil',           lag:1, weight:0.10,  fmt:'usd'},
+  {id:'PPIACO',   label:'PPI All Commodities',    lag:1, weight:0.24,  fmt:'index'},
+  {id:'CPILFESL', label:'Core CPI',               lag:0, weight:0.18,  fmt:'index'},
+  {id:'T5YIE',    label:'5Y Breakeven Inflation', lag:1, weight:0.20,  fmt:'pct', freq:'m'},  // market inflation expectations (top predictor)
+  {id:'MICH',     label:'Inflation Expectations', lag:1, weight:0.12,  fmt:'pct'},
+  {id:'CES0500000003',label:'Avg Hourly Earnings',lag:1, weight:0.12,  fmt:'index'},          // wage growth
+  {id:'PALLFNFINDEXM',label:'Global Commodities', lag:1, weight:0.10,  fmt:'index'},          // broad commodity prices
+  {id:'M2SL',     label:'M2 Money Supply',        lag:3, weight:0.10,  fmt:'bil'},
+  {id:'MCOILWTICO',label:'WTI Crude Oil',           lag:1, weight:0.08,  fmt:'usd'},
   {id:'UNRATE',   label:'Unemployment Rate',      lag:2, weight:-0.06, fmt:'pct'},
   {id:'FEDFUNDS', label:'Fed Funds Rate',         lag:2, weight:-0.04, fmt:'pct'},
 ];
@@ -808,8 +811,9 @@ function fetchJSONP(url) {
   });
 }
 
-async function fetchFRED(seriesId) {
-  const fredUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${fredKey}&sort_order=desc&limit=60&file_type=json`;
+async function fetchFRED(seriesId, freq=null) {
+  const freqParam = freq ? `&frequency=${freq}&aggregation_method=avg` : '';
+  const fredUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${fredKey}&sort_order=desc&limit=60&file_type=json${freqParam}`;
   const url = `/fred-proxy?url=${encodeURIComponent(fredUrl)}`;
   try {
     const res = await fetch(url);
@@ -841,7 +845,7 @@ async function loadInflation() {
     const s = FRED_SERIES[i];
     lbl.textContent  = `Fetching ${s.label}... (${i+1}/${FRED_SERIES.length})`;
     fill.style.width = Math.round(((i+1)/FRED_SERIES.length)*100) + '%';
-    const obs = await fetchFRED(s.id);
+    const obs = await fetchFRED(s.id, s.freq || null);
     if (obs && obs.length) fredData[s.id] = obs;
     await sleep(250);
   }

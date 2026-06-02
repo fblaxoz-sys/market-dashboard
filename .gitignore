@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 catboost_info/
+feature_discovery.py
+discovery_results.json
