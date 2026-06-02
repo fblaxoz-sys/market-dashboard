@@ -220,9 +220,12 @@ td.r{text-align:right;}
     <div class="stat-card sc-purple"><div class="stat-label">Oversold</div><div class="stat-value" id="m-under">&#8212;</div><div class="stat-sub">RSI &lt; 30</div></div>
   </div>
 
-  <div id="wl-section" style="display:none;">
-    <div class="section-header"><div class="section-title"><span class="dot dot-purple"></span>Your Watchlist</div></div>
-    <div class="table-wrap" id="wl-table"></div>
+  <div id="wl-section">
+    <div class="section-header">
+      <div class="section-title"><span class="dot dot-purple"></span>My Watchlist</div>
+      <span id="wl-count" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></span>
+    </div>
+    <div class="table-wrap" id="wl-table"><div class="empty-state">Add tickers above then hit Refresh to track them here</div></div>
   </div>
   <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Top 10 Momentum</div></div>
   <div class="table-wrap" id="top-table"><div class="empty-state">Enter your Polygon key above and hit Refresh</div></div>
@@ -595,11 +598,59 @@ function renderMomTables(data) {
   const max = Math.max(...data.map(d=>d.score),1);
   const min = Math.min(...data.map(d=>d.score));
   const rng = max-min || 1;
-  const wlSec = document.getElementById('wl-section');
-  if (wl.length) { wlSec.style.display=''; document.getElementById('wl-table').innerHTML=buildMomTable(wl,max,min,rng); }
-  else wlSec.style.display='none';
+
+  // Watchlist — dedicated clean table (always visible)
+  const wlCount = document.getElementById('wl-count');
+  if (wl.length) {
+    wlCount.textContent = `${wl.length} stock${wl.length>1?'s':''}`;
+    document.getElementById('wl-table').innerHTML = buildWatchlistTable(wl);
+  } else if (watchlist.length) {
+    wlCount.textContent = '';
+    document.getElementById('wl-table').innerHTML = '<div class="empty-state">Hit Refresh to load your watchlist</div>';
+  } else {
+    wlCount.textContent = '';
+    document.getElementById('wl-table').innerHTML = '<div class="empty-state">Add tickers above then hit Refresh to track them here</div>';
+  }
+
   document.getElementById('top-table').innerHTML = buildMomTable(sp.slice(0,10), max, min, rng);
   document.getElementById('bot-table').innerHTML = buildMomTable([...sp].reverse().slice(0,5), max, min, rng);
+}
+
+function buildWatchlistTable(rows) {
+  if (!rows.length) return '<div class="empty-state">No watchlist data</div>';
+  const head = `<thead><tr>
+    <th>Ticker</th>
+    <th class="r">Price</th>
+    <th class="r">RSI (14)</th>
+    <th class="r">ROC 20d</th>
+    <th>MA Cross</th>
+    <th class="r">Signal</th>
+  </tr></thead>`;
+  const body = rows.map((d,i) => {
+    const rc  = d.rsi==null?'c-muted':d.rsi>70?'c-amber':d.rsi<30?'c-green':'c-muted';
+    const cc  = d.roc==null?'':d.roc>=0?'c-green':'c-red';
+    const mc  = d.ma.includes('Golden')?'c-green':d.ma.includes('Death')?'c-red':'c-muted';
+    const rsiFlag = d.rsi>70?' &#128293;':d.rsi<30?' &#129398;':'';
+
+    // Simple signal label based on RSI + ROC
+    let sig='', sigClass='c-muted';
+    const r=d.rsi??50, c=d.roc??0;
+    if (r>70)              { sig='Overbought'; sigClass='c-amber'; }
+    else if (r<30)         { sig='Oversold';   sigClass='c-green'; }
+    else if (r>55 && c>0)  { sig='Bullish &#9650;';   sigClass='c-green'; }
+    else if (r<45 && c<0)  { sig='Bearish &#9660;';   sigClass='c-red';   }
+    else                   { sig='Neutral';    sigClass='c-muted'; }
+
+    return `<tr style="animation-delay:${i*30}ms">
+      <td class="ticker-cell">${d.ticker}</td>
+      <td class="r">$${d.price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td class="r ${rc}">${d.rsi??'&#8212;'}${rsiFlag}</td>
+      <td class="r ${cc}">${d.roc!=null?(d.roc>=0?'+':'')+d.roc+'%':'&#8212;'}</td>
+      <td class="${mc}">${d.ma}</td>
+      <td class="r ${sigClass}">${sig}</td>
+    </tr>`;
+  }).join('');
+  return `<table>${head}<tbody>${body}</tbody></table>`;
 }
 
 function buildMomTable(rows, maxS, minS, rng) {
