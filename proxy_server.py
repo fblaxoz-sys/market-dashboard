@@ -71,14 +71,20 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
     }
     CORE_IDS = ['INDPRO', 'PAYEMS', 'RSAFS', 'UMCSENT']  # go into DFM
 
-    # ── Fetch helper ─────────────────────────────────────────────────────
+    # ── Fetch helper ──────────────────────────────────────────────────────
+    # NOTE on vintage data: naive initial-release (output_type=4) on GDP levels
+    # is corrupted by base-year rebasings — the YoY ratio across first-prints
+    # produces spurious 12-15% "growth". Proper real-time GDP needs full ALFRED
+    # vintage replay (future work), so GDP uses revised levels (consistent base).
+    def _get(url):
+        with urllib.request.urlopen(url, timeout=25) as r:
+            return json.loads(r.read())
     def fetch(sid, limit, freq=None):
+        base = (f"https://api.stlouisfed.org/fred/series/observations"
+                f"?series_id={sid}&api_key={fred_key}"
+                f"&sort_order=desc&limit={limit}&file_type=json")
         freq_param = f"&frequency={freq}&aggregation_method=avg" if freq else ""
-        url = (f"https://api.stlouisfed.org/fred/series/observations"
-               f"?series_id={sid}&api_key={fred_key}"
-               f"&sort_order=desc&limit={limit}&file_type=json{freq_param}")
-        with urllib.request.urlopen(url, timeout=20) as r:
-            data = json.loads(r.read())
+        data = _get(base + freq_param)
         if 'observations' not in data:
             raise ValueError(f"FRED error {sid}: {data}")
         rows = [(o['date'], float(o['value']))
@@ -207,6 +213,11 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
     perm_q = to_q('PERMIT')                   # building permits, YoY
     if perm_q is not None:
         df['permits_yoy'] = (perm_q / perm_q.shift(4) - 1) * 100
+
+    # COVID flag: 2020-2021 were ±30% outliers that distort training for every
+    # other period. The flag lets models isolate them (it's 0 for normal times,
+    # including the live nowcast, so it never affects current predictions).
+    df['covid'] = ((df.index >= '2020-02-01') & (df.index <= '2021-12-31')).astype(float)
 
     df = df.dropna()
     feat_cols = [c for c in df.columns if c != 'gdp']
@@ -541,13 +552,22 @@ def run_inflation_nowcast(fred_key, bt_months=24):
         'FEDFUNDS':      ('lvl',  None),  # policy rate
     }
 
+    VINTAGE = "&output_type=4&realtime_start=1776-07-04&realtime_end=9999-12-31"
+    def _get(u):
+        with urllib.request.urlopen(u, timeout=25) as r:
+            return json.loads(r.read())
+    def _n_obs(d):
+        return len([o for o in d.get('observations', []) if o['value'] != '.'])
     def fetch(sid, freq=None):
-        fp = f"&frequency={freq}&aggregation_method=avg" if freq else ""
-        url = (f"https://api.stlouisfed.org/fred/series/observations"
-               f"?series_id={sid}&api_key={fred_key}&sort_order=desc"
-               f"&limit={L}&file_type=json{fp}")
-        with urllib.request.urlopen(url, timeout=20) as r:
-            d = json.loads(r.read())
+        base = (f"https://api.stlouisfed.org/fred/series/observations"
+                f"?series_id={sid}&api_key={fred_key}&sort_order=desc"
+                f"&limit={L}&file_type=json")
+        if freq:                       # rate/market series — not revised
+            d = _get(base + f"&frequency={freq}&aggregation_method=avg")
+        else:                          # revised macro series → initial release …
+            d = _get(base + VINTAGE)
+            if _n_obs(d) < 0.8 * L:    # … unless vintage archive too short → revised
+                d = _get(base)
         rows = [(o['date'], float(o['value'])) for o in d.get('observations', [])
                 if o['value'] != '.']
         rows.reverse()
@@ -579,11 +599,13 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     for sid in SERIES:
         if sid != 'CPIAUCSL' and sid in raw:
             df[sid.lower()] = raw[sid]
+    # COVID flag (2020-2021 base-effect distortions). 0 for normal times incl. now.
+    df['covid'] = ((df.index >= '2020-02-01') & (df.index <= '2021-12-31')).astype(float)
     # Ragged edge: some drivers publish later than CPI. Forward-fill them so the
     # most recent CPI month is kept (otherwise dropna would discard it and the
     # forecast would lag a month behind the data).
     df = df.ffill().dropna()
-    feat_cols = list(df.columns)            # cpi + lag + mom + drivers
+    feat_cols = list(df.columns)            # cpi + lag + mom + drivers + covid
     target = df['cpi'].shift(-1)            # predict NEXT month's CPI YoY
     data = df.copy(); data['__y__'] = target; data = data.dropna()
     X_all = data[feat_cols].values
