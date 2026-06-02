@@ -721,24 +721,45 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     if _has_ar and not all(p != p for p in arima_pred):
         mem_pred['ARIMA'] = arima_pred; mem_names.append('ARIMA')
 
-    # Per-member RMSE → inverse-RMSE² weights (best model dominates)
+    # Per-member overall RMSE (for display + final-forecast eligibility)
     _act = np.array([a for (_, a, _) in wf_meta])
     mem_rmse = {}
     for n in mem_names:
         p = np.array(mem_pred[n], float); msk = ~np.isnan(p)
         mem_rmse[n] = float(np.sqrt(np.mean((p[msk]-_act[msk])**2))) if msk.any() else 1e9
-    _raw = {n: 1.0/(mem_rmse[n]**2 + 1e-6) for n in mem_names}
-    _sw = sum(_raw.values()); mem_wt = {n: _raw[n]/_sw for n in mem_names}
-    print("  [inf] recipe weights: " + ", ".join(f"{n} {mem_wt[n]*100:.0f}%" for n in
-          sorted(mem_names, key=lambda x: -mem_wt[x])))
 
+    def _inv2(names, rmses):
+        raw = {n: 1.0/(rmses[n]**2 + 1e-6) for n in names}
+        s = sum(raw.values()) or 1.0
+        return {n: raw[n]/s for n in names}
+
+    # ── QUALITY GATE: drop any model running worse than 0.50pp ─────────────
+    # Applied per-month using only each model's track record SO FAR (no
+    # hindsight). A model that's been off by >0.50pp is benched for that month;
+    # the remaining models are blended by inverse-RMSE². Falls back to the single
+    # best model in the rare month where none qualify.
+    THRESH, MIN_HIST = 0.50, 12
     wf = []
     for idx, (d, a, pv) in enumerate(wf_meta):
-        num = den = 0.0
+        trail = {}
         for n in mem_names:
-            v = mem_pred[n][idx]
-            if v == v: num += mem_wt[n]*v; den += mem_wt[n]
-        wf.append((d, a, (num/den if den else a), pv))
+            if idx >= MIN_HIST:
+                e = [(mem_pred[n][j]-_act[j])**2 for j in range(idx) if mem_pred[n][j] == mem_pred[n][j]]
+                trail[n] = (sum(e)/len(e))**0.5 if e else 1e9
+            else:
+                trail[n] = mem_rmse[n]
+        qual = [n for n in mem_names if trail[n] <= THRESH and mem_pred[n][idx] == mem_pred[n][idx]]
+        if not qual:
+            qual = [min(mem_names, key=lambda n: trail[n])]
+        w = _inv2(qual, trail)
+        wf.append((d, a, sum(w[n]*mem_pred[n][idx] for n in qual), pv))
+
+    # Final-forecast eligibility: members within 0.50pp over the full backtest
+    fc_members = [n for n in mem_names if mem_rmse[n] <= THRESH] or [min(mem_names, key=lambda n: mem_rmse[n])]
+    mem_wt = _inv2(fc_members, mem_rmse)
+    for n in mem_names: mem_wt.setdefault(n, 0.0)   # excluded models → 0 weight
+    print(f"  [inf] eligible (<=0.50pp): " + ", ".join(f"{n} {mem_wt[n]*100:.0f}%(±{mem_rmse[n]:.2f})"
+          for n in sorted(mem_names, key=lambda x: -mem_wt[x])))
 
     wf_err  = [abs(p-a) for (_, a, p, _) in wf]
     wf_mae  = float(np.mean(wf_err)) if wf_err else 0.0
