@@ -507,17 +507,39 @@ function calcScore(r, c) {
   return +((( r??50)*0.4 + (c??0)*0.6)).toFixed(2);
 }
 
-async function fetchTicker(ticker) {
-  const to = new Date(), from = new Date();
-  from.setFullYear(from.getFullYear()-1);
-  const fmt = d => d.toISOString().split('T')[0];
+// ── GROUPED DAILY FETCH + CACHE ───────────────────────────────────────
+// Polygon's grouped endpoint returns EVERY US stock's close for one day in a
+// single call. So cost = number of trading days (not number of tickers).
+// Each closed day's data is immutable, so we cache it in localStorage and
+// only ever fetch days we don't already have. Repeat loads are near-instant.
+
+const DAY_CACHE_PREFIX = 'grp_';
+const NEED_TRADING_DAYS = 30;   // enough for RSI(14) + ROC(20); first load ~6 min
+const MAX_HISTORY_DAYS  = 220;  // cap used for MA cross (golden/death needs 200)
+
+function getCachedDay(ds) {
+  const v = localStorage.getItem(DAY_CACHE_PREFIX + ds);
+  return v ? JSON.parse(v) : null;
+}
+function setCachedDay(ds, obj) {
+  try { localStorage.setItem(DAY_CACHE_PREFIX + ds, JSON.stringify(obj)); } catch(e) {}
+}
+function pruneOldCache() {
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 300);
+  const cutStr = cutoff.toISOString().split('T')[0];
+  Object.keys(localStorage)
+    .filter(k => k.startsWith(DAY_CACHE_PREFIX) && k.slice(4) < cutStr)
+    .forEach(k => localStorage.removeItem(k));
+}
+
+async function fetchGroupedDay(ds) {
   try {
     const res = await fetch(
-      `https://api.polygon.io/v2/aggs/ticker/${ticker}/range/1/day/${fmt(from)}/${fmt(to)}?adjusted=true&sort=asc&limit=300&apiKey=${polyKey}`
+      `https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/${ds}?adjusted=true&apiKey=${polyKey}`
     );
     if (res.status === 429) return 'RATE_LIMIT';
     const j = await res.json();
-    return j.results ? j.results.map(x => x.c) : null;
+    return j.results || null;   // null = market closed that day (weekend/holiday)
   } catch { return null; }
 }
 
@@ -533,53 +555,78 @@ async function loadMomentum() {
   const lbl  = document.getElementById('mom-prog-lbl');
   prog.classList.add('visible');
 
-  // Watchlist tickers first so they populate before the S&P 500 list
-  const wlUpper = watchlist.map(t=>t.toUpperCase());
+  pruneOldCache();
+
+  const wlUpper = watchlist.map(t => t.toUpperCase());
   const wlSet   = new Set(wlUpper);
-  const tickers = [...new Set([...wlUpper, ...SP500])];
-  const wlTotal = wlUpper.length;
+  const tracked = new Set([...wlUpper, ...SP500]);   // only store these to fit localStorage
+
+  // ── Phase 1: ensure the most recent NEED_TRADING_DAYS are cached ──────
+  let tradingDays = 0, fetched = 0, attempts = 0, i = 1;
+  const today = new Date();
+
+  while (tradingDays < NEED_TRADING_DAYS && attempts < 70) {
+    const d = new Date(today); d.setDate(d.getDate() - i); i++;
+    const dow = d.getDay();
+    if (dow === 0 || dow === 6) continue;            // skip weekends
+    const ds = d.toISOString().split('T')[0];
+    attempts++;
+
+    let dayData = getCachedDay(ds);
+    if (dayData === null) {
+      lbl.textContent = `Fetching market day ${ds}... (${tradingDays}/${NEED_TRADING_DAYS} days, ${fetched} new)`;
+      let res = await fetchGroupedDay(ds);
+      if (res === 'RATE_LIMIT') {
+        lbl.textContent = `Rate limited — waiting 15s...`;
+        await sleep(15000);
+        res = await fetchGroupedDay(ds);
+      }
+      if (res === 'RATE_LIMIT') continue;
+      if (res === null) { setCachedDay(ds, {}); continue; }   // holiday → cache empty
+
+      dayData = {};
+      for (const row of res) if (tracked.has(row.T)) dayData[row.T] = row.c;
+      setCachedDay(ds, dayData);
+      fetched++;
+      await sleep(12000);                             // 5 req/min free tier
+    }
+
+    if (Object.keys(dayData).length) {
+      tradingDays++;
+      fill.style.width = Math.round((tradingDays / NEED_TRADING_DAYS) * 100) + '%';
+    }
+  }
+
+  // ── Phase 2: build per-ticker close series from ALL cached days ───────
+  // (uses accumulated history → MA cross activates over time, no extra calls)
+  const cachedDates = Object.keys(localStorage)
+    .filter(k => k.startsWith(DAY_CACHE_PREFIX))
+    .map(k => k.slice(4))
+    .sort()                       // date strings sort chronologically
+    .slice(-MAX_HISTORY_DAYS);
+
+  const perTicker = {};
+  for (const ds of cachedDates) {
+    const data = getCachedDay(ds);
+    if (!data) continue;
+    for (const t in data) (perTicker[t] ||= []).push(data[t]);
+  }
+
+  // ── Build results ────────────────────────────────────────────────────
   const results = [];
-  let done = 0;
-
-  for (const ticker of tickers) {
-    const inWatchlist = wlSet.has(ticker);
-    const phase = done < wlTotal ? `Watchlist ${done+1}/${wlTotal}` : `S&P ${done-wlTotal+1}/${tickers.length-wlTotal}`;
-    lbl.textContent = `Fetching ${ticker}... (${phase})`;
-    fill.style.width = Math.round((done/tickers.length)*100) + '%';
-
-    let closes = await fetchTicker(ticker);
-
-    if (closes === 'RATE_LIMIT') {
-      lbl.textContent = `Rate limited — waiting 15s, then retrying ${ticker}...`;
-      await sleep(15000);
-      closes = await fetchTicker(ticker);
-    }
-
-    done++;
-
-    if (closes && closes !== 'RATE_LIMIT' && closes.length >= 25) {
-      const r = calcRSI(closes), roc = calcROC(closes);
-      results.push({
-        ticker,
-        price:  +closes[closes.length-1].toFixed(2),
-        rsi:    r,
-        roc:    roc,
-        ma:     calcMA(closes),
-        score:  calcScore(r, roc),
-        source: inWatchlist ? 'wl' : 'sp500'
-      });
-    }
-
-    // While still loading the watchlist, refresh after every ticker so it
-    // fills in row-by-row. Once into the S&P list, update every 5.
-    const stillOnWatchlist = done <= wlTotal;
-    if (results.length && (stillOnWatchlist || done % 5 === 0)) {
-      const sorted = [...results].sort((a,b) => b.score-a.score);
-      renderMomStats(sorted);
-      renderMomTables(sorted);
-    }
-
-    await sleep(12000); // 5 req/min for free tier
+  for (const ticker of tracked) {
+    const closes = perTicker[ticker];
+    if (!closes || closes.length < 22) continue;     // need enough for RSI/ROC
+    const r = calcRSI(closes), roc = calcROC(closes);
+    results.push({
+      ticker,
+      price:  +closes[closes.length-1].toFixed(2),
+      rsi:    r,
+      roc:    roc,
+      ma:     calcMA(closes),
+      score:  calcScore(r, roc),
+      source: wlSet.has(ticker) ? 'wl' : 'sp500'
+    });
   }
 
   results.sort((a,b) => b.score-a.score);
@@ -587,7 +634,10 @@ async function loadMomentum() {
   renderMomStats(results);
   renderMomTables(results);
   prog.classList.remove('visible');
-  document.getElementById('mom-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+
+  const histNote = cachedDates.length >= 200 ? '' : ` · ${cachedDates.length}d history (MA cross unlocks at 200d)`;
+  document.getElementById('mom-updated').textContent =
+    'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) + histNote;
   btn.disabled = false;
   document.getElementById('mom-refresh-icon').textContent = '\u21BB';
 }
