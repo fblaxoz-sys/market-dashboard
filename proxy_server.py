@@ -5,8 +5,28 @@ Local dev server for Market Dashboard.
   GET /gdp-nowcast?fred_key=<k>&quarters=<n>  — DFM + XGBoost nowcast
   Everything else                             — static files from Downloads/
 """
-from http.server import HTTPServer, SimpleHTTPRequestHandler
-import urllib.request, urllib.parse, json, os, traceback, time
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+import urllib.request, urllib.parse, json, os, traceback, time, threading
+
+# Serialize heavy ML jobs (one at a time → avoids OOM on 512MB free tier) and
+# cache results so repeat clicks are instant instead of recomputing for minutes.
+_ML_LOCK  = threading.Lock()
+_ML_CACHE = {}          # key -> (timestamp, result_dict)
+_ML_TTL   = 6 * 3600    # serve cached result for 6 hours
+
+def cached_ml(key, fn):
+    now = time.time()
+    hit = _ML_CACHE.get(key)
+    if hit and now - hit[0] < _ML_TTL:
+        print(f"[cache] hit for {key}")
+        return hit[1]
+    with _ML_LOCK:                      # only one heavy job runs at a time
+        hit = _ML_CACHE.get(key)        # re-check after acquiring lock
+        if hit and time.time() - hit[0] < _ML_TTL:
+            return hit[1]
+        result = fn()
+        _ML_CACHE[key] = (time.time(), result)
+        return result
 
 # ── NOWCAST MODEL ────────────────────────────────────────────────────────────
 
@@ -360,8 +380,9 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
           + (f" (dropped: {', '.join(dropped)})" if dropped else ""))
     names = all_names   # for metrics reporting
 
-    if feat_imp is None:
-        feat_imp = {c: 0.0 for c in feat_cols}
+    if feat_imp is None:   # no boosters → use RandomForest importances
+        imp = rf.feature_importances_.astype(float)
+        feat_imp = dict(zip(feat_cols, (imp / max(imp.sum(), 1e-9)).tolist()))
 
     # ── 25-YEAR WALK-FORWARD BACKTEST (expanding window, no leakage) ───────
     # At each quarter we retrain a fast strong-model ensemble on ONLY the data
@@ -586,8 +607,8 @@ def run_inflation_nowcast(fred_key, bt_months=24):
 
     tab('Ridge', Ridge(alpha=1.0), True)
     tab('ElasticNet', ElasticNet(alpha=0.3, l1_ratio=0.5, max_iter=5000), True)
-    tab('RandomForest', RandomForestRegressor(n_estimators=300, max_depth=5,
-                                              min_samples_leaf=2, random_state=42))
+    rf = tab('RandomForest', RandomForestRegressor(n_estimators=300, max_depth=5,
+                                                   min_samples_leaf=2, random_state=42))
     if HAS_XGB:
         xgb = tab('XGBoost', XGBRegressor(n_estimators=150, learning_rate=0.05,
                   max_depth=3, subsample=0.8, colsample_bytree=0.8,
@@ -609,8 +630,9 @@ def run_inflation_nowcast(fred_key, bt_months=24):
         tab('CatBoost', CatBoostRegressor(iterations=200, learning_rate=0.05,
             depth=3, verbose=0, random_state=42))
     except Exception as e: print(f"    CatBoost skip: {e}")
-    if feat_imp is None:
-        feat_imp = {c: 0.0 for c in feat_cols}
+    if feat_imp is None:   # no boosters → use RandomForest importances
+        imp = rf.feature_importances_.astype(float)
+        feat_imp = dict(zip(feat_cols, (imp/max(imp.sum(),1e-9)).tolist()))
 
     # ── Walk-forward (expanding window, monthly) ──────────────────────────
     print("  [inf] walk-forward …")
@@ -730,8 +752,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not fred_key:
                 self.send_error(400, 'fred_key required'); return
             try:
-                print(f"\n[nowcast] Starting model ({quarters} quarters backtest) …")
-                result  = run_gdp_nowcast(fred_key, quarters)
+                print(f"\n[nowcast] Request ({quarters} quarters backtest) …")
+                result  = cached_ml(f"gdp:{quarters}", lambda: run_gdp_nowcast(fred_key, quarters))
                 payload = json.dumps(result).encode()
                 print(f"[nowcast] Done → {result['nowcast']['value']}%")
                 self.send_response(200)
@@ -755,8 +777,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not fred_key:
                 self.send_error(400, 'fred_key required'); return
             try:
-                print(f"\n[inflation] Starting model ({months} months backtest) …")
-                result  = run_inflation_nowcast(fred_key, months)
+                print(f"\n[inflation] Request ({months} months backtest) …")
+                result  = cached_ml(f"inf:{months}", lambda: run_inflation_nowcast(fred_key, months))
                 payload = json.dumps(result).encode()
                 print(f"[inflation] Done → {result['nowcast']['value']}%")
                 self.send_response(200)
@@ -783,4 +805,4 @@ if __name__ == '__main__':
     PORT = int(os.environ.get('PORT', 8765))
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     print(f'Server → http://0.0.0.0:{PORT}')
-    HTTPServer(('', PORT), Handler).serve_forever()
+    ThreadingHTTPServer(('', PORT), Handler).serve_forever()

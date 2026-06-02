@@ -1,7 +1,6 @@
+# Kept lean to fit Render's 512MB free tier. sklearn's HistGradientBoosting
+# replaces XGBoost/LightGBM/CatBoost (nearly as accurate, far less memory).
 statsmodels>=0.14.0
 scikit-learn>=1.3.0
-xgboost>=2.0.0
-lightgbm>=4.0.0
-catboost>=1.2.0
 pandas>=2.0.0
 numpy>=1.24.0
