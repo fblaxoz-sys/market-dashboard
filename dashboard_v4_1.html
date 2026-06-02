@@ -338,7 +338,7 @@ td.r{text-align:right;}
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
     <div>
       <h2 style="font-size:22px;font-weight:800;">Inflation Predictor</h2>
-      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Live FRED data &mdash; ML ensemble (86% within ±0.55pp, 25-yr validated)</p>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Live FRED data &mdash; ML ensemble + momentum &amp; trend gauges, with prediction intervals</p>
     </div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span id="inf-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
@@ -1369,7 +1369,8 @@ async function runInflationML() {
     const m = d.metrics;
 
     document.getElementById('inf-ml-month').textContent = d.nowcast.month;
-    document.getElementById('inf-ml-val').textContent   = d.nowcast.value + '%';
+    document.getElementById('inf-ml-val').innerHTML =
+      `${d.nowcast.value}% <span style="font-size:13px;color:var(--muted)">(${d.nowcast.low}–${d.nowcast.high}%)</span>`;
     const diff = (d.nowcast.value - d.nowcast.last_actual).toFixed(2);
     const pathStr = (d.forecasts || []).map(f => `${f.month}: ${f.value}%`).join('  ·  ');
 
@@ -1384,10 +1385,12 @@ async function runInflationML() {
     };
     // Card 1: the single next-month ML nowcast (the only thing we forecast)
     if (fc[0]) {
+      const lo = fc[0].low ?? d.nowcast.low, hi = fc[0].high ?? d.nowcast.high;
       document.getElementById('inf-main-m1').textContent = fc[0].month + ' (forecast)';
-      document.getElementById('inf-main-v1').textContent = fc[0].value + '%';
+      document.getElementById('inf-main-v1').innerHTML =
+        `${fc[0].value}% <span style="font-size:14px;color:var(--muted)">(${lo}–${hi}%)</span>`;
       document.getElementById('inf-main-s1').innerHTML =
-        `${m.accuracy}% accurate within ±${m.acc_band}pp (25-yr walk-forward)`;
+        `${m.accuracy}% land within ±${m.acc_band}pp · range = 85% confidence band`;
       document.getElementById('inf-main-d1').innerHTML = dirHtml(fc[0].value, d.nowcast.last_actual);
     }
     // Card 2: most recent ACTUAL CPI (reference, not a forecast)

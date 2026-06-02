@@ -575,6 +575,10 @@ def run_inflation_nowcast(fred_key, bt_months=24):
         'M2SL':          ('yoy',  None),  # money supply
         'UNRATE':        ('lvl',  None),  # unemployment
         'FEDFUNDS':      ('lvl',  None),  # policy rate
+        # ── underlying-trend gauges (strip out noise) ──
+        'MEDCPIM158SFRBCLE':   ('lvl', None),  # Cleveland median CPI (annualized)
+        'CORESTICKM159SFRBATL':('lvl', None),  # Atlanta sticky-price core CPI YoY
+        'PCETRIM12M159SFRBDAL':('lvl', None),  # Dallas trimmed-mean PCE (12-mo)
     }
 
     VINTAGE = "&output_type=4&realtime_start=1776-07-04&realtime_end=9999-12-31"
@@ -604,12 +608,15 @@ def run_inflation_nowcast(fred_key, bt_months=24):
         return (m / m.shift(12) - 1) * 100 if t == 'yoy' else m
 
     raw = {}
+    cpi_level = None
     for sid, (t, freq) in SERIES.items():
         print(f"  [inf] fetching {sid} …")
         try:
             s = fetch(sid, freq)
             if s is not None and len(s) > 24:
                 raw[sid] = transform(s, t)
+                if sid == 'CPIAUCSL':
+                    cpi_level = s.resample('MS').last()   # keep level for MoM features
         except Exception as e:
             print(f"    skip {sid}: {e}")
         time.sleep(1.0)
@@ -624,6 +631,14 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     for sid in SERIES:
         if sid != 'CPIAUCSL' and sid in raw:
             df[sid.lower()] = raw[sid]
+    # ── Momentum features (month-over-month inflation) ────────────────────
+    # Lets the model react to hot/cold streaks instead of anchoring on YoY.
+    if cpi_level is not None:
+        mom = cpi_level.pct_change() * 100                 # monthly % change
+        df['mom_1']     = mom                              # latest month
+        df['mom_3']     = mom.rolling(3).mean()            # 3-mo average pace
+        df['mom_6']     = mom.rolling(6).mean()            # 6-mo average pace
+        df['mom_accel'] = mom - mom.shift(1).rolling(3).mean()  # speeding up / slowing
     # COVID flag (2020-2021 base-effect distortions). 0 for normal times incl. now.
     df['covid'] = ((df.index >= '2020-02-01') & (df.index <= '2021-12-31')).astype(float)
     # Ragged edge: some drivers publish later than CPI. Forward-fill them so the
@@ -807,7 +822,9 @@ def run_inflation_nowcast(fred_key, bt_months=24):
             num += mem_wt['ARIMA']*float(arima_fc[h]); den += mem_wt['ARIMA']
         pred  = float(num/den) if den else cur_c
         fdate = last_date + pd.DateOffset(months=h+1)
-        forecasts.append({'month': fdate.strftime('%Y-%m'), 'value': round(pred, 2)})
+        # 85% prediction interval from the model's own historical error (acc_band)
+        forecasts.append({'month': fdate.strftime('%Y-%m'), 'value': round(pred, 2),
+                          'low': round(pred - band, 2), 'high': round(pred + band, 2)})
         prev_c, cur_c = cur_c, pred
 
     nowcast_val = forecasts[0]['value']
@@ -822,7 +839,8 @@ def run_inflation_nowcast(fred_key, bt_months=24):
 
     return {
         'nowcast': {'month': nc_date.strftime('%Y-%m'), 'value': round(nowcast_val, 2),
-                    'last_actual': round(last_cpi, 2)},
+                    'last_actual': round(last_cpi, 2),
+                    'low': round(nowcast_val - band, 2), 'high': round(nowcast_val + band, 2)},
         'forecasts': forecasts,                 # multi-month forward path
         'last_actual_month': last_date.strftime('%Y-%m'),
         'history': history,
