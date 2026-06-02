@@ -716,7 +716,8 @@ def run_inflation_nowcast(fred_key, bt_months=24):
         if _has_ar:
             try: arima_pred.append(float(np.asarray(_AR(yt, order=(1,1,1)).fit().forecast(1), float)[0]))
             except Exception: arima_pred.append(float('nan'))
-        wf_meta.append((dates[i], float(y_all[i]), float(data['cpi'].values[i])))
+        # label by the month being PREDICTED (target = feature month + 1), not the feature month
+        wf_meta.append((dates[i] + pd.DateOffset(months=1), float(y_all[i]), float(data['cpi'].values[i])))
     if _has_ar and not all(p != p for p in arima_pred):
         mem_pred['ARIMA'] = arima_pred; mem_names.append('ARIMA')
 
