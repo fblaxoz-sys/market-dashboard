@@ -406,36 +406,65 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
     try:    from statsmodels.tsa.arima.model import ARIMA as _AR; _has_ar = True
     except Exception: _has_ar = False
 
+    _HGB = HistGradientBoostingRegressor
+    # Recipe members (HistGBM always included so there's a strong tree model even
+    # when LightGBM isn't installed, e.g. on the free tier).
+    member_defs = {
+        'Ridge':      ('lin',  lambda: _R(alpha=1.0)),
+        'ElasticNet': ('lin',  lambda: _EN(alpha=0.3, l1_ratio=0.5, max_iter=5000)),
+        'HistGBM':    ('tree', lambda: _HGB(max_iter=200, learning_rate=0.05, max_depth=3, random_state=42)),
+    }
+    if _has_lg:
+        member_defs['LightGBM'] = ('tree', lambda: _LG(n_estimators=150, learning_rate=0.05,
+                                   max_depth=3, num_leaves=15, verbose=-1, random_state=42))
+    mem_names = list(member_defs.keys())
+
     Xall, yall = df[feat_cols].values, df['gdp'].values
     dates_all  = list(df.index)
     min_train  = max(24, len(df) // 3)
-    wf = []
+
+    mem_pred = {n: [] for n in mem_names}
+    arima_pred, wf_meta = [], []
     for i in range(min_train, len(df)):
         Xtr_w, ytr_w, Xte_w = Xall[:i], yall[:i], Xall[i:i+1]
         sc = StandardScaler().fit(Xtr_w)
         Xtr_s, Xte_s = sc.transform(Xtr_w), sc.transform(Xte_w)
-        members = [
-            _R(alpha=1.0).fit(Xtr_s, ytr_w).predict(Xte_s)[0],
-            _EN(alpha=0.3, l1_ratio=0.5, max_iter=5000).fit(Xtr_s, ytr_w).predict(Xte_s)[0],
-        ]
-        if _has_lg:
-            members.append(_LG(n_estimators=150, learning_rate=0.05, max_depth=3,
-                               num_leaves=15, verbose=-1, random_state=42)
-                           .fit(Xtr_w, ytr_w).predict(Xte_w)[0])
+        for n, (kind, mk) in member_defs.items():
+            if kind == 'lin': mem_pred[n].append(mk().fit(Xtr_s, ytr_w).predict(Xte_s)[0])
+            else:             mem_pred[n].append(mk().fit(Xtr_w, ytr_w).predict(Xte_w)[0])
         if _has_ar:
-            try:
-                members.append(float(np.asarray(
-                    _AR(ytr_w, order=(1,1,1)).fit().forecast(1), float)[0]))
-            except Exception:
-                pass
-        wf.append((dates_all[i], float(yall[i]), float(np.mean(members)), float(yall[i-1])))
+            try: arima_pred.append(float(np.asarray(_AR(ytr_w, order=(1,1,1)).fit().forecast(1), float)[0]))
+            except Exception: arima_pred.append(float('nan'))
+        wf_meta.append((dates_all[i], float(yall[i]), float(yall[i-1])))
+    if _has_ar and not all(p != p for p in arima_pred):
+        mem_pred['ARIMA'] = arima_pred; mem_names.append('ARIMA')
+
+    # Per-member out-of-sample RMSE → inverse-RMSE² weights (best model dominates)
+    actuals = np.array([a for (_, a, _) in wf_meta])
+    mem_rmse = {}
+    for n in mem_names:
+        p = np.array(mem_pred[n], float); msk = ~np.isnan(p)
+        mem_rmse[n] = float(np.sqrt(np.mean((p[msk] - actuals[msk])**2))) if msk.any() else 1e9
+    _raw = {n: 1.0 / (mem_rmse[n]**2 + 1e-6) for n in mem_names}
+    _sw  = sum(_raw.values())
+    mem_wt = {n: _raw[n] / _sw for n in mem_names}
+    print("  Recipe weights: " + ", ".join(f"{n} {mem_wt[n]*100:.0f}%(±{mem_rmse[n]:.2f})" for n in
+          sorted(mem_names, key=lambda x: -mem_wt[x])))
+
+    # Weighted walk-forward ensemble
+    wf = []
+    for idx, (d, a, pv) in enumerate(wf_meta):
+        num = den = 0.0
+        for n in mem_names:
+            v = mem_pred[n][idx]
+            if v == v: num += mem_wt[n] * v; den += mem_wt[n]
+        wf.append((d, a, (num/den if den else a), pv))
 
     wf_err  = [abs(p - a) for (_, a, p, _) in wf]
     wf_mae  = float(np.mean(wf_err)) if wf_err else 0.0
     wf_rmse = float(np.sqrt(np.mean([(p-a)**2 for (_, a, p, _) in wf]))) if wf else 0.0
     wf_dir  = (float(np.mean([1.0 if ((a-pv)*(p-pv) >= 0) else 0.0
                               for (_, a, p, pv) in wf])) * 100) if wf else 0.0
-    # Smallest tolerance band achieving >=85% within-band accuracy
     def acc_at(tol): return float(np.mean([e <= tol for e in wf_err])) if wf_err else 0.0
     wf_band = next((t/10 for t in range(3, 41) if acc_at(t/10) >= 0.85), 4.0)
     wf_acc  = round(acc_at(wf_band) * 100)
@@ -446,24 +475,20 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
                 'predicted': round(p, 2), 'err': round(p - a, 2),
                 'dir_ok': bool((a-pv)*(p-pv) >= 0)} for (d, a, p, pv) in wf]
 
-    # Nowcast from the SAME validated recipe (so the 86% claim describes it):
-    # refit the walk-forward members on ALL data and average.
-    sc_full = StandardScaler().fit(Xall)
-    nc_full_s = sc_full.transform(nc_X)
-    nc_members = [
-        _R(alpha=1.0).fit(sc_full.transform(Xall), yall).predict(nc_full_s)[0],
-        _EN(alpha=0.3, l1_ratio=0.5, max_iter=5000).fit(sc_full.transform(Xall), yall).predict(nc_full_s)[0],
-    ]
-    if _has_lg:
-        nc_members.append(_LG(n_estimators=150, learning_rate=0.05, max_depth=3,
-                              num_leaves=15, verbose=-1, random_state=42)
-                          .fit(Xall, yall).predict(nc_X)[0])
-    if _has_ar:
-        try:
-            nc_members.append(float(np.asarray(_AR(yall, order=(1,1,1)).fit().forecast(1), float)[0]))
-        except Exception:
-            pass
-    nowcast_val = float(np.mean(nc_members))
+    # Nowcast: same members refit on ALL data, blended with the same weights
+    sc_full = StandardScaler().fit(Xall); nc_full_s = sc_full.transform(nc_X)
+    nc_vals = {}
+    for n, (kind, mk) in member_defs.items():
+        nc_vals[n] = (mk().fit(sc_full.transform(Xall), yall).predict(nc_full_s)[0] if kind == 'lin'
+                      else mk().fit(Xall, yall).predict(nc_X)[0])
+    if 'ARIMA' in mem_names:
+        try: nc_vals['ARIMA'] = float(np.asarray(_AR(yall, order=(1,1,1)).fit().forecast(1), float)[0])
+        except Exception: nc_vals['ARIMA'] = float('nan')
+    num = den = 0.0
+    for n in mem_names:
+        v = nc_vals.get(n, float('nan'))
+        if v == v: num += mem_wt[n] * v; den += mem_wt[n]
+    nowcast_val = float(num/den) if den else float(np.mean(list(nc_vals.values())))
 
     last_gdp_date  = gdpc1.index[-1]
     nowcast_date   = last_gdp_date + pd.DateOffset(months=3)
@@ -511,9 +536,9 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
             'rmse_in':     rmse_in,
             'rmse_out':    round(blend_rmse, 3),
             'n_features':  len(feat_cols),
-            'n_models':    len(names),
-            'model_rmse':  {n: round(models[n]['rmse'], 3) for n in names},
-            'model_wt':    {n: round(weights[n], 3) for n in names},
+            'n_models':    len(mem_names),
+            'model_rmse':  {n: round(mem_rmse[n], 3) for n in mem_names},
+            'model_wt':    {n: round(mem_wt[n], 3) for n in mem_names},
             'feat_imp':    {k: round(v, 3) for k, v in
                             sorted(feat_imp.items(), key=lambda x: -x[1])},
         },
@@ -659,7 +684,7 @@ def run_inflation_nowcast(fred_key, bt_months=24):
         imp = rf.feature_importances_.astype(float)
         feat_imp = dict(zip(feat_cols, (imp/max(imp.sum(),1e-9)).tolist()))
 
-    # ── Walk-forward (expanding window, monthly) ──────────────────────────
+    # ── Walk-forward (expanding window, monthly, performance-weighted) ─────
     print("  [inf] walk-forward …")
     from sklearn.linear_model import Ridge as _R, ElasticNet as _EN
     try:    from lightgbm import LGBMRegressor as _LG; _has_lg = True
@@ -667,23 +692,52 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     try:    from statsmodels.tsa.arima.model import ARIMA as _AR; _has_ar = True
     except Exception: _has_ar = False
 
+    _HGB = HistGradientBoostingRegressor
+    member_defs = {
+        'Ridge':      ('lin',  lambda: _R(alpha=1.0)),
+        'ElasticNet': ('lin',  lambda: _EN(alpha=0.3, l1_ratio=0.5, max_iter=5000)),
+        'HistGBM':    ('tree', lambda: _HGB(max_iter=200, learning_rate=0.05, max_depth=3, random_state=42)),
+    }
+    if _has_lg:
+        member_defs['LightGBM'] = ('tree', lambda: _LG(n_estimators=150, learning_rate=0.05,
+                                   max_depth=3, num_leaves=15, verbose=-1, random_state=42))
+    mem_names = list(member_defs.keys())
+
     min_train = max(60, len(data) // 3)
-    wf = []
+    mem_pred = {n: [] for n in mem_names}
+    arima_pred, wf_meta = [], []
     for i in range(min_train, len(data)):
         Xt, yt, Xv = X_all[:i], y_all[:i], X_all[i:i+1]
         sc = StandardScaler().fit(Xt)
-        members = [
-            _R(alpha=1.0).fit(sc.transform(Xt), yt).predict(sc.transform(Xv))[0],
-            _EN(alpha=0.3, l1_ratio=0.5, max_iter=5000).fit(sc.transform(Xt), yt).predict(sc.transform(Xv))[0],
-        ]
-        if _has_lg:
-            members.append(_LG(n_estimators=150, learning_rate=0.05, max_depth=3,
-                               num_leaves=15, verbose=-1, random_state=42).fit(Xt, yt).predict(Xv)[0])
+        Xts, Xvs = sc.transform(Xt), sc.transform(Xv)
+        for n, (kind, mk) in member_defs.items():
+            if kind == 'lin': mem_pred[n].append(mk().fit(Xts, yt).predict(Xvs)[0])
+            else:             mem_pred[n].append(mk().fit(Xt, yt).predict(Xv)[0])
         if _has_ar:
-            try: members.append(float(np.asarray(_AR(yt, order=(1,1,1)).fit().forecast(1), float)[0]))
-            except Exception: pass
-        wf.append((dates[i], float(y_all[i]), float(np.mean(members)),
-                   float(data['cpi'].values[i])))   # prev = current-month CPI YoY
+            try: arima_pred.append(float(np.asarray(_AR(yt, order=(1,1,1)).fit().forecast(1), float)[0]))
+            except Exception: arima_pred.append(float('nan'))
+        wf_meta.append((dates[i], float(y_all[i]), float(data['cpi'].values[i])))
+    if _has_ar and not all(p != p for p in arima_pred):
+        mem_pred['ARIMA'] = arima_pred; mem_names.append('ARIMA')
+
+    # Per-member RMSE → inverse-RMSE² weights (best model dominates)
+    _act = np.array([a for (_, a, _) in wf_meta])
+    mem_rmse = {}
+    for n in mem_names:
+        p = np.array(mem_pred[n], float); msk = ~np.isnan(p)
+        mem_rmse[n] = float(np.sqrt(np.mean((p[msk]-_act[msk])**2))) if msk.any() else 1e9
+    _raw = {n: 1.0/(mem_rmse[n]**2 + 1e-6) for n in mem_names}
+    _sw = sum(_raw.values()); mem_wt = {n: _raw[n]/_sw for n in mem_names}
+    print("  [inf] recipe weights: " + ", ".join(f"{n} {mem_wt[n]*100:.0f}%" for n in
+          sorted(mem_names, key=lambda x: -mem_wt[x])))
+
+    wf = []
+    for idx, (d, a, pv) in enumerate(wf_meta):
+        num = den = 0.0
+        for n in mem_names:
+            v = mem_pred[n][idx]
+            if v == v: num += mem_wt[n]*v; den += mem_wt[n]
+        wf.append((d, a, (num/den if den else a), pv))
 
     wf_err  = [abs(p-a) for (_, a, p, _) in wf]
     wf_mae  = float(np.mean(wf_err)) if wf_err else 0.0
@@ -705,18 +759,13 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     # drivers are held at their latest values. Covers the current month + ahead.
     H = 3
     scf = StandardScaler().fit(X_all)
-    rg  = _R(alpha=1.0).fit(scf.transform(X_all), y_all)
-    en  = _EN(alpha=0.3, l1_ratio=0.5, max_iter=5000).fit(scf.transform(X_all), y_all)
-    rf2 = RandomForestRegressor(n_estimators=300, max_depth=5, min_samples_leaf=2,
-                                random_state=42).fit(X_all, y_all)
-    hg2 = HistGradientBoostingRegressor(max_iter=200, learning_rate=0.05,
-                                        max_depth=3, random_state=42).fit(X_all, y_all)
-    lg2 = None
-    if _has_lg:
-        lg2 = _LG(n_estimators=150, learning_rate=0.05, max_depth=3, num_leaves=15,
-                  verbose=-1, random_state=42).fit(X_all, y_all)
+    fitted = {}                                  # same recipe members, refit on all data
+    for n, (kind, mk) in member_defs.items():
+        est = mk()
+        est.fit(scf.transform(X_all), y_all) if kind == 'lin' else est.fit(X_all, y_all)
+        fitted[n] = (kind, est)
     arima_fc = None
-    if _has_ar:
+    if 'ARIMA' in mem_names:
         try: arima_fc = np.asarray(_AR(y_all, order=(1,1,1)).fit().forecast(H), float)
         except Exception: arima_fc = None
 
@@ -728,11 +777,13 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     forecasts = []
     for h in range(H):
         r = base.copy(); r[ci] = cur_c; r[li] = prev_c; r[mi] = cur_c - prev_c
-        members = [rg.predict(scf.transform([r]))[0], en.predict(scf.transform([r]))[0],
-                   rf2.predict([r])[0], hg2.predict([r])[0]]
-        if lg2 is not None:        members.append(lg2.predict([r])[0])
-        if arima_fc is not None:   members.append(float(arima_fc[h]))
-        pred  = float(np.mean(members))
+        num = den = 0.0
+        for n, (kind, est) in fitted.items():
+            v = est.predict(scf.transform([r]))[0] if kind == 'lin' else est.predict([r])[0]
+            num += mem_wt[n]*v; den += mem_wt[n]
+        if arima_fc is not None and 'ARIMA' in mem_wt:
+            num += mem_wt['ARIMA']*float(arima_fc[h]); den += mem_wt['ARIMA']
+        pred  = float(num/den) if den else cur_c
         fdate = last_date + pd.DateOffset(months=h+1)
         forecasts.append({'month': fdate.strftime('%Y-%m'), 'value': round(pred, 2)})
         prev_c, cur_c = cur_c, pred
@@ -740,13 +791,6 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     nowcast_val = forecasts[0]['value']
     nc_date     = last_date + pd.DateOffset(months=1)
     last_cpi    = float(df['cpi'].iloc[-1])
-
-    # Pruned weights for leaderboard display
-    ranked = sorted(models, key=lambda n: models[n]['rmse'])
-    best = models[ranked[0]]['rmse']
-    kept = [n for n in ranked if models[n]['rmse'] <= 2.5*best] or ranked[:3]
-    raww = {n: 1/(models[n]['rmse']**2+1e-6) for n in kept}
-    ws = sum(raww.values()); wt = {n: (raww[n]/ws if n in kept else 0.0) for n in models}
 
     history = [{'date': d.strftime('%Y-%m'), 'actual': round(a, 2),
                 'predicted': round(p, 2)} for (d, a, p, _) in wf]
@@ -766,9 +810,9 @@ def run_inflation_nowcast(fred_key, bt_months=24):
             'wf_quarters': len(wf), 'wf_start': wf[0][0].strftime('%Y-%m') if wf else None,
             'wf_mae': round(wf_mae, 3), 'wf_rmse': round(wf_rmse, 3),
             'dir_acc': round(wf_dir), 'mae': round(wf_mae, 3),
-            'n_features': len(feat_cols), 'n_models': len(models),
-            'model_rmse': {n: round(models[n]['rmse'], 3) for n in models},
-            'model_wt': {n: round(wt[n], 3) for n in models},
+            'n_features': len(feat_cols), 'n_models': len(mem_names),
+            'model_rmse': {n: round(mem_rmse[n], 3) for n in mem_names},
+            'model_wt': {n: round(mem_wt[n], 3) for n in mem_names},
             'feat_imp': {k: round(v, 3) for k, v in sorted(feat_imp.items(), key=lambda x: -x[1])},
         },
     }

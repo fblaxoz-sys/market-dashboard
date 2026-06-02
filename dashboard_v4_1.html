@@ -1449,6 +1449,21 @@ async function runInflationML() {
         </tr>`).join('')}
       </tbody></table>`;
 
+    // Overlay the 25-yr ML model line onto the CPI trend chart
+    if (cpiChart) {
+      const mlMap = {};
+      (d.history || []).forEach(h => { mlMap[h.date] = h.predicted; });
+      (d.forecasts || []).forEach(f => { mlMap[f.month] = f.value; });
+      const mlLine = cpiChart.data.labels.map(l => l in mlMap ? mlMap[l] : null);
+      cpiChart.data.datasets = cpiChart.data.datasets.filter(ds => ds.label !== 'ML Model (25-yr)');
+      cpiChart.data.datasets.push({
+        label:'ML Model (25-yr)', data: mlLine,
+        borderColor:'#2dd4a0', backgroundColor:'#2dd4a015', tension:0.4,
+        borderWidth:3, pointRadius:3, pointBackgroundColor:'#2dd4a0', spanGaps:false,
+      });
+      cpiChart.update();
+    }
+
   } catch(e) {
     document.getElementById('inf-ml-val').textContent = 'Error';
     document.getElementById('inf-ml-sub').textContent = e.message.slice(0,120);
