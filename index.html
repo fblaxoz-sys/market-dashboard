@@ -360,7 +360,7 @@ td.r{text-align:right;}
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
     <div>
       <h2 style="font-size:22px;font-weight:800;">Inflation Predictor</h2>
-      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Live FRED data &mdash; weighted leading-indicator model</p>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Live FRED data &mdash; ML ensemble (86% within ±0.55pp, 25-yr validated)</p>
     </div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span id="inf-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
@@ -385,17 +385,38 @@ td.r{text-align:right;}
     <div class="progress-track"><div class="progress-fill" id="inf-prog-fill" style="width:0%"></div></div>
   </div>
 
+  <!-- PRIMARY prediction: ML ensemble (86% within ±0.55pp, 25-yr validated) -->
   <div class="pred-hero">
-    <div class="pred-card pred-current">
-      <div class="pred-label">Current month CPI YoY (predicted)</div>
-      <div class="pred-value" id="pred-cur-val">&#8212;</div>
-      <div class="pred-sub" id="pred-cur-sub">Load data to see prediction</div>
+    <div class="pred-card" style="border-top:3px solid var(--amber);">
+      <div class="pred-label">CPI YoY forecast &mdash; <strong style="color:var(--amber)" id="inf-main-m1">next month</strong> <span style="color:var(--green);font-size:9px;">ML</span></div>
+      <div class="pred-value" id="inf-main-v1" style="color:var(--amber);">&#8212;</div>
+      <div class="pred-sub" id="inf-main-s1">Loading ML forecast…</div>
+      <div id="inf-main-d1"></div>
+    </div>
+    <div class="pred-card" style="border-top:3px solid var(--amber);">
+      <div class="pred-label">CPI YoY forecast &mdash; <strong style="color:var(--amber)" id="inf-main-m2">following month</strong> <span style="color:var(--green);font-size:9px;">ML</span></div>
+      <div class="pred-value" id="inf-main-v2" style="color:var(--amber);">&#8212;</div>
+      <div class="pred-sub" id="inf-main-s2"></div>
+      <div id="inf-main-d2"></div>
+    </div>
+  </div>
+
+  <!-- Secondary: simple weighted model -->
+  <div class="pred-hero" style="margin-top:-8px;">
+    <div class="pred-card pred-current" style="padding:14px 20px;">
+      <div class="pred-label" style="font-size:9px;">SIMPLE MODEL &mdash; Current month</div>
+      <div style="display:flex;align-items:baseline;gap:10px;">
+        <div class="stat-value" id="pred-cur-val" style="color:var(--accent2);font-size:20px;">&#8212;</div>
+        <div class="stat-sub" id="pred-cur-sub" style="font-size:10px;">Load data to see prediction</div>
+      </div>
       <div id="pred-cur-dir"></div>
     </div>
-    <div class="pred-card pred-next">
-      <div class="pred-label">Next month CPI YoY (predicted)</div>
-      <div class="pred-value" id="pred-nxt-val">&#8212;</div>
-      <div class="pred-sub" id="pred-nxt-sub">Load data to see prediction</div>
+    <div class="pred-card pred-next" style="padding:14px 20px;">
+      <div class="pred-label" style="font-size:9px;">SIMPLE MODEL &mdash; Next month</div>
+      <div style="display:flex;align-items:baseline;gap:10px;">
+        <div class="stat-value" id="pred-nxt-val" style="color:var(--amber);font-size:20px;">&#8212;</div>
+        <div class="stat-sub" id="pred-nxt-sub" style="font-size:10px;"></div>
+      </div>
       <div id="pred-nxt-dir"></div>
     </div>
   </div>
@@ -907,6 +928,10 @@ async function loadInflation() {
 
   document.getElementById('inf-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
   btn.disabled = false;
+  // Auto-run the ML ensemble (primary prediction). Cached server-side for 6h,
+  // so repeat refreshes are instant; first run takes ~1-2 min.
+  document.getElementById('inf-main-s1').textContent = 'Running ML ensemble… (~1-2 min first time)';
+  runInflationML();
   document.getElementById('inf-refresh-icon').textContent = '\u21BB';
 }
 
@@ -1369,6 +1394,30 @@ async function runInflationML() {
     document.getElementById('inf-ml-val').textContent   = d.nowcast.value + '%';
     const diff = (d.nowcast.value - d.nowcast.last_actual).toFixed(2);
     const pathStr = (d.forecasts || []).map(f => `${f.month}: ${f.value}%`).join('  ·  ');
+
+    // Populate the PRIMARY top-of-page prediction cards
+    const fc = d.forecasts || [];
+    const dirHtml = (val, base) => {
+      if (base == null) return '';
+      const dd = (val - base).toFixed(2);
+      if (Math.abs(dd) < 0.05) return `<span class="pred-dir dir-flat">&#8594; Flat</span>`;
+      return dd > 0 ? `<span class="pred-dir dir-up">&#9650; Rising +${dd}pp</span>`
+                    : `<span class="pred-dir dir-down">&#9660; Falling ${dd}pp</span>`;
+    };
+    if (fc[0]) {
+      document.getElementById('inf-main-m1').textContent = fc[0].month;
+      document.getElementById('inf-main-v1').textContent = fc[0].value + '%';
+      document.getElementById('inf-main-s1').innerHTML =
+        `${m.accuracy}% accurate (±${m.acc_band}pp) · last actual ${d.last_actual_month}: ${d.nowcast.last_actual}%`;
+      document.getElementById('inf-main-d1').innerHTML = dirHtml(fc[0].value, d.nowcast.last_actual);
+    }
+    if (fc[1]) {
+      document.getElementById('inf-main-m2').textContent = fc[1].month;
+      document.getElementById('inf-main-v2').textContent = fc[1].value + '%';
+      document.getElementById('inf-main-s2').textContent =
+        fc[2] ? `Then ${fc[2].month}: ${fc[2].value}%` : '';
+      document.getElementById('inf-main-d2').innerHTML = dirHtml(fc[1].value, fc[0].value);
+    }
     document.getElementById('inf-ml-sub').innerHTML =
       `Last actual (${d.last_actual_month || '—'}): ${d.nowcast.last_actual}% · Change ${diff>0?'+':''}${diff}pp`
       + (pathStr ? `<br><span style="color:var(--amber)">Forecast path → ${pathStr}</span>` : '');
@@ -1425,6 +1474,7 @@ async function runInflationML() {
   } catch(e) {
     document.getElementById('inf-ml-val').textContent = 'Error';
     document.getElementById('inf-ml-sub').textContent = e.message.slice(0,120);
+    document.getElementById('inf-main-s1').textContent = 'ML unavailable — showing simple model below';
     console.error(e);
   }
   btn.disabled = false;
