@@ -489,6 +489,33 @@ function calcRSI(closes, p=14) {
   return al===0 ? 100 : +(100 - 100/(1 + ag/al)).toFixed(1);
 }
 
+// Invert the Wilder RSI formula to find the next-day close price that would
+// push RSI to the oversold (buy) and overbought (sell) thresholds.
+// Returns {buy, sell} prices, or null components when already past threshold.
+function calcRSITargets(closes, p=14, lowRSI=30, highRSI=70) {
+  if (closes.length < p+2) return null;
+  const d = closes.slice(1).map((v,i) => v - closes[i]);
+  let ag = d.slice(0,p).filter(x=>x>0).reduce((a,b)=>a+b,0)/p;
+  let al = d.slice(0,p).filter(x=>x<0).map(x=>-x).reduce((a,b)=>a+b,0)/p;
+  for (let i=p; i<d.length; i++) {
+    ag = (ag*(p-1) + (d[i]>0?d[i]:0)) / p;
+    al = (al*(p-1) + (d[i]<0?-d[i]:0)) / p;
+  }
+  const cur = closes[closes.length-1];
+
+  // SELL: price rise needed to reach highRSI (next day is an up day, loss=0)
+  const rsHigh = highRSI/(100-highRSI);            // 70 -> 2.333
+  const gain   = rsHigh*al*(p-1) - ag*(p-1);
+  const sell   = gain > 0 ? +(cur + gain).toFixed(2) : null;
+
+  // BUY: price drop needed to reach lowRSI (next day is a down day, gain=0)
+  const rsLow  = lowRSI/(100-lowRSI);              // 30 -> 0.4286
+  const loss   = rsLow > 0 ? ag*(p-1)/rsLow - al*(p-1) : 0;
+  const buy    = loss > 0 && (cur - loss) > 0 ? +(cur - loss).toFixed(2) : null;
+
+  return { buy, sell };
+}
+
 function calcROC(closes, p=20) {
   if (closes.length < p+1) return null;
   return +((closes[closes.length-1]/closes[closes.length-1-p]-1)*100).toFixed(2);
@@ -592,6 +619,7 @@ async function loadMomentum() {
 
     if (closes && closes !== 'RATE_LIMIT' && closes.length >= 25) {
       const r = calcRSI(closes), roc = calcROC(closes);
+      const tg = calcRSITargets(closes);
       results.push({
         ticker,
         price:  +closes[closes.length-1].toFixed(2),
@@ -599,6 +627,8 @@ async function loadMomentum() {
         roc:    roc,
         ma:     calcMA(closes),         // full 50/200 MA cross — series is ~15 months
         score:  calcScore(r, roc),
+        buy:    tg ? tg.buy  : null,    // price at which RSI hits 30 (oversold)
+        sell:   tg ? tg.sell : null,    // price at which RSI hits 70 (overbought)
         source: inWatchlist ? 'wl' : 'sp500'
       });
     }
@@ -666,7 +696,10 @@ function buildWatchlistTable(rows) {
     <th class="r">ROC 20d</th>
     <th>MA Cross</th>
     <th class="r">Signal</th>
+    <th class="r">Buy &le; (RSI 30)</th>
+    <th class="r">Sell &ge; (RSI 70)</th>
   </tr></thead>`;
+  const fmtPrice = v => '$'+v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   const body = rows.map((d,i) => {
     const rc  = d.rsi==null?'c-muted':d.rsi>70?'c-amber':d.rsi<30?'c-green':'c-muted';
     const cc  = d.roc==null?'':d.roc>=0?'c-green':'c-red';
@@ -682,13 +715,27 @@ function buildWatchlistTable(rows) {
     else if (r<45 && c<0)  { sig='Bearish &#9660;';   sigClass='c-red';   }
     else                   { sig='Neutral';    sigClass='c-muted'; }
 
+    // Buy/sell target prices (with % distance from current price)
+    let buyCell = '<span class="c-muted">already oversold</span>';
+    if (d.buy != null) {
+      const pct = ((d.buy - d.price)/d.price*100).toFixed(1);
+      buyCell = `<span class="c-green">${fmtPrice(d.buy)} <span style="opacity:.6;font-size:10px">(${pct}%)</span></span>`;
+    }
+    let sellCell = '<span class="c-muted">already overbought</span>';
+    if (d.sell != null) {
+      const pct = ((d.sell - d.price)/d.price*100).toFixed(1);
+      sellCell = `<span class="c-red">${fmtPrice(d.sell)} <span style="opacity:.6;font-size:10px">(+${pct}%)</span></span>`;
+    }
+
     return `<tr style="animation-delay:${i*30}ms">
       <td class="ticker-cell">${d.ticker}</td>
-      <td class="r">$${d.price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+      <td class="r">${fmtPrice(d.price)}</td>
       <td class="r ${rc}">${d.rsi??'&#8212;'}${rsiFlag}</td>
       <td class="r ${cc}">${d.roc!=null?(d.roc>=0?'+':'')+d.roc+'%':'&#8212;'}</td>
       <td class="${mc}">${d.ma}</td>
       <td class="r ${sigClass}">${sig}</td>
+      <td class="r">${buyCell}</td>
+      <td class="r">${sellCell}</td>
     </tr>`;
   }).join('');
   return `<table>${head}<tbody>${body}</tbody></table>`;
