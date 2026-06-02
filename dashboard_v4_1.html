@@ -265,49 +265,27 @@ td.r{text-align:right;}
     <div class="progress-track"><div class="progress-fill" id="gdp-prog-fill" style="width:0%"></div></div>
   </div>
 
-  <!-- Ensemble is the primary prediction — visible immediately, populated after ML runs -->
+  <!-- Simple weighted model -->
   <div class="pred-hero">
-    <div class="pred-card" style="border-top:3px solid var(--red);">
-      <div class="pred-label">Current quarter GDP YoY &mdash; <strong style="color:var(--red)">Ensemble Prediction</strong></div>
-      <div class="pred-value" id="gdp-ens-cur-val" style="color:var(--red);">&#8212;</div>
-      <div class="pred-sub" id="gdp-ens-cur-sub">Run ML Nowcast to generate ensemble</div>
-      <div id="gdp-ens-cur-dir"></div>
-    </div>
-    <div class="pred-card" style="border-top:3px solid var(--red);">
-      <div class="pred-label">Next quarter GDP YoY &mdash; <strong style="color:var(--red)">Ensemble Prediction</strong></div>
-      <div class="pred-value" id="gdp-ens-nxt-val" style="color:var(--red);">&#8212;</div>
-      <div class="pred-sub" id="gdp-ens-nxt-sub">Run ML Nowcast to generate ensemble</div>
-      <div id="gdp-ens-nxt-dir"></div>
-    </div>
-  </div>
-
-  <!-- Simple model sub-cards -->
-  <div class="pred-hero" style="margin-top:-8px;">
-    <div class="pred-card" style="border-top:2px solid var(--green);padding:14px 20px;">
-      <div class="pred-label" style="font-size:9px;">SIMPLE MODEL &mdash; Current quarter</div>
-      <div style="display:flex;align-items:baseline;gap:10px;">
-        <div class="stat-value" id="gdp-pred-cur-val" style="color:var(--green);font-size:20px;">&#8212;</div>
-        <div class="stat-sub" id="gdp-pred-cur-sub" style="font-size:10px;"></div>
-      </div>
+    <div class="pred-card" style="border-top:3px solid var(--green);">
+      <div class="pred-label">Current quarter GDP YoY &mdash; <strong style="color:var(--green)">Simple Model</strong></div>
+      <div class="pred-value" id="gdp-pred-cur-val" style="color:var(--green);">&#8212;</div>
+      <div class="pred-sub" id="gdp-pred-cur-sub">Load data to see prediction</div>
       <div id="gdp-pred-cur-dir"></div>
     </div>
-    <div class="pred-card" style="border-top:2px solid var(--blue);padding:14px 20px;">
-      <div class="pred-label" style="font-size:9px;">SIMPLE MODEL &mdash; Next quarter</div>
-      <div style="display:flex;align-items:baseline;gap:10px;">
-        <div class="stat-value" id="gdp-pred-nxt-val" style="color:var(--blue);font-size:20px;">&#8212;</div>
-        <div class="stat-sub" id="gdp-pred-nxt-sub" style="font-size:10px;"></div>
-      </div>
+    <div class="pred-card" style="border-top:3px solid var(--blue);">
+      <div class="pred-label">Next quarter GDP YoY &mdash; <strong style="color:var(--blue)">Simple Model</strong></div>
+      <div class="pred-value" id="gdp-pred-nxt-val" style="color:var(--blue);">&#8212;</div>
+      <div class="pred-sub" id="gdp-pred-nxt-sub">Load data to see prediction</div>
       <div id="gdp-pred-nxt-dir"></div>
     </div>
   </div>
 
-  <div id="gdp-ensemble-section" style="display:none;"></div>
-
   <!-- ML Nowcast result card — hidden until model runs -->
   <div id="gdp-ml-section" style="display:none;margin-bottom:24px;">
     <div class="section-header">
-      <div class="section-title"><span class="dot dot-amber"></span>DFM + Ridge ML Nowcast</div>
-      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">Dynamic Factor Model &rarr; Bridge Equation (statsmodels + scikit-learn)</span>
+      <div class="section-title"><span class="dot dot-amber"></span>25-Year ML Model</div>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">Multi-model ensemble · 25-yr walk-forward validated (statsmodels + scikit-learn)</span>
     </div>
     <div class="pred-hero" style="margin-bottom:12px;">
       <div class="pred-card" style="border-top:3px solid var(--amber);">
@@ -1482,36 +1460,9 @@ async function runInflationML() {
 }
 
 let mlHistory    = [];
-let mlNowcastVal = null;  // latest ML prediction, used for ensemble
+let mlNowcastVal = null;  // latest ML (25-yr) prediction
 
-function updateEnsembleCards() {
-  const simCur = parseFloat(document.getElementById('gdp-pred-cur-val').textContent);
-  const simNxt = parseFloat(document.getElementById('gdp-pred-nxt-val').textContent);
-  if (!mlNowcastVal || isNaN(simCur) || isNaN(simNxt)) return;
-
-  const ensCur = +((simCur + mlNowcastVal) / 2).toFixed(2);
-  const ensNxt = +((simNxt + mlNowcastVal) / 2).toFixed(2);
-
-  document.getElementById('gdp-ensemble-section').style.display = '';
-  document.getElementById('gdp-ens-cur-val').textContent = ensCur + '%';
-  document.getElementById('gdp-ens-nxt-val').textContent = ensNxt + '%';
-  document.getElementById('gdp-ens-cur-sub').textContent =
-    `Simple: ${simCur}%  |  ML: ${mlNowcastVal}%`;
-  document.getElementById('gdp-ens-nxt-sub').textContent =
-    `Simple: ${simNxt}%  |  ML: ${mlNowcastVal}%`;
-
-  const dirHtml = (val, base) => {
-    if (base == null) return '';
-    const diff = (val - base).toFixed(2);
-    if (Math.abs(diff) < 0.05) return `<span class="pred-dir dir-flat">&#8594; Flat</span>`;
-    return diff > 0
-      ? `<span class="pred-dir dir-up">&#9650; Accelerating +${diff}pp</span>`
-      : `<span class="pred-dir dir-down">&#9660; Slowing ${diff}pp</span>`;
-  };
-  const prev = parseFloat(document.getElementById('gdp-pred-cur-sub').textContent);
-  document.getElementById('gdp-ens-cur-dir').innerHTML = dirHtml(ensCur, isNaN(prev) ? null : prev);
-  document.getElementById('gdp-ens-nxt-dir').innerHTML = dirHtml(ensNxt, ensCur);
-}
+function updateEnsembleCards() { /* ensemble removed — GDP shows simple + 25-yr ML only */ }
 
 async function runMLNowcast() {
   if (!fredKey) { alert('Enter your FRED API key first.'); return; }
@@ -1658,11 +1609,6 @@ function renderGDPChart(preds, btRows=[], mlData=[]) {
     return null;
   });
 
-  const ensemble = mlData.length ? preds.map((p, i) => {
-    const s = pastPred[i] ?? (p.actual === null ? p.predicted : null);
-    const m = resolvedMlPred[i];
-    return (s != null && m != null) ? +((s + m) / 2).toFixed(2) : null;
-  }) : [];
 
   const datasets = [
     // Actual — always first reference line
@@ -1676,19 +1622,12 @@ function renderGDPChart(preds, btRows=[], mlData=[]) {
   ];
 
   if (mlData.length) {
-    // ML — thin dashed, background context
+    // 25-year ML model — solid, prominent
     datasets.push({
-      label:'ML Nowcast (DFM + Ridge)',
+      label:'25-yr ML Model',
       data: resolvedMlPred,
-      borderColor:'#f5a623', backgroundColor:'transparent', tension:0.4,
-      borderWidth:1.5, borderDash:[3,3], pointRadius:2, pointBackgroundColor:'#f5a623', spanGaps:false,
-    });
-    // Ensemble — solid, thick, on top
-    datasets.push({
-      label:'Ensemble Average',
-      data: ensemble,
-      borderColor:'#f0526a', backgroundColor:'#f0526a15', tension:0.4,
-      borderWidth:3, pointRadius:5, pointBackgroundColor:'#f0526a',
+      borderColor:'#f5a623', backgroundColor:'#f5a62315', tension:0.4,
+      borderWidth:3, pointRadius:4, pointBackgroundColor:'#f5a623',
       pointBorderColor:'#fff', pointBorderWidth:1.5, spanGaps:false,
     });
   }
