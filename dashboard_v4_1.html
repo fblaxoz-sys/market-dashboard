@@ -533,12 +533,18 @@ async function loadMomentum() {
   const lbl  = document.getElementById('mom-prog-lbl');
   prog.classList.add('visible');
 
-  const tickers = [...new Set([...SP500, ...watchlist.map(t=>t.toUpperCase())])];
+  // Watchlist tickers first so they populate before the S&P 500 list
+  const wlUpper = watchlist.map(t=>t.toUpperCase());
+  const wlSet   = new Set(wlUpper);
+  const tickers = [...new Set([...wlUpper, ...SP500])];
+  const wlTotal = wlUpper.length;
   const results = [];
   let done = 0;
 
   for (const ticker of tickers) {
-    lbl.textContent = `Fetching ${ticker}... (${done+1}/${tickers.length})`;
+    const inWatchlist = wlSet.has(ticker);
+    const phase = done < wlTotal ? `Watchlist ${done+1}/${wlTotal}` : `S&P ${done-wlTotal+1}/${tickers.length-wlTotal}`;
+    lbl.textContent = `Fetching ${ticker}... (${phase})`;
     fill.style.width = Math.round((done/tickers.length)*100) + '%';
 
     let closes = await fetchTicker(ticker);
@@ -560,12 +566,14 @@ async function loadMomentum() {
         roc:    roc,
         ma:     calcMA(closes),
         score:  calcScore(r, roc),
-        source: watchlist.map(x=>x.toUpperCase()).includes(ticker) ? 'wl' : 'sp500'
+        source: inWatchlist ? 'wl' : 'sp500'
       });
     }
 
-    // Show partial results every 5 tickers
-    if (done % 5 === 0 && results.length) {
+    // While still loading the watchlist, refresh after every ticker so it
+    // fills in row-by-row. Once into the S&P list, update every 5.
+    const stillOnWatchlist = done <= wlTotal;
+    if (results.length && (stillOnWatchlist || done % 5 === 0)) {
       const sorted = [...results].sort((a,b) => b.score-a.score);
       renderMomStats(sorted);
       renderMomTables(sorted);
