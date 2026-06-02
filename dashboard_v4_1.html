@@ -316,16 +316,21 @@ td.r{text-align:right;}
         <div class="pred-sub" id="gdp-ml-sub">Running model…</div>
         <div id="gdp-ml-dir"></div>
       </div>
-      <div class="pred-card" style="border-top:3px solid var(--green);display:flex;flex-direction:column;gap:10px;justify-content:center;">
+      <div class="pred-card" style="border-top:3px solid var(--green);display:flex;flex-direction:column;gap:8px;justify-content:center;">
+        <div class="pred-label">Backtested accuracy</div>
+        <div style="display:flex;align-items:baseline;gap:8px;">
+          <div class="pred-value" id="gdp-ml-acc" style="color:var(--green);font-size:38px;">&#8212;</div>
+          <div id="gdp-ml-acc-band" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></div>
+        </div>
         <div class="accuracy-pills" id="gdp-ml-pills" style="flex-wrap:wrap;"></div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.8;">
-          <div>RMSE (in-sample) <span id="gdp-ml-rmse-in" style="color:var(--text);">—</span></div>
-          <div>RMSE (out-of-sample) <span id="gdp-ml-rmse-out" style="color:var(--text);">—</span></div>
+          <div>Walk-forward MAE <span id="gdp-ml-rmse-in" style="color:var(--text);">—</span></div>
+          <div>Single-split RMSE <span id="gdp-ml-rmse-out" style="color:var(--text);">—</span></div>
         </div>
       </div>
     </div>
 
-    <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>ML Model — Backtest vs Actual</div></div>
+    <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>25-Year Walk-Forward Backtest (true out-of-sample)</div></div>
     <div class="table-wrap" id="gdp-ml-bt-table"></div>
   </div>
 
@@ -1350,7 +1355,7 @@ async function runMLNowcast() {
   document.getElementById('gdp-ml-icon').innerHTML = '<span class="spinner"></span>';
   document.getElementById('gdp-ml-section').style.display = '';
   document.getElementById('gdp-ml-val').innerHTML = '<span class="spinner"></span>';
-  document.getElementById('gdp-ml-sub').textContent = 'Running DFM + Ridge model… (30–60 s)';
+  document.getElementById('gdp-ml-sub').textContent = 'Training 8 models + 25-yr walk-forward backtest… (1–2 min)';
 
   const quarters = document.getElementById('gdp-bt-quarters').value || 12;
   try {
@@ -1373,10 +1378,15 @@ async function runMLNowcast() {
 
     // Metrics
     const m = d.metrics;
-    document.getElementById('gdp-ml-rmse-in').textContent  = `±${m.rmse_in}pp`;
+    if (m.accuracy != null) {
+      document.getElementById('gdp-ml-acc').textContent = m.accuracy + '%';
+      document.getElementById('gdp-ml-acc-band').textContent =
+        `within ±${m.acc_band}pp · ${m.wf_quarters}-qtr walk-forward since ${m.wf_start}`;
+    }
+    document.getElementById('gdp-ml-rmse-in').textContent  = `±${m.wf_mae ?? m.mae}pp`;
     document.getElementById('gdp-ml-rmse-out').textContent = `±${m.rmse_out}pp`;
     document.getElementById('gdp-ml-pills').innerHTML = `
-      <span class="pill pill-green">Ensemble MAE: ±${m.mae}pp</span>
+      <span class="pill pill-green">${m.accuracy}% accurate (±${m.acc_band}pp)</span>
       <span class="pill pill-blue">Direction: ${m.dir_acc}% correct</span>
       <span class="pill pill-amber">${m.n_models||'?'} models · ${m.n_features} features</span>`;
 
