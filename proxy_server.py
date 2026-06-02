@@ -718,8 +718,26 @@ def run_inflation_nowcast(fred_key, bt_months=24):
                                    max_depth=3, num_leaves=15, verbose=-1, random_state=42))
     mem_names = list(member_defs.keys())
 
+    # ── MoM models: predict next-month MoM, rebuild YoY from the KNOWN base ──
+    # YoY for the target month depends on 12 monthly prices, 11 of which are
+    # already published — only next month's MoM is unknown. Predicting that one
+    # small number and reconstructing YoY shrinks the error vs predicting YoY.
     min_train = max(60, len(data) // 3)
     mem_pred = {n: [] for n in mem_names}
+    mom_defs = {}
+    if cpi_level is not None:
+        mom_series = cpi_level.pct_change() * 100
+        mom_y   = mom_series.shift(-1).reindex(data.index).values          # next-month MoM
+        now_lvl = cpi_level.reindex(data.index).values                     # level at feature month
+        base_lvl= cpi_level.reindex(data.index - pd.DateOffset(months=11)).values  # year-ago of target
+        mom_y_fit = np.where(np.isnan(mom_y), 0.0, mom_y)
+        if (~np.isnan(base_lvl)).sum() > min_train + 10:
+            mom_defs = {'MoM·Ridge': 'lin', 'MoM·HGB': 'tree'}
+            for n in mom_defs: mem_pred[n] = []
+
+    def _recon(level_now, level_base, mom_pct):
+        return ((level_now*(1+mom_pct/100)/level_base) - 1)*100 if (level_base and level_base==level_base) else float('nan')
+
     arima_pred, wf_meta = [], []
     for i in range(min_train, len(data)):
         Xt, yt, Xv = X_all[:i], y_all[:i], X_all[i:i+1]
@@ -728,11 +746,18 @@ def run_inflation_nowcast(fred_key, bt_months=24):
         for n, (kind, mk) in member_defs.items():
             if kind == 'lin': mem_pred[n].append(mk().fit(Xts, yt).predict(Xvs)[0])
             else:             mem_pred[n].append(mk().fit(Xt, yt).predict(Xv)[0])
+        for n, kind in mom_defs.items():        # MoM members → reconstructed YoY
+            if kind == 'lin': mp = _R(alpha=1.0).fit(Xts, mom_y_fit[:i]).predict(Xvs)[0]
+            else:             mp = _HGB(max_iter=200, learning_rate=0.05, max_depth=3, random_state=42).fit(Xt, mom_y_fit[:i]).predict(Xv)[0]
+            mem_pred[n].append(_recon(now_lvl[i], base_lvl[i], mp))
         if _has_ar:
             try: arima_pred.append(float(np.asarray(_AR(yt, order=(1,1,1)).fit().forecast(1), float)[0]))
             except Exception: arima_pred.append(float('nan'))
         # label by the month being PREDICTED (target = feature month + 1), not the feature month
         wf_meta.append((dates[i] + pd.DateOffset(months=1), float(y_all[i]), float(data['cpi'].values[i])))
+    for n in list(mom_defs):                    # keep MoM members only if valid
+        if all(p != p for p in mem_pred[n]): del mem_pred[n]; del mom_defs[n]
+        else: mem_names.append(n)
     if _has_ar and not all(p != p for p in arima_pred):
         mem_pred['ARIMA'] = arima_pred; mem_names.append('ARIMA')
 
@@ -806,9 +831,19 @@ def run_inflation_nowcast(fred_key, bt_months=24):
         try: arima_fc = np.asarray(_AR(y_all, order=(1,1,1)).fit().forecast(H), float)
         except Exception: arima_fc = None
 
+    # MoM members refit on all data + their reconstruction base for next month
+    last_date = df.index[-1]
+    mom_fitted = {}
+    if mom_defs:
+        for n, kind in mom_defs.items():
+            est = _R(alpha=1.0) if kind == 'lin' else _HGB(max_iter=200, learning_rate=0.05, max_depth=3, random_state=42)
+            est.fit(scf.transform(X_all), mom_y_fit) if kind == 'lin' else est.fit(X_all, mom_y_fit)
+            mom_fitted[n] = (kind, est)
+        nc_now_lvl  = float(cpi_level.reindex([last_date]).iloc[0])
+        nc_base_lvl = float(cpi_level.reindex([last_date - pd.DateOffset(months=11)]).iloc[0])
+
     ci = feat_cols.index('cpi'); li = feat_cols.index('cpi_lag'); mi = feat_cols.index('cpi_mom')
     base   = df[feat_cols].iloc[-1].values.astype(float).copy()   # drivers held at latest
-    last_date = df.index[-1]
     prev_c = float(df['cpi'].iloc[-2])
     cur_c  = float(df['cpi'].iloc[-1])
     forecasts = []
@@ -820,6 +855,12 @@ def run_inflation_nowcast(fred_key, bt_months=24):
             num += mem_wt[n]*v; den += mem_wt[n]
         if arima_fc is not None and 'ARIMA' in mem_wt:
             num += mem_wt['ARIMA']*float(arima_fc[h]); den += mem_wt['ARIMA']
+        if h == 0 and mom_fitted:                  # MoM members (next month only)
+            for n, (kind, est) in mom_fitted.items():
+                if mem_wt.get(n, 0) <= 0: continue
+                mp = est.predict(scf.transform([r]))[0] if kind == 'lin' else est.predict([r])[0]
+                rec = _recon(nc_now_lvl, nc_base_lvl, mp)
+                if rec == rec: num += mem_wt[n]*rec; den += mem_wt[n]
         pred  = float(num/den) if den else cur_c
         fdate = last_date + pd.DateOffset(months=h+1)
         # 85% prediction interval from the model's own historical error (acc_band)
