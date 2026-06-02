@@ -488,6 +488,219 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
     }
 
 
+# ── INFLATION NOWCAST MODEL ───────────────────────────────────────────────────
+
+def run_inflation_nowcast(fred_key, bt_months=24):
+    """Monthly CPI-YoY ML nowcast — same 8-model ensemble + 25-yr walk-forward
+    as the GDP model, but at monthly frequency."""
+    import warnings; warnings.filterwarnings("ignore")
+    import numpy as np
+    import pandas as pd
+    from sklearn.linear_model import Ridge, ElasticNet
+    from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegressor
+    from sklearn.metrics import mean_squared_error
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.model_selection import TimeSeriesSplit
+    try:    from xgboost import XGBRegressor; HAS_XGB = True
+    except Exception: HAS_XGB = False
+
+    L = 320  # ~26 yrs of monthly history
+    # id : (transform, freq)
+    SERIES = {
+        'CPIAUCSL':      ('yoy',  None),  # target
+        'CPILFESL':      ('yoy',  None),  # core CPI
+        'PPIACO':        ('yoy',  None),  # producer prices
+        'MICH':          ('lvl',  None),  # inflation expectations survey
+        'T5YIE':         ('lvl',  'm'),   # 5y breakeven (market expectations)
+        'CES0500000003': ('yoy',  None),  # avg hourly earnings (wages)
+        'PALLFNFINDEXM': ('yoy',  None),  # global commodities
+        'MCOILWTICO':    ('yoy',  None),  # oil
+        'M2SL':          ('yoy',  None),  # money supply
+        'UNRATE':        ('lvl',  None),  # unemployment
+        'FEDFUNDS':      ('lvl',  None),  # policy rate
+    }
+
+    def fetch(sid, freq=None):
+        fp = f"&frequency={freq}&aggregation_method=avg" if freq else ""
+        url = (f"https://api.stlouisfed.org/fred/series/observations"
+               f"?series_id={sid}&api_key={fred_key}&sort_order=desc"
+               f"&limit={L}&file_type=json{fp}")
+        with urllib.request.urlopen(url, timeout=20) as r:
+            d = json.loads(r.read())
+        rows = [(o['date'], float(o['value'])) for o in d.get('observations', [])
+                if o['value'] != '.']
+        rows.reverse()
+        return pd.Series([v for _, v in rows],
+                         index=pd.to_datetime([x for x, _ in rows]), name=sid)
+
+    def transform(s, t):
+        m = s.resample('MS').last()
+        return (m / m.shift(12) - 1) * 100 if t == 'yoy' else m
+
+    raw = {}
+    for sid, (t, freq) in SERIES.items():
+        print(f"  [inf] fetching {sid} …")
+        try:
+            s = fetch(sid, freq)
+            if s is not None and len(s) > 24:
+                raw[sid] = transform(s, t)
+        except Exception as e:
+            print(f"    skip {sid}: {e}")
+        time.sleep(1.0)
+
+    if 'CPIAUCSL' not in raw:
+        raise ValueError("Could not load CPI")
+
+    # ── Feature matrix (monthly) ──────────────────────────────────────────
+    df = pd.DataFrame({'cpi': raw['CPIAUCSL']}).dropna()
+    df['cpi_lag'] = df['cpi'].shift(1)
+    df['cpi_mom'] = df['cpi'] - df['cpi_lag']
+    for sid in SERIES:
+        if sid != 'CPIAUCSL' and sid in raw:
+            df[sid.lower()] = raw[sid]
+    df = df.dropna()
+    feat_cols = list(df.columns)            # cpi + lag + mom + drivers
+    target = df['cpi'].shift(-1)            # predict NEXT month's CPI YoY
+    data = df.copy(); data['__y__'] = target; data = data.dropna()
+    X_all = data[feat_cols].values
+    y_all = data['__y__'].values
+    dates = list(data.index)
+    print(f"  [inf] {len(data)} months, {len(feat_cols)} features")
+
+    n_test = min(bt_months, len(data) - 24)
+    X_tr, y_tr = X_all[:-n_test], y_all[:-n_test]
+    X_te, y_te = X_all[-n_test:], y_all[-n_test:]
+
+    fsc = StandardScaler().fit(X_tr)
+    Xs_tr, Xs_te = fsc.transform(X_tr), fsc.transform(X_te)
+    tscv = TimeSeriesSplit(n_splits=4)
+    models, feat_imp = {}, None
+
+    def reg(name, tr, te):
+        models[name] = {'rmse': float(np.sqrt(mean_squared_error(y_te, te)))}
+        print(f"    {name:14s} RMSE {models[name]['rmse']:.3f}")
+
+    def tab(name, est, scaled=False):
+        Xt, Xv = (Xs_tr, Xs_te) if scaled else (X_tr, X_te)
+        est.fit(Xt, y_tr); reg(name, est.predict(Xt), est.predict(Xv)); return est
+
+    tab('Ridge', Ridge(alpha=1.0), True)
+    tab('ElasticNet', ElasticNet(alpha=0.3, l1_ratio=0.5, max_iter=5000), True)
+    tab('RandomForest', RandomForestRegressor(n_estimators=300, max_depth=5,
+                                              min_samples_leaf=2, random_state=42))
+    if HAS_XGB:
+        xgb = tab('XGBoost', XGBRegressor(n_estimators=150, learning_rate=0.05,
+                  max_depth=3, subsample=0.8, colsample_bytree=0.8,
+                  random_state=42, verbosity=0))
+        feat_imp = dict(zip(feat_cols, xgb.feature_importances_.tolist()))
+    else:
+        tab('HistGBM', HistGradientBoostingRegressor(max_iter=200, learning_rate=0.05,
+                       max_depth=3, random_state=42))
+    try:
+        from lightgbm import LGBMRegressor
+        lg = tab('LightGBM', LGBMRegressor(n_estimators=200, learning_rate=0.05,
+                 max_depth=3, num_leaves=15, verbose=-1, random_state=42))
+        if feat_imp is None:
+            imp = lg.feature_importances_.astype(float)
+            feat_imp = dict(zip(feat_cols, (imp/max(imp.sum(),1e-9)).tolist()))
+    except Exception as e: print(f"    LightGBM skip: {e}")
+    try:
+        from catboost import CatBoostRegressor
+        tab('CatBoost', CatBoostRegressor(iterations=200, learning_rate=0.05,
+            depth=3, verbose=0, random_state=42))
+    except Exception as e: print(f"    CatBoost skip: {e}")
+    if feat_imp is None:
+        feat_imp = {c: 0.0 for c in feat_cols}
+
+    # ── Walk-forward (expanding window, monthly) ──────────────────────────
+    print("  [inf] walk-forward …")
+    from sklearn.linear_model import Ridge as _R, ElasticNet as _EN
+    try:    from lightgbm import LGBMRegressor as _LG; _has_lg = True
+    except Exception: _has_lg = False
+    try:    from statsmodels.tsa.arima.model import ARIMA as _AR; _has_ar = True
+    except Exception: _has_ar = False
+
+    min_train = max(60, len(data) // 3)
+    wf = []
+    for i in range(min_train, len(data)):
+        Xt, yt, Xv = X_all[:i], y_all[:i], X_all[i:i+1]
+        sc = StandardScaler().fit(Xt)
+        members = [
+            _R(alpha=1.0).fit(sc.transform(Xt), yt).predict(sc.transform(Xv))[0],
+            _EN(alpha=0.3, l1_ratio=0.5, max_iter=5000).fit(sc.transform(Xt), yt).predict(sc.transform(Xv))[0],
+        ]
+        if _has_lg:
+            members.append(_LG(n_estimators=150, learning_rate=0.05, max_depth=3,
+                               num_leaves=15, verbose=-1, random_state=42).fit(Xt, yt).predict(Xv)[0])
+        if _has_ar:
+            try: members.append(float(np.asarray(_AR(yt, order=(1,1,1)).fit().forecast(1), float)[0]))
+            except Exception: pass
+        wf.append((dates[i], float(y_all[i]), float(np.mean(members)),
+                   float(data['cpi'].values[i])))   # prev = current-month CPI YoY
+
+    wf_err  = [abs(p-a) for (_, a, p, _) in wf]
+    wf_mae  = float(np.mean(wf_err)) if wf_err else 0.0
+    wf_rmse = float(np.sqrt(np.mean([(p-a)**2 for (_, a, p, _) in wf]))) if wf else 0.0
+    wf_dir  = (float(np.mean([1.0 if ((a-pv)*(p-pv) >= 0) else 0.0
+                              for (_, a, p, pv) in wf])) * 100) if wf else 0.0
+    def acc_at(t): return float(np.mean([e <= t for e in wf_err])) if wf_err else 0.0
+    band = next((t/100 for t in range(10, 200, 5) if acc_at(t/100) >= 0.85), 2.0)
+    acc  = round(acc_at(band)*100)
+    print(f"  [inf] {len(wf)} months | MAE {wf_mae:.2f} | {acc}% within ±{band}pp | dir {wf_dir:.0f}%")
+
+    bt_rows = [{'date': d.strftime('%Y-%m'), 'actual': round(a, 2),
+                'predicted': round(p, 2), 'err': round(p-a, 2),
+                'dir_ok': bool((a-pv)*(p-pv) >= 0)} for (d, a, p, pv) in wf]
+
+    # ── Nowcast from validated recipe on all data ─────────────────────────
+    last_row = df[feat_cols].iloc[-1:].values   # most recent complete month's features
+    scf = StandardScaler().fit(X_all)
+    nm = [
+        _R(alpha=1.0).fit(scf.transform(X_all), y_all).predict(scf.transform(last_row))[0],
+        _EN(alpha=0.3, l1_ratio=0.5, max_iter=5000).fit(scf.transform(X_all), y_all).predict(scf.transform(last_row))[0],
+    ]
+    if _has_lg:
+        nm.append(_LG(n_estimators=150, learning_rate=0.05, max_depth=3,
+                      num_leaves=15, verbose=-1, random_state=42).fit(X_all, y_all).predict(last_row)[0])
+    if _has_ar:
+        try: nm.append(float(np.asarray(_AR(y_all, order=(1,1,1)).fit().forecast(1), float)[0]))
+        except Exception: pass
+    nowcast_val = float(np.mean(nm))
+
+    last_date  = df.index[-1]
+    nc_date    = last_date + pd.DateOffset(months=1)
+    last_cpi   = float(df['cpi'].iloc[-1])
+
+    # Pruned weights for leaderboard display
+    ranked = sorted(models, key=lambda n: models[n]['rmse'])
+    best = models[ranked[0]]['rmse']
+    kept = [n for n in ranked if models[n]['rmse'] <= 2.5*best] or ranked[:3]
+    raww = {n: 1/(models[n]['rmse']**2+1e-6) for n in kept}
+    ws = sum(raww.values()); wt = {n: (raww[n]/ws if n in kept else 0.0) for n in models}
+
+    history = [{'date': d.strftime('%Y-%m'), 'actual': round(a, 2),
+                'predicted': round(p, 2)} for (d, a, p, _) in wf]
+    history.append({'date': nc_date.strftime('%Y-%m'), 'actual': None,
+                    'predicted': round(nowcast_val, 2), 'is_nowcast': True})
+
+    return {
+        'nowcast': {'month': nc_date.strftime('%Y-%m'), 'value': round(nowcast_val, 2),
+                    'last_actual': round(last_cpi, 2)},
+        'history': history,
+        'bt_rows': bt_rows,
+        'metrics': {
+            'accuracy': acc, 'acc_band': round(band, 2),
+            'wf_quarters': len(wf), 'wf_start': wf[0][0].strftime('%Y-%m') if wf else None,
+            'wf_mae': round(wf_mae, 3), 'wf_rmse': round(wf_rmse, 3),
+            'dir_acc': round(wf_dir), 'mae': round(wf_mae, 3),
+            'n_features': len(feat_cols), 'n_models': len(models),
+            'model_rmse': {n: round(models[n]['rmse'], 3) for n in models},
+            'model_wt': {n: round(wt[n], 3) for n in models},
+            'feat_imp': {k: round(v, 3) for k, v in sorted(feat_imp.items(), key=lambda x: -x[1])},
+        },
+    }
+
+
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
 
 class Handler(SimpleHTTPRequestHandler):
@@ -528,6 +741,31 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 err = traceback.format_exc()
                 print(f"[nowcast] ERROR:\n{err}")
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': err}).encode())
+            return
+
+        if parsed.path == '/inflation-nowcast':
+            qs       = urllib.parse.parse_qs(parsed.query)
+            fred_key = qs.get('fred_key', [''])[0]
+            months   = int(qs.get('months', ['24'])[0])
+            if not fred_key:
+                self.send_error(400, 'fred_key required'); return
+            try:
+                print(f"\n[inflation] Starting model ({months} months backtest) …")
+                result  = run_inflation_nowcast(fred_key, months)
+                payload = json.dumps(result).encode()
+                print(f"[inflation] Done → {result['nowcast']['value']}%")
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers(); self.wfile.write(payload)
+            except Exception:
+                err = traceback.format_exc()
+                print(f"[inflation] ERROR:\n{err}")
                 self.send_response(500)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')

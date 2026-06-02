@@ -362,8 +362,11 @@ td.r{text-align:right;}
       <h2 style="font-size:22px;font-weight:800;">Inflation Predictor</h2>
       <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Live FRED data &mdash; weighted leading-indicator model</p>
     </div>
-    <div style="display:flex;align-items:center;gap:10px;">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span id="inf-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <button class="btn" id="inf-ml-btn" onclick="runInflationML()">
+        <span id="inf-ml-icon">&#9881;</span> ML Nowcast
+      </button>
       <button class="btn btn-primary" id="inf-refresh-btn" onclick="loadInflation()">
         <span id="inf-refresh-icon">&#8635;</span> Refresh
       </button>
@@ -395,6 +398,35 @@ td.r{text-align:right;}
       <div class="pred-sub" id="pred-nxt-sub">Load data to see prediction</div>
       <div id="pred-nxt-dir"></div>
     </div>
+  </div>
+
+  <!-- Inflation ML Nowcast — hidden until model runs -->
+  <div id="inf-ml-section" style="display:none;margin-bottom:24px;">
+    <div class="section-header">
+      <div class="section-title"><span class="dot dot-amber"></span>ML Nowcast — 8-Model Ensemble</div>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">25-yr walk-forward validated (statsmodels + scikit-learn)</span>
+    </div>
+    <div class="pred-hero" style="margin-bottom:12px;">
+      <div class="pred-card" style="border-top:3px solid var(--amber);">
+        <div class="pred-label">ML CPI YoY Nowcast — <span id="inf-ml-month">—</span></div>
+        <div class="pred-value" id="inf-ml-val" style="color:var(--amber);">&#8212;</div>
+        <div class="pred-sub" id="inf-ml-sub">Running model…</div>
+        <div id="inf-ml-dir"></div>
+      </div>
+      <div class="pred-card" style="border-top:3px solid var(--green);display:flex;flex-direction:column;gap:8px;justify-content:center;">
+        <div class="pred-label">Backtested accuracy</div>
+        <div style="display:flex;align-items:baseline;gap:8px;">
+          <div class="pred-value" id="inf-ml-acc" style="color:var(--green);font-size:38px;">&#8212;</div>
+          <div id="inf-ml-acc-band" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></div>
+        </div>
+        <div class="accuracy-pills" id="inf-ml-pills" style="flex-wrap:wrap;"></div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.8;">
+          <div>Walk-forward MAE <span id="inf-ml-mae" style="color:var(--text);">—</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>25-Year Walk-Forward Backtest (true out-of-sample)</div></div>
+    <div class="table-wrap" id="inf-ml-bt-table"></div>
   </div>
 
   <div class="section-header"><div class="section-title"><span class="dot dot-blue"></span>Leading Indicators</div></div>
@@ -1314,6 +1346,87 @@ function renderGDPDrivers() {
         <div class="driver-bar-track"><div class="driver-bar-fill" style="width:${barPct}%;background:${barClr}"></div></div>
       </div>`;
     }).join('');
+}
+
+// ── Inflation ML Nowcast ──────────────────────────────────────────────
+async function runInflationML() {
+  if (!fredKey) { alert('Enter your FRED API key first.'); return; }
+  const btn = document.getElementById('inf-ml-btn');
+  btn.disabled = true;
+  document.getElementById('inf-ml-icon').innerHTML = '<span class="spinner"></span>';
+  document.getElementById('inf-ml-section').style.display = '';
+  document.getElementById('inf-ml-val').innerHTML = '<span class="spinner"></span>';
+  document.getElementById('inf-ml-sub').textContent = 'Training 8 models + 25-yr walk-forward… (1–2 min)';
+
+  const months = document.getElementById('bt-months') ? document.getElementById('bt-months').value : 24;
+  try {
+    const res = await fetch(`/inflation-nowcast?fred_key=${encodeURIComponent(fredKey)}&months=${months}`);
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
+    const m = d.metrics;
+
+    document.getElementById('inf-ml-month').textContent = d.nowcast.month;
+    document.getElementById('inf-ml-val').textContent   = d.nowcast.value + '%';
+    const diff = (d.nowcast.value - d.nowcast.last_actual).toFixed(2);
+    document.getElementById('inf-ml-sub').textContent =
+      `Last actual: ${d.nowcast.last_actual}% | Change: ${diff>0?'+':''}${diff}pp`;
+    document.getElementById('inf-ml-dir').innerHTML = Math.abs(diff) < 0.05
+      ? `<span class="pred-dir dir-flat">&#8594; Flat</span>`
+      : diff > 0
+        ? `<span class="pred-dir dir-up">&#9650; Rising +${Math.abs(diff)}pp</span>`
+        : `<span class="pred-dir dir-down">&#9660; Falling ${Math.abs(diff)}pp</span>`;
+
+    document.getElementById('inf-ml-acc').textContent = m.accuracy + '%';
+    document.getElementById('inf-ml-acc-band').textContent =
+      `within ±${m.acc_band}pp · ${m.wf_quarters}-month walk-forward since ${m.wf_start}`;
+    document.getElementById('inf-ml-mae').textContent = `±${m.wf_mae}pp`;
+    document.getElementById('inf-ml-pills').innerHTML = `
+      <span class="pill pill-green">${m.accuracy}% accurate (±${m.acc_band}pp)</span>
+      <span class="pill pill-blue">Direction: ${m.dir_acc}% correct</span>
+      <span class="pill pill-amber">${m.n_models} models · ${m.n_features} features</span>`;
+
+    // Leaderboard
+    if (m.model_rmse) {
+      const rows = Object.entries(m.model_rmse).sort((a,b)=>a[1]-b[1]);
+      const best = rows[0][1];
+      const lb = rows.map(([name,rmse]) => {
+        const wt = (m.model_wt && m.model_wt[name]) || 0;
+        const dropped = wt === 0;
+        const clr = dropped ? 'var(--muted)' : wt>0.2 ? 'var(--green)' : wt>0.1 ? 'var(--amber)' : 'var(--blue)';
+        return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;opacity:${dropped?0.45:1};">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--text);width:120px;text-align:right;flex-shrink:0;">${name}</div>
+          <div style="flex:1;background:var(--surface2);border-radius:2px;height:6px;overflow:hidden;">
+            <div style="width:${Math.round(best/rmse*100)}%;height:100%;background:${clr};border-radius:2px;"></div></div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--muted);width:62px;">±${rmse}pp</div>
+          <div style="font-family:var(--mono);font-size:10px;color:${dropped?'var(--muted)':'var(--text)'};width:60px;">${dropped?'dropped':(wt*100).toFixed(0)+'% wt'}</div>
+        </div>`;
+      }).join('');
+      const prev = document.getElementById('inf-ml-leaderboard'); if (prev) prev.remove();
+      const el = document.createElement('div'); el.id='inf-ml-leaderboard'; el.style.cssText='margin-top:14px;';
+      el.innerHTML = `<div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:8px;">MODEL LEADERBOARD (out-of-sample RMSE · ensemble weight)</div>${lb}`;
+      document.getElementById('inf-ml-section').querySelector('.pred-hero').after(el);
+    }
+
+    // Backtest table
+    document.getElementById('inf-ml-bt-table').innerHTML = `<table>
+      <thead><tr><th>Month</th><th class="r">Actual CPI YoY</th><th class="r">ML Predicted</th><th class="r">Error</th><th>Direction</th></tr></thead>
+      <tbody>${[...d.bt_rows].reverse().map((r,i)=>`
+        <tr style="animation-delay:${i*8}ms">
+          <td>${r.date}</td>
+          <td class="r">${r.actual}%</td>
+          <td class="r c-amber">${r.predicted}%</td>
+          <td class="r ${Math.abs(r.err)<=0.3?'c-green':Math.abs(r.err)<=0.7?'c-amber':'c-red'}">${r.err>=0?'+':''}${r.err}pp</td>
+          <td class="${r.dir_ok?'bt-ok':'bt-err'}">${r.dir_ok?'&#10003;':'&#10007;'}</td>
+        </tr>`).join('')}
+      </tbody></table>`;
+
+  } catch(e) {
+    document.getElementById('inf-ml-val').textContent = 'Error';
+    document.getElementById('inf-ml-sub').textContent = e.message.slice(0,120);
+    console.error(e);
+  }
+  btn.disabled = false;
+  document.getElementById('inf-ml-icon').textContent = '⚙';
 }
 
 let mlHistory    = [];
