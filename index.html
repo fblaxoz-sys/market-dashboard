@@ -1382,23 +1382,22 @@ async function runInflationML() {
       return dd > 0 ? `<span class="pred-dir dir-up">&#9650; Rising +${dd}pp</span>`
                     : `<span class="pred-dir dir-down">&#9660; Falling ${dd}pp</span>`;
     };
+    // Card 1: the single next-month ML nowcast (the only thing we forecast)
     if (fc[0]) {
-      document.getElementById('inf-main-m1').textContent = fc[0].month;
+      document.getElementById('inf-main-m1').textContent = fc[0].month + ' (forecast)';
       document.getElementById('inf-main-v1').textContent = fc[0].value + '%';
       document.getElementById('inf-main-s1').innerHTML =
-        `${m.accuracy}% accurate (±${m.acc_band}pp) · last actual ${d.last_actual_month}: ${d.nowcast.last_actual}%`;
+        `${m.accuracy}% accurate within ±${m.acc_band}pp (25-yr walk-forward)`;
       document.getElementById('inf-main-d1').innerHTML = dirHtml(fc[0].value, d.nowcast.last_actual);
     }
-    if (fc[1]) {
-      document.getElementById('inf-main-m2').textContent = fc[1].month;
-      document.getElementById('inf-main-v2').textContent = fc[1].value + '%';
-      document.getElementById('inf-main-s2').textContent =
-        fc[2] ? `Then ${fc[2].month}: ${fc[2].value}%` : '';
-      document.getElementById('inf-main-d2').innerHTML = dirHtml(fc[1].value, fc[0].value);
-    }
+    // Card 2: most recent ACTUAL CPI (reference, not a forecast)
+    document.getElementById('inf-main-m2').textContent = (d.last_actual_month || '—') + ' (actual)';
+    document.getElementById('inf-main-v2').textContent = d.nowcast.last_actual + '%';
+    document.getElementById('inf-main-v2').style.color = 'var(--accent2)';
+    document.getElementById('inf-main-s2').textContent = 'Latest published CPI reading';
+    document.getElementById('inf-main-d2').innerHTML = '';
     document.getElementById('inf-ml-sub').innerHTML =
-      `Last actual (${d.last_actual_month || '—'}): ${d.nowcast.last_actual}% · Change ${diff>0?'+':''}${diff}pp`
-      + (pathStr ? `<br><span style="color:var(--amber)">Forecast path → ${pathStr}</span>` : '');
+      `Last actual (${d.last_actual_month || '—'}): ${d.nowcast.last_actual}% · Change ${diff>0?'+':''}${diff}pp`;
     document.getElementById('inf-ml-dir').innerHTML = Math.abs(diff) < 0.05
       ? `<span class="pred-dir dir-flat">&#8594; Flat</span>`
       : diff > 0

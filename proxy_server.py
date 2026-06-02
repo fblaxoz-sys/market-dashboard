@@ -757,7 +757,7 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     # CPI data lags ~1 month, so we project H months ahead: each step feeds the
     # prediction back in (updating CPI's own lag/momentum) while the external
     # drivers are held at their latest values. Covers the current month + ahead.
-    H = 3
+    H = 1   # only the next unreleased month — matches the 1-month-ahead accuracy
     scf = StandardScaler().fit(X_all)
     fitted = {}                                  # same recipe members, refit on all data
     for n, (kind, mk) in member_defs.items():
