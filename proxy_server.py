@@ -579,7 +579,10 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     for sid in SERIES:
         if sid != 'CPIAUCSL' and sid in raw:
             df[sid.lower()] = raw[sid]
-    df = df.dropna()
+    # Ragged edge: some drivers publish later than CPI. Forward-fill them so the
+    # most recent CPI month is kept (otherwise dropna would discard it and the
+    # forecast would lag a month behind the data).
+    df = df.ffill().dropna()
     feat_cols = list(df.columns)            # cpi + lag + mom + drivers
     target = df['cpi'].shift(-1)            # predict NEXT month's CPI YoY
     data = df.copy(); data['__y__'] = target; data = data.dropna()
@@ -674,24 +677,47 @@ def run_inflation_nowcast(fred_key, bt_months=24):
                 'predicted': round(p, 2), 'err': round(p-a, 2),
                 'dir_ok': bool((a-pv)*(p-pv) >= 0)} for (d, a, p, pv) in wf]
 
-    # ── Nowcast from validated recipe on all data ─────────────────────────
-    last_row = df[feat_cols].iloc[-1:].values   # most recent complete month's features
+    # ── Multi-month forward forecast (iterative, validated recipe) ─────────
+    # CPI data lags ~1 month, so we project H months ahead: each step feeds the
+    # prediction back in (updating CPI's own lag/momentum) while the external
+    # drivers are held at their latest values. Covers the current month + ahead.
+    H = 3
     scf = StandardScaler().fit(X_all)
-    nm = [
-        _R(alpha=1.0).fit(scf.transform(X_all), y_all).predict(scf.transform(last_row))[0],
-        _EN(alpha=0.3, l1_ratio=0.5, max_iter=5000).fit(scf.transform(X_all), y_all).predict(scf.transform(last_row))[0],
-    ]
+    rg  = _R(alpha=1.0).fit(scf.transform(X_all), y_all)
+    en  = _EN(alpha=0.3, l1_ratio=0.5, max_iter=5000).fit(scf.transform(X_all), y_all)
+    rf2 = RandomForestRegressor(n_estimators=300, max_depth=5, min_samples_leaf=2,
+                                random_state=42).fit(X_all, y_all)
+    hg2 = HistGradientBoostingRegressor(max_iter=200, learning_rate=0.05,
+                                        max_depth=3, random_state=42).fit(X_all, y_all)
+    lg2 = None
     if _has_lg:
-        nm.append(_LG(n_estimators=150, learning_rate=0.05, max_depth=3,
-                      num_leaves=15, verbose=-1, random_state=42).fit(X_all, y_all).predict(last_row)[0])
+        lg2 = _LG(n_estimators=150, learning_rate=0.05, max_depth=3, num_leaves=15,
+                  verbose=-1, random_state=42).fit(X_all, y_all)
+    arima_fc = None
     if _has_ar:
-        try: nm.append(float(np.asarray(_AR(y_all, order=(1,1,1)).fit().forecast(1), float)[0]))
-        except Exception: pass
-    nowcast_val = float(np.mean(nm))
+        try: arima_fc = np.asarray(_AR(y_all, order=(1,1,1)).fit().forecast(H), float)
+        except Exception: arima_fc = None
 
-    last_date  = df.index[-1]
-    nc_date    = last_date + pd.DateOffset(months=1)
-    last_cpi   = float(df['cpi'].iloc[-1])
+    ci = feat_cols.index('cpi'); li = feat_cols.index('cpi_lag'); mi = feat_cols.index('cpi_mom')
+    base   = df[feat_cols].iloc[-1].values.astype(float).copy()   # drivers held at latest
+    last_date = df.index[-1]
+    prev_c = float(df['cpi'].iloc[-2])
+    cur_c  = float(df['cpi'].iloc[-1])
+    forecasts = []
+    for h in range(H):
+        r = base.copy(); r[ci] = cur_c; r[li] = prev_c; r[mi] = cur_c - prev_c
+        members = [rg.predict(scf.transform([r]))[0], en.predict(scf.transform([r]))[0],
+                   rf2.predict([r])[0], hg2.predict([r])[0]]
+        if lg2 is not None:        members.append(lg2.predict([r])[0])
+        if arima_fc is not None:   members.append(float(arima_fc[h]))
+        pred  = float(np.mean(members))
+        fdate = last_date + pd.DateOffset(months=h+1)
+        forecasts.append({'month': fdate.strftime('%Y-%m'), 'value': round(pred, 2)})
+        prev_c, cur_c = cur_c, pred
+
+    nowcast_val = forecasts[0]['value']
+    nc_date     = last_date + pd.DateOffset(months=1)
+    last_cpi    = float(df['cpi'].iloc[-1])
 
     # Pruned weights for leaderboard display
     ranked = sorted(models, key=lambda n: models[n]['rmse'])
@@ -702,12 +728,15 @@ def run_inflation_nowcast(fred_key, bt_months=24):
 
     history = [{'date': d.strftime('%Y-%m'), 'actual': round(a, 2),
                 'predicted': round(p, 2)} for (d, a, p, _) in wf]
-    history.append({'date': nc_date.strftime('%Y-%m'), 'actual': None,
-                    'predicted': round(nowcast_val, 2), 'is_nowcast': True})
+    for f in forecasts:
+        history.append({'date': f['month'], 'actual': None,
+                        'predicted': f['value'], 'is_nowcast': True})
 
     return {
         'nowcast': {'month': nc_date.strftime('%Y-%m'), 'value': round(nowcast_val, 2),
                     'last_actual': round(last_cpi, 2)},
+        'forecasts': forecasts,                 # multi-month forward path
+        'last_actual_month': last_date.strftime('%Y-%m'),
         'history': history,
         'bt_rows': bt_rows,
         'metrics': {

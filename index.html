@@ -1368,8 +1368,10 @@ async function runInflationML() {
     document.getElementById('inf-ml-month').textContent = d.nowcast.month;
     document.getElementById('inf-ml-val').textContent   = d.nowcast.value + '%';
     const diff = (d.nowcast.value - d.nowcast.last_actual).toFixed(2);
-    document.getElementById('inf-ml-sub').textContent =
-      `Last actual: ${d.nowcast.last_actual}% | Change: ${diff>0?'+':''}${diff}pp`;
+    const pathStr = (d.forecasts || []).map(f => `${f.month}: ${f.value}%`).join('  ·  ');
+    document.getElementById('inf-ml-sub').innerHTML =
+      `Last actual (${d.last_actual_month || '—'}): ${d.nowcast.last_actual}% · Change ${diff>0?'+':''}${diff}pp`
+      + (pathStr ? `<br><span style="color:var(--amber)">Forecast path → ${pathStr}</span>` : '');
     document.getElementById('inf-ml-dir').innerHTML = Math.abs(diff) < 0.05
       ? `<span class="pred-dir dir-flat">&#8594; Flat</span>`
       : diff > 0
