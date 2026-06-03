@@ -960,6 +960,15 @@ def _yahoo_ohlc(sym, rng="2y"):
         rows.append((_dt.date.fromtimestamp(t).isoformat(), o, h, l, c, v))
     return rows
 
+def _atr_series(highs, lows, closes, p=14):
+    import numpy as np
+    n = len(closes); tr = [highs[0]-lows[0]]
+    for k in range(1, n):
+        tr.append(max(highs[k]-lows[k], abs(highs[k]-closes[k-1]), abs(lows[k]-closes[k-1])))
+    return [float(np.mean(tr[max(0,k-p+1):k+1])) for k in range(n)]
+
+ATR_MULT = 6.0   # trailing-stop width (× ATR) — chosen from 1-yr backtest
+
 def run_etf_scan(fmp_key=None):
     import numpy as np
     # FMP locked its ETF screener/expense endpoints behind a paid plan (Aug 2025),
@@ -1034,13 +1043,15 @@ def run_etf_scan(fmp_key=None):
         rs_pts   = max(-20.0, min(20.0, rs))          # relative strength, capped ±20
         score = round(rng6*80 + clean*6 + strength*150 + prox*50 + rs_pts*1.5
                       + (12 if vol_ok else 0) + (15 if retested else 0), 1)
-        # BUY trigger = the breakout level; STOP = nearest support below it (else ~7% under)
-        sups_below = [m for m, _ in sup if m < lvl*0.995]
-        stop = round(max(sups_below), 2) if sups_below else round(lvl*0.93, 2)
+        # BUY trigger = the breakout level; STOP = ATR-based trailing stop (6× ATR,
+        # ratchets up as price rises). Initial stop shown here.
+        atr_now = _atr_series(highs, lows, closes)[-1]
+        stop = round(lvl - ATR_MULT*atr_now, 2)
+        atr_pct = round(ATR_MULT*atr_now/lvl*100, 1)
         return {
             'sym': sym, 'price': round(price, 2), 'avgvol': int(avgvol),
             'expense': expense, 'signal': signal, 'level': round(lvl, 2),
-            'entry': round(lvl, 2), 'stop': stop,
+            'entry': round(lvl, 2), 'stop': stop, 'atr_pct': atr_pct,
             'touches': touches, 'score': score, 'rs': rs,
             'vol_surge': vol_surge, 'vol_ok': bool(vol_ok), 'retested': bool(retested),
             'support':    [round(m, 2) for m, n in sup][:3],
@@ -1072,11 +1083,11 @@ def run_etf_scan(fmp_key=None):
             'scanned': len(universe), 'source': 'curated'}
 
 
-def run_etf_backtest(hold=40, stop_frac=0.05):
-    """1-year point-in-time backtest of the breakout BUY rule:
-    enter at the close of the day price breaks above a tested resistance level;
-    exit on a close >stop_frac below the level (failed breakout) OR after `hold`
-    trading days. No look-ahead: resistance is only from pivots confirmed earlier."""
+def run_etf_backtest(atr_mult=ATR_MULT):
+    """1-year point-in-time backtest of the breakout BUY rule with an ATR trailing
+    stop (Chandelier exit): enter at the close of the day price breaks above a
+    tested resistance level; trail a stop at (highest-high-since-entry − atr_mult×ATR)
+    that only ratchets up; exit when price closes below it. No look-ahead."""
     import numpy as np
 
     def cl(levels, tol=0.025):
@@ -1103,9 +1114,11 @@ def run_etf_backtest(hold=40, stop_frac=0.05):
         dates=[r[0] for r in rows]; highs=[r[2] for r in rows]; lows=[r[3] for r in rows]
         closes=[r[4] for r in rows]; vols=[r[5] for r in rows]
         n = len(closes)
+        atr = _atr_series(highs, lows, closes)
         ph = [i for i in range(W, n-W) if highs[i] == max(highs[i-W:i+W+1])]
         start = max(70, n-252)                 # signals over the last ~year
         in_pos = False; entry = lvl = 0.0; entry_i = 0; e_vol = False; e_rs = 0.0
+        hh = trail = 0.0
         i = start
         while i < n:
             if not in_pos:
@@ -1116,7 +1129,7 @@ def run_etf_backtest(hold=40, stop_frac=0.05):
                     below = any(closes[j] < m*0.995 for j in range(max(0, i-40), i))
                     if below and closes[i] > m*1.005 and closes[i-1] <= m*1.01:
                         in_pos, entry, lvl, entry_i = True, closes[i], m, i
-                        # point-in-time quality flags at the moment of the signal
+                        hh = highs[i]; trail = hh - atr_mult*atr[i]    # initial ATR stop
                         base = float(np.mean(vols[i-20:i])) if i >= 20 else 0
                         e_vol = base > 0 and vols[i] >= 1.5*base
                         d_now, d_then = dates[i], dates[i-63]
@@ -1126,15 +1139,15 @@ def run_etf_backtest(hold=40, stop_frac=0.05):
                             e_rs = 0.0
                         break
             else:
-                exit_stop = closes[i] < lvl*(1-stop_frac)
-                exit_time = (i - entry_i) >= hold
-                if exit_stop or exit_time or i == n-1:
+                hh = max(hh, highs[i])
+                trail = max(trail, hh - atr_mult*atr[i])               # ratchet the stop up only
+                if closes[i] < trail or i == n-1:
                     trades.append({'sym': sym, 'date': dates[entry_i], 'exit_date': dates[i],
                                    'level': round(lvl,2),
                                    'entry': round(entry,2), 'exit': round(closes[i],2),
                                    'ret': round((closes[i]/entry-1)*100, 2),
                                    'days': i-entry_i,
-                                   'why': 'stop' if exit_stop else ('open' if i==n-1 and not exit_time else 'time'),
+                                   'why': 'open' if i == n-1 and closes[i] >= trail else 'trail-stop',
                                    'vol_ok': bool(e_vol), 'rs': round(e_rs,1),
                                    'hi': bool(e_vol and e_rs > 0)})   # high-quality = vol-confirmed AND beating SPY
                     in_pos = False
@@ -1154,7 +1167,8 @@ def run_etf_backtest(hold=40, stop_frac=0.05):
             'profit_factor': round(gains/pains, 2) if pains > 0 else None,
             'best':  round(max(rets), 2) if n else 0,
             'worst': round(min(rets), 2) if n else 0,
-            'hold': hold, 'stop_pct': round(stop_frac*100),
+            'avg_days': round(float(np.mean([t['days'] for t in ts])), 0) if n else 0,
+            'rule': f'{atr_mult:g}× ATR trailing stop',
         }
 
     trades.sort(key=lambda t: t['date'])

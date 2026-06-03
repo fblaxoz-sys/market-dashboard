@@ -1815,7 +1815,7 @@ async function runETFBacktest() {
       card(H.win_rate>=50?'sc-green':'sc-red','Win rate', H.win_rate+'%', 'profitable') +
       card(H.avg_ret>=0?'sc-green':'sc-red','Avg / trade', (H.avg_ret>=0?'+':'')+H.avg_ret+'%', `win +${H.avg_win}% · loss ${H.avg_loss}%`) +
       card((H.profit_factor||0)>=1?'sc-green':'sc-amber','Profit factor', H.profit_factor ?? '—', 'wins ÷ losses') +
-      card('sc-purple','Best / Worst', H.best+'% / '+H.worst+'%', `hold ${H.hold}d · stop ${H.stop_pct}%`);
+      card('sc-purple','Best / Worst', H.best+'% / '+H.worst+'%', `${H.rule||'ATR trail'} · ~${H.avg_days||''}d avg`);
     // store trades for click-to-chart
     etfBtTrades = {}; d.trades.forEach(t => { etfBtTrades[t.sym + '|' + t.date] = t; });
     document.getElementById('etf-bt-trades').innerHTML = `<table>
@@ -1852,7 +1852,7 @@ function etfRow(a) {
   return `<tr style="cursor:pointer" onclick="showETFChart('${a.sym}')">
     <td class="ticker-cell">${a.sym}</td>
     <td class="r">$${a.price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-    <td class="r"><span class="c-green">$${a.entry ?? a.level}</span><br><span style="font-size:9px;color:var(--red);opacity:.85">stop $${a.stop ?? '—'}</span></td>
+    <td class="r"><span class="c-green">$${a.entry ?? a.level}</span><br><span style="font-size:9px;color:var(--red);opacity:.85" title="6× ATR trailing stop (ratchets up as price rises)">stop $${a.stop ?? '—'}${a.atr_pct?` (-${a.atr_pct}%)`:''}</span></td>
     <td class="r ${a.signal==='BREAKOUT'?'c-green':'c-amber'}">${dist}</td>
     <td class="r">${rs}</td>
     <td class="r">${a.touches}×</td>
