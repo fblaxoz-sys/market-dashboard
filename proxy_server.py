@@ -946,6 +946,32 @@ CURATED_ETFS = {
     'PALL':0.60,'SIVR':0.30,'SGOL':0.17,
 }
 
+# Liquid large/mid-cap stocks (price≥$10, heavily traded). Same breakout strategy.
+STOCK_UNIVERSE = {s: None for s in [
+    # mega-cap tech
+    'AAPL','MSFT','NVDA','AMZN','GOOGL','META','TSLA','AVGO','ORCL','NFLX','AMD','ADBE',
+    # semis
+    'MU','INTC','QCOM','TXN','LRCX','AMAT','KLAC','ARM','SMCI','MRVL','ON','MPWR','ASML','TSM',
+    # software / cloud / cyber
+    'CRM','NOW','PANW','CRWD','SNOW','NET','DDOG','ZS','PLTR','MDB','SHOP','TEAM','WDAY','ADSK','INTU','FTNT','ANET','CSCO','IBM','UBER','ABNB',
+    # fintech / financials
+    'JPM','BAC','WFC','GS','MS','C','BLK','SCHW','V','MA','AXP','PYPL','SQ','COIN','HOOD','SOFI','KKR',
+    # healthcare
+    'UNH','JNJ','LLY','PFE','MRK','ABBV','TMO','ABT','DHR','ISRG','AMGN','GILD','VRTX','REGN','BMY','MDT','BSX',
+    # consumer / retail
+    'WMT','COST','HD','MCD','NKE','SBUX','TGT','LOW','DIS','BKNG','CMG','LULU','ROST','TJX','PG','KO','PEP','MDLZ',
+    # industrials / defense
+    'CAT','DE','BA','GE','HON','UPS','RTX','LMT','GD','NOC','EMR','ETN','PH','UNP','FDX',
+    # energy / materials
+    'XOM','CVX','COP','SLB','OXY','EOG','MPC','PSX','FCX','NEM','LIN','NUE',
+    # comm / media / telecom
+    'T','VZ','CMCSA','TMUS','WBD',
+    # autos / EV / travel
+    'F','GM','RIVN','LCID','DAL','UAL','CCL','RCL',
+    # momentum / growth names
+    'DKNG','RBLX','U','SNAP','PINS','SPOT','ZM','ROKU','DOCU','TTD','CVNA','AFRM','DASH','CELH','SMR','VST','CEG','GEV',
+]}
+
 def _yahoo_ohlc(sym, rng="2y"):
     import urllib.request, json as _json, datetime as _dt
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval=1d"
@@ -969,11 +995,10 @@ def _atr_series(highs, lows, closes, p=14):
 
 ATR_MULT = 6.0       # trailing-stop width (× ATR) — exits via trailing stop only (no profit-taking; 5-yr optimization showed it's best)
 
-def run_etf_scan(fmp_key=None):
+def run_etf_scan(fmp_key=None, universe=None):
     import numpy as np
-    # FMP locked its ETF screener/expense endpoints behind a paid plan (Aug 2025),
-    # so we use a curated, vetted universe of liquid non-leveraged ETFs (<1% expense).
-    universe = dict(CURATED_ETFS)
+    # Default universe = curated ETFs; callers can pass a stock universe instead.
+    universe = dict(universe if universe is not None else CURATED_ETFS)
 
     def pivots(highs, lows, w=8):
         ph, pl = [], []
@@ -1145,7 +1170,7 @@ def run_etf_single(sym):
     }
 
 
-def run_etf_backtest(atr_mult=ATR_MULT, years=1):
+def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None):
     """Point-in-time backtest of the breakout BUY rule with an ATR trailing
     stop (Chandelier exit): enter at the close of the day price breaks above a
     tested resistance level; trail a stop at (highest-high-since-entry − atr_mult×ATR)
@@ -1170,7 +1195,7 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1):
 
     W = 8
     trades = []
-    for sym, exp in CURATED_ETFS.items():
+    for sym, exp in (universe if universe is not None else CURATED_ETFS).items():
         if exp is not None and exp >= 1.0: continue
         try: rows = _yahoo_ohlc(sym, rng)
         except Exception: continue
@@ -1322,22 +1347,22 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({'error': err}).encode())
             return
 
-        if parsed.path == '/etf-scan':
-            qs      = urllib.parse.parse_qs(parsed.query)
-            fmp_key = qs.get('fmp_key', [''])[0] or None
+        if parsed.path in ('/etf-scan', '/stock-scan'):
+            is_stock = parsed.path == '/stock-scan'
             try:
-                print(f"\n[etf] Scan request (fmp={'yes' if fmp_key else 'no'}) …")
-                key = f"etf:{'fmp' if fmp_key else 'curated'}"
-                result  = cached_ml(key, lambda: run_etf_scan(fmp_key))
+                tag = 'stock' if is_stock else 'etf'
+                print(f"\n[{tag}] Scan request …")
+                uni = STOCK_UNIVERSE if is_stock else None
+                result  = cached_ml(f"{tag}:scan", lambda: run_etf_scan(None, uni))
                 payload = json.dumps(result).encode()
-                print(f"[etf] Done → {len(result['breakouts'])} breakouts")
+                print(f"[{tag}] Done → {len(result['breakouts'])} breakouts")
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers(); self.wfile.write(payload)
             except Exception:
                 err = traceback.format_exc()
-                print(f"[etf] ERROR:\n{err}")
+                print(f"[scan] ERROR:\n{err}")
                 self.send_response(500)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
@@ -1387,22 +1412,25 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({'sym': sym, 'error': str(e)}).encode())
             return
 
-        if parsed.path == '/etf-backtest':
+        if parsed.path in ('/etf-backtest', '/stock-backtest'):
+            is_stock = parsed.path == '/stock-backtest'
             qs    = urllib.parse.parse_qs(parsed.query)
             years = int(qs.get('years', ['1'])[0])
             if years not in (1, 2, 5): years = 1
             try:
-                print(f"\n[etf-bt] {years}-year breakout backtest …")
-                result  = cached_ml(f"etf-bt:{years}", lambda: run_etf_backtest(years=years))
+                tag = 'stock-bt' if is_stock else 'etf-bt'
+                print(f"\n[{tag}] {years}-year breakout backtest …")
+                uni = STOCK_UNIVERSE if is_stock else None
+                result  = cached_ml(f"{tag}:{years}", lambda: run_etf_backtest(years=years, universe=uni))
                 payload = json.dumps(result).encode()
-                print(f"[etf-bt] Done → {result['stats']['trades']} trades")
+                print(f"[{tag}] Done → {result['stats']['trades']} trades")
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers(); self.wfile.write(payload)
             except Exception:
                 err = traceback.format_exc()
-                print(f"[etf-bt] ERROR:\n{err}")
+                print(f"[bt] ERROR:\n{err}")
                 self.send_response(500)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')

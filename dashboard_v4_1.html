@@ -175,6 +175,7 @@ td.r{text-align:right;}
 <nav class="nav">
   <div class="nav-brand">&#9889; Market Dashboard</div>
   <button class="tab-btn active" onclick="switchTab('etf')">&#128201; ETF Swings</button>
+  <button class="tab-btn" onclick="switchTab('stock')">&#128200; Stock Swings</button>
   <button class="tab-btn" onclick="switchTab('positions')">&#128204; My Positions</button>
   <button class="tab-btn" onclick="switchTab('inflation')">&#127777; Inflation Predictor</button>
   <button class="tab-btn" onclick="switchTab('gdp')">&#128202; GDP Predictor</button>
@@ -246,6 +247,72 @@ td.r{text-align:right;}
 
   <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Already broke out</div></div>
   <div class="table-wrap" id="etf-breakout-table"><div class="empty-state">Hit Scan to find ETF breakouts</div></div>
+</div>
+</div>
+
+<!-- ── TAB: STOCK SWINGS ── -->
+<div class="tab-panel" id="tab-stock">
+<div class="wrap">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <h2 style="font-size:22px;font-weight:800;">Stock Swing Scanner</h2>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Liquid large/mid-cap stocks &mdash; same breakout strategy: price&ge;$10, vol&ge;50k · Yahoo data</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span id="stock-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <button class="btn" id="stock-bt-btn" onclick="runStockBacktest()">
+        <span id="stock-bt-icon">&#129518;</span> Backtest
+      </button>
+      <button class="btn btn-primary" id="stock-scan-btn" onclick="runStockScan()">
+        <span id="stock-scan-icon">&#128269;</span> Scan Stocks
+      </button>
+    </div>
+  </div>
+
+  <div class="progress-wrap" id="stock-prog">
+    <div class="progress-label" id="stock-prog-lbl">Scanning stocks…</div>
+    <div class="progress-track"><div class="progress-fill" id="stock-prog-fill" style="width:0%"></div></div>
+  </div>
+
+  <div class="config-bar">
+    <label>CHECK ANY TICKER</label>
+    <input id="stock-search-sym" type="text" placeholder="Any stock or ETF — e.g. NVDA, AAPL, TSLA" onkeydown="if(event.key==='Enter')searchStock()" />
+    <button class="btn btn-primary" onclick="searchStock()"><span id="stock-search-icon">&#128269;</span> Check momentum</button>
+  </div>
+  <div id="stock-search-result" style="margin-bottom:16px;"></div>
+
+  <div id="stock-chart-wrap" class="chart-wrap" style="display:none;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div id="stock-chart-title" style="font-size:16px;font-weight:800;"></div>
+      <div id="stock-chart-legend" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></div>
+    </div>
+    <div id="stock-chart" style="height:340px;"></div>
+  </div>
+
+  <div id="stock-bt-section" style="display:none;margin-bottom:24px;">
+    <div class="section-header">
+      <div class="section-title"><span class="dot dot-purple"></span><span id="stock-bt-title">Backtest</span> &mdash; high-quality breakouts</div>
+      <div style="display:flex;gap:6px;">
+        <button class="btn stock-bt-period" data-yr="1" onclick="runStockBacktest(1)">1 Year</button>
+        <button class="btn stock-bt-period" data-yr="2" onclick="runStockBacktest(2)">2 Year</button>
+        <button class="btn stock-bt-period" data-yr="5" onclick="runStockBacktest(5)">5 Year</button>
+      </div>
+    </div>
+    <div class="stats-row" id="stock-bt-stats"></div>
+    <div class="table-wrap" id="stock-bt-trades"></div>
+  </div>
+
+  <div class="section-header">
+    <div class="section-title"><span class="dot dot-green"></span>&#11088; High-Quality Setups &mdash; about to break out &amp; beating the market</div>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">beating SPY + score&ge;60 · the ones worth trading</span>
+  </div>
+  <div class="table-wrap" id="stock-hq-table"><div class="empty-state">Hit Scan &mdash; the strongest pre-breakout stock setups</div></div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>All approaching &mdash; testing resistance</div></div>
+  <div class="table-wrap" id="stock-approach-table"><div class="empty-state">Hit Scan to find setups nearing breakout</div></div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Already broke out</div></div>
+  <div class="table-wrap" id="stock-breakout-table"><div class="empty-state">Hit Scan to find stock breakouts</div></div>
 </div>
 </div>
 
@@ -479,7 +546,7 @@ let cpiChart = null;
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
 
 function switchTab(id) {
-  const ids = ['etf','positions','inflation','gdp'];
+  const ids = ['etf','stock','positions','inflation','gdp'];
   if (id === 'positions') setTimeout(renderPositions, 50);
   document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', ids[i] === id));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-'+id));
@@ -1505,7 +1572,8 @@ function renderBtTrades() {
       <td class="r c-muted">${t.days}</td><td class="c-muted">${t.why}</td></tr>`).join('')}</tbody></table>`;
 }
 
-function etfRow(a) {
+function etfRow(a, chartFn) {
+  chartFn = chartFn || 'showETFChart';
   const expStr = a.expense != null ? a.expense + '%' : '—';
   const dist = a.signal === 'BREAKOUT'
     ? `+${((a.price/a.level - 1)*100).toFixed(1)}% above`
@@ -1517,7 +1585,7 @@ function etfRow(a) {
   if (a.vol_ok)   sig += `<span class="wl-badge" style="background:#2dd4a022;color:var(--green);border-color:#2dd4a044" title="Breakout volume ${a.vol_surge}× the 20-day average">Vol ${a.vol_surge}×</span>`;
   if (a.retested) sig += `<span class="wl-badge" style="background:#f5a62322;color:var(--amber);border-color:#f5a62344" title="Broke out, pulled back to the level and held">Retest&#10003;</span>`;
   if (!sig) sig = '<span class="c-muted" style="font-size:10px">—</span>';
-  return `<tr style="cursor:pointer" onclick="showETFChart('${a.sym}')">
+  return `<tr style="cursor:pointer" onclick="${chartFn}('${a.sym}')">
     <td class="ticker-cell">${a.sym}</td>
     <td class="r">$${a.price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
     <td class="r"><span class="c-green">$${a.entry ?? a.level}</span><br>
@@ -1548,7 +1616,7 @@ let etfSort = {};   // tableId -> {k, d}   (d: 1 = ascending, -1 = descending)
 function sortETF(id, k) {
   const s = etfSort[id] || {k:'score', d:-1};
   etfSort[id] = (s.k === k) ? {k, d:-s.d} : {k, d:(k==='sym'?1:-1)};
-  renderETFTables();
+  if (id.startsWith('stock')) renderStockTables(); else renderETFTables();
 }
 function etfHead(id) {
   const s = etfSort[id] || {k:'score', d:-1};
@@ -1566,7 +1634,8 @@ function renderOneETF(id, arr, emptyMsg) {
     const x = f(a), y = f(b);
     return typeof x === 'string' ? s.d*x.localeCompare(y) : s.d*(x-y);
   });
-  el.innerHTML = `<table>${etfHead(id)}<tbody>${sorted.map(etfRow).join('')}</tbody></table>`;
+  const chartFn = id.startsWith('stock') ? 'showStockChart' : 'showETFChart';
+  el.innerHTML = `<table>${etfHead(id)}<tbody>${sorted.map(a => etfRow(a, chartFn)).join('')}</tbody></table>`;
 }
 function renderETFTables() {
   const bo = etfData.breakouts, ap = etfData.approaching;
@@ -1840,6 +1909,157 @@ async function showPositionChart(sym, idx) {
   if (sold) markers.push({ time:t.triggered.date, position:'aboveBar', color:'#f0526a', shape:'arrowDown', text:'SELL $'+t.triggered.price });
   candle.setMarkers(markers);
   posChart.timeScale().fitContent();
+}
+
+// ════════════════════════════════════════════════════════
+// TAB — STOCK SWING SCANNER  (mirrors ETF, uses /stock-* endpoints)
+// ════════════════════════════════════════════════════════
+let stockData = { breakouts: [], approaching: [] };
+let stockChart = null, stockLastSearch = null;
+let stockBtTrades = {}, stockBtData = [], stockBtSort = {k:'date', d:-1};
+
+async function runStockScan() {
+  const btn = document.getElementById('stock-scan-btn'); btn.disabled = true;
+  document.getElementById('stock-scan-icon').innerHTML = '<span class="spinner"></span>';
+  const prog = document.getElementById('stock-prog'); prog.classList.add('visible');
+  document.getElementById('stock-prog-lbl').textContent = 'Scanning stocks for breakouts… (~1-2 min first run)';
+  document.getElementById('stock-prog-fill').style.width = '40%';
+  try {
+    const d = await (await fetch('/stock-scan')).json();
+    if (d.error) throw new Error(d.error);
+    stockData = d; document.getElementById('stock-prog-fill').style.width = '100%';
+    renderStockTables();
+    document.getElementById('stock-updated').textContent =
+      `Scanned ${d.scanned} stocks · ${d.approaching.length} approaching, ${d.breakouts.length} broke out`;
+    const hq = d.approaching.filter(a => a.rs != null && a.rs > 0 && a.score >= 60);
+    if (hq.length) showStockChart(hq[0].sym);
+    else if (d.breakouts.length) showStockChart(d.breakouts[0].sym);
+  } catch(e) {
+    document.getElementById('stock-hq-table').innerHTML = `<div class="empty-state">Scan failed: ${e.message.slice(0,140)}</div>`;
+  }
+  prog.classList.remove('visible'); btn.disabled = false;
+  document.getElementById('stock-scan-icon').textContent = '🔍';
+}
+
+function renderStockTables() {
+  const bo = stockData.breakouts, ap = stockData.approaching;
+  const hq = ap.filter(a => a.rs != null && a.rs > 0 && a.score >= 60);
+  renderOneETF('stock-hq-table',       hq, 'No high-quality stock setups right now');
+  renderOneETF('stock-approach-table', ap, 'No stocks approaching resistance');
+  renderOneETF('stock-breakout-table', bo, 'No stock breakouts');
+}
+
+async function runStockBacktest(years) {
+  years = years || 1;
+  const btn = document.getElementById('stock-bt-btn'); btn.disabled = true;
+  document.getElementById('stock-bt-icon').innerHTML = '<span class="spinner"></span>';
+  document.getElementById('stock-bt-section').style.display = '';
+  document.getElementById('stock-bt-title').textContent = `${years}-Year Backtest`;
+  document.querySelectorAll('.stock-bt-period').forEach(b => b.classList.toggle('btn-primary', +b.dataset.yr === years));
+  document.getElementById('stock-bt-stats').innerHTML = `<div class="empty-state" style="grid-column:1/-1">Running ${years}-year backtest… (~1-3 min)</div>`;
+  document.getElementById('stock-bt-trades').innerHTML = '';
+  try {
+    const d = await (await fetch(`/stock-backtest?years=${years}`)).json();
+    if (d.error) throw new Error(d.error);
+    const H = d.stats_hi || d.stats;
+    const card = (cls,l,v,s) => `<div class="stat-card ${cls}"><div class="stat-label">${l}</div><div class="stat-value">${v}</div><div class="stat-sub">${s}</div></div>`;
+    document.getElementById('stock-bt-stats').innerHTML =
+      card('sc-blue','Trades', H.trades, `high-quality, ${years} yr`) +
+      card(H.win_rate>=50?'sc-green':'sc-red','Win rate', H.win_rate+'%', 'profitable') +
+      card(H.avg_ret>=0?'sc-green':'sc-red','Avg / trade', (H.avg_ret>=0?'+':'')+H.avg_ret+'%', `win +${H.avg_win}% · loss ${H.avg_loss}%`) +
+      card((H.profit_factor||0)>=1?'sc-green':'sc-amber','Profit factor', H.profit_factor ?? '—', 'wins ÷ losses') +
+      card('sc-purple','Best / Worst', H.best+'% / '+H.worst+'%', `${H.rule||'ATR trail'} · ~${H.avg_days||''}d avg`);
+    stockBtTrades = {}; d.trades.forEach(t => { stockBtTrades[t.sym + '|' + t.date] = t; });
+    stockBtData = d.trades; renderStockBt();
+    document.getElementById('stock-updated').textContent =
+      `${years}-yr backtest: ${H.trades} trades · ${H.win_rate}% win · ${H.avg_ret>=0?'+':''}${H.avg_ret}%/trade · PF ${H.profit_factor ?? '—'}`;
+  } catch(e) {
+    document.getElementById('stock-bt-stats').innerHTML = `<div class="empty-state" style="grid-column:1/-1">Backtest failed: ${e.message.slice(0,140)}</div>`;
+  }
+  btn.disabled = false; document.getElementById('stock-bt-icon').textContent = '🧪';
+}
+function sortStockBt(k) { stockBtSort = (stockBtSort.k===k) ? {k,d:-stockBtSort.d} : {k,d:(['sym','why','date'].includes(k)?1:-1)}; renderStockBt(); }
+function renderStockBt() {
+  if (!stockBtData.length) { document.getElementById('stock-bt-trades').innerHTML='<div class="empty-state">No trades</div>'; return; }
+  const f = BT_SORTV[stockBtSort.k] || BT_SORTV.date;
+  const sorted = [...stockBtData].sort((a,b)=>{const x=f(a),y=f(b); return typeof x==='string'? stockBtSort.d*x.localeCompare(y): stockBtSort.d*(x-y);});
+  const head = '<thead><tr>'+BT_COLS.map(([k,lbl,al])=>{const ar=stockBtSort.k===k?(stockBtSort.d<0?' ▾':' ▴'):''; return `<th class="${al}" style="cursor:pointer;white-space:nowrap" onclick="sortStockBt('${k}')">${lbl}${ar}</th>`;}).join('')+'</tr></thead>';
+  document.getElementById('stock-bt-trades').innerHTML = `<table>${head}<tbody>${sorted.map(t=>`
+    <tr style="cursor:pointer" onclick="showStockTradeChart('${t.sym}','${t.date}')">
+      <td>${t.date}</td><td class="ticker-cell">${t.sym}</td>
+      <td class="r c-muted">$${t.entry}</td><td class="r c-muted">$${t.exit}</td>
+      <td class="r ${t.ret>=0?'c-green':'c-red'}">${t.ret>=0?'+':''}${t.ret}%</td>
+      <td class="r c-muted">${t.score ?? '—'}</td>
+      <td class="r ${t.rs>0?'c-green':'c-muted'}">${t.rs>0?'+':''}${t.rs}%</td>
+      <td class="r c-muted">${t.days}</td><td class="c-muted">${t.why}</td></tr>`).join('')}</tbody></table>`;
+}
+
+async function searchStock() {
+  const sym = document.getElementById('stock-search-sym').value.trim().toUpperCase();
+  if (!sym) return;
+  const icon = document.getElementById('stock-search-icon'); icon.innerHTML = '<span class="spinner"></span>';
+  const out = document.getElementById('stock-search-result'); out.innerHTML = `<div class="empty-state">Checking ${sym}…</div>`;
+  try {
+    const a = await (await fetch(`/etf-analyze?sym=${encodeURIComponent(sym)}`)).json();
+    if (a.error) throw new Error(a.error);
+    stockLastSearch = a;
+    const sigTxt = a.signal==='BREAKOUT'?'🚀 Broke out':a.signal==='APPROACHING'?'👀 Approaching':'⏳ No setup yet';
+    const sigCls = a.signal==='BREAKOUT'?'sc-green':a.signal==='APPROACHING'?'sc-amber':'sc-blue';
+    const card=(cls,l,v,s)=>`<div class="stat-card ${cls}"><div class="stat-label">${l}</div><div class="stat-value" style="font-size:19px">${v}</div><div class="stat-sub">${s}</div></div>`;
+    out.innerHTML = `<div class="stats-row">
+      ${card(sigCls, a.sym+' — Signal', sigTxt, a.signal!=='NONE'?'level $'+a.level:'watch $'+a.level)}
+      ${card('sc-blue','Price', '$'+a.price, 'avg vol '+(a.avgvol/1e6).toFixed(1)+'M')}
+      ${card(a.rs>0?'sc-green':'sc-red','RS vs SPY', (a.rs>0?'+':'')+a.rs+'%', a.rs>0?'beating market':'lagging market')}
+      ${card('sc-purple','Score', a.score, a.hi?'high-quality ✓':(a.score>=60?'strong':'weak'))}
+      ${card('sc-amber','Buy / Stop', '$'+a.entry+' / $'+a.stop, '6×ATR trailing stop')}
+    </div>`;
+    showStockChart(sym);
+    document.getElementById('stock-chart-wrap').scrollIntoView({behavior:'smooth',block:'nearest'});
+  } catch(e) { out.innerHTML = `<div class="empty-state">Couldn't analyze ${sym}: ${e.message.slice(0,120)}</div>`; }
+  icon.textContent = '🔍';
+}
+
+function showStockChart(sym) {
+  const a = [stockLastSearch, ...stockData.breakouts, ...stockData.approaching].find(x => x && x.sym === sym);
+  if (!a) return;
+  document.getElementById('stock-chart-wrap').style.display = '';
+  document.getElementById('stock-chart-title').textContent =
+    `${a.sym} — ${a.signal==='BREAKOUT'?'Breakout above':a.signal==='APPROACHING'?'Approaching':'Watching'} $${a.level}`;
+  const rsTxt = a.rs!=null?` · <span style="color:${a.rs>0?'var(--green)':'var(--red)'}">RS ${a.rs>0?'+':''}${a.rs}% vs SPY</span>`:'';
+  const volTxt = a.vol_ok?` · <span style="color:var(--green)">vol ${a.vol_surge}×&#10003;</span>`:'';
+  document.getElementById('stock-chart-legend').innerHTML = `<span style="color:#ff2fb0">★ breakout line</span> · <span style="color:var(--green)">support</span>${rsTxt}${volTxt}`;
+  const el = document.getElementById('stock-chart'); el.innerHTML = '';
+  stockChart = LightweightCharts.createChart(el, {height:340, layout:{background:{color:'transparent'},textColor:'#6b6b80',fontFamily:"'Space Mono'"}, grid:{vertLines:{color:'#ffffff08'},horzLines:{color:'#ffffff08'}}, timeScale:{borderColor:'#ffffff18'}, rightPriceScale:{borderColor:'#ffffff18'}});
+  const series = stockChart.addCandlestickSeries({upColor:'#2dd4a0',downColor:'#f0526a',borderVisible:false,wickUpColor:'#2dd4a0',wickDownColor:'#f0526a'});
+  series.setData(a.ohlc.map(([t,o,h,l,c])=>({time:t,open:o,high:h,low:l,close:c})));
+  (a.resistance||[]).filter(r=>r!==a.level).forEach(r=>series.createPriceLine({price:r,color:'#f0526a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'R '+r}));
+  (a.support||[]).forEach(s=>series.createPriceLine({price:s,color:'#2dd4a0',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'S '+s}));
+  if (a.level) series.createPriceLine({price:a.level,color:'#ff2fb0',lineWidth:3,lineStyle:0,axisLabelVisible:true,title:'★ BREAKOUT '+a.level});
+  if (a.signal==='BREAKOUT') { let hit=null; for(let j=1;j<a.ohlc.length;j++){if(a.ohlc[j][4]>a.level&&a.ohlc[j-1][4]<=a.level)hit=a.ohlc[j];} if(!hit)hit=a.ohlc.find(x=>x[4]>a.level); if(hit)series.setMarkers([{time:hit[0],position:'belowBar',color:'#f5a623',shape:'arrowUp',text:'breakout $'+a.level}]); }
+  stockChart.timeScale().fitContent();
+}
+
+async function showStockTradeChart(sym, date) {
+  const t = stockBtTrades[sym+'|'+date]; if (!t) return;
+  document.getElementById('stock-chart-wrap').style.display = '';
+  document.getElementById('stock-chart-title').textContent = `${sym} — loading…`;
+  document.getElementById('stock-chart-wrap').scrollIntoView({behavior:'smooth',block:'nearest'});
+  let ohlc;
+  try { ohlc = (await (await fetch(`/etf-chart?sym=${encodeURIComponent(sym)}`)).json()).ohlc; } catch(e) { return; }
+  if (!ohlc) return;
+  const today = ohlc[ohlc.length-1][4]; const since = ((today/t.entry-1)*100).toFixed(1);
+  document.getElementById('stock-chart-title').innerHTML =
+    `${sym} — bought ${t.date} @ $${t.entry} · today $${today} <span style="color:${today>=t.entry?'var(--green)':'var(--red)'}">(${since>=0?'+':''}${since}%)</span>`;
+  document.getElementById('stock-chart-legend').innerHTML = `trade result ${t.ret>=0?'+':''}${t.ret}% · RS at entry ${t.rs>0?'+':''}${t.rs}%`;
+  const el = document.getElementById('stock-chart'); el.innerHTML = '';
+  stockChart = LightweightCharts.createChart(el, {height:340, layout:{background:{color:'transparent'},textColor:'#6b6b80',fontFamily:"'Space Mono'"}, grid:{vertLines:{color:'#ffffff08'},horzLines:{color:'#ffffff08'}}, timeScale:{borderColor:'#ffffff18'}, rightPriceScale:{borderColor:'#ffffff18'}});
+  const series = stockChart.addCandlestickSeries({upColor:'#2dd4a0',downColor:'#f0526a',borderVisible:false,wickUpColor:'#2dd4a0',wickDownColor:'#f0526a'});
+  series.setData(ohlc.map(([d,o,h,l,c])=>({time:d,open:o,high:h,low:l,close:c})));
+  if (t.level) series.createPriceLine({price:t.level,color:'#ff2fb0',lineWidth:2,lineStyle:2,axisLabelVisible:true,title:'breakout '+t.level});
+  const markers=[{time:t.date,position:'belowBar',color:'#2dd4a0',shape:'arrowUp',text:'BUY $'+t.entry}];
+  if (t.why!=='open' && t.exit_date) markers.push({time:t.exit_date,position:'aboveBar',color:'#f0526a',shape:'arrowDown',text:'exit $'+t.exit});
+  series.setMarkers(markers.sort((a,b)=>a.time<b.time?-1:1));
+  stockChart.timeScale().fitContent();
 }
 
 (function init(){
