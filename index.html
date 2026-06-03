@@ -261,6 +261,14 @@ td.r{text-align:right;}
     <div class="progress-track"><div class="progress-fill" id="etf-prog-fill" style="width:0%"></div></div>
   </div>
 
+  <!-- Check any ticker for momentum -->
+  <div class="config-bar">
+    <label>CHECK ANY TICKER</label>
+    <input id="etf-search-sym" type="text" placeholder="Any ETF or stock — e.g. NVDA, IGV, XLF, AAPL" onkeydown="if(event.key==='Enter')searchETF()" />
+    <button class="btn btn-primary" onclick="searchETF()"><span id="etf-search-icon">&#128269;</span> Check momentum</button>
+  </div>
+  <div id="etf-search-result" style="margin-bottom:16px;"></div>
+
   <!-- Candlestick chart for the selected ticker -->
   <div id="etf-chart-wrap" class="chart-wrap" style="display:none;">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
@@ -1969,13 +1977,43 @@ function renderETFTables() {
   renderOneETF('etf-breakout-table', bo, 'No breakouts found');
 }
 
+let lastSearch = null;
+async function searchETF() {
+  const sym = document.getElementById('etf-search-sym').value.trim().toUpperCase();
+  if (!sym) return;
+  const icon = document.getElementById('etf-search-icon'); icon.innerHTML = '<span class="spinner"></span>';
+  const out = document.getElementById('etf-search-result');
+  out.innerHTML = `<div class="empty-state">Checking ${sym}…</div>`;
+  try {
+    const res = await fetch(`/etf-analyze?sym=${encodeURIComponent(sym)}`);
+    const a = await res.json();
+    if (a.error) throw new Error(a.error);
+    lastSearch = a;
+    const sigTxt = a.signal==='BREAKOUT' ? '🚀 Broke out' : a.signal==='APPROACHING' ? '👀 Approaching' : '⏳ No setup yet';
+    const sigCls = a.signal==='BREAKOUT' ? 'sc-green' : a.signal==='APPROACHING' ? 'sc-amber' : 'sc-blue';
+    const card = (cls,label,val,sub) => `<div class="stat-card ${cls}"><div class="stat-label">${label}</div><div class="stat-value" style="font-size:19px">${val}</div><div class="stat-sub">${sub}</div></div>`;
+    out.innerHTML = `<div class="stats-row">
+      ${card(sigCls, a.sym+' — Signal', sigTxt, a.signal!=='NONE'?'level $'+a.level:'watch $'+a.level)}
+      ${card('sc-blue','Price', '$'+a.price, 'avg vol '+(a.avgvol/1e6).toFixed(1)+'M')}
+      ${card(a.rs>0?'sc-green':'sc-red','RS vs SPY', (a.rs>0?'+':'')+a.rs+'%', a.rs>0?'beating market':'lagging market')}
+      ${card('sc-purple','Score', a.score, a.hi?'high-quality ✓':(a.score>=60?'strong':'weak'))}
+      ${card('sc-amber','Buy / Tgt / Stop', '$'+a.entry+' / $'+a.target+' / $'+a.stop, 'sell half +20%, 6×ATR trail')}
+    </div>`;
+    showETFChart(sym);
+    document.getElementById('etf-chart-wrap').scrollIntoView({behavior:'smooth',block:'nearest'});
+  } catch(e) {
+    out.innerHTML = `<div class="empty-state">Couldn't analyze ${sym}: ${e.message.slice(0,120)}</div>`;
+  }
+  icon.textContent = '🔍';
+}
+
 function showETFChart(sym) {
-  const a = [...etfData.breakouts, ...etfData.approaching].find(x => x.sym === sym);
+  const a = [lastSearch, ...etfData.breakouts, ...etfData.approaching].find(x => x && x.sym === sym);
   if (!a) return;
   const wrap = document.getElementById('etf-chart-wrap');
   wrap.style.display = '';
   document.getElementById('etf-chart-title').textContent =
-    `${a.sym} — ${a.signal === 'BREAKOUT' ? 'Breakout above' : 'Approaching'} $${a.level}`;
+    `${a.sym} — ${a.signal === 'BREAKOUT' ? 'Breakout above' : a.signal === 'APPROACHING' ? 'Approaching' : 'Watching'} $${a.level}`;
   const rsTxt = a.rs != null ? ` · <span style="color:${a.rs>0?'var(--green)':'var(--red)'}">RS ${a.rs>0?'+':''}${a.rs}% vs SPY</span>` : '';
   const volTxt = a.vol_ok ? ` · <span style="color:var(--green)">vol ${a.vol_surge}×&#10003;</span>` : '';
   const retTxt = a.retested ? ` · <span style="color:var(--amber)">retested&#10003;</span>` : '';
@@ -1998,12 +2036,15 @@ function showETFChart(sym) {
   });
   series.setData(a.ohlc.map(([t,o,h,l,c]) => ({ time: t, open: o, high: h, low: l, close: c })));
 
-  // resistance / support lines
-  (a.resistance || []).forEach(r => series.createPriceLine({
-    price: r, color: '#f0526a', lineWidth: r === a.level ? 2 : 1,
-    lineStyle: 2, axisLabelVisible: true, title: 'R ' + r }));
+  // other resistances (thin red dashed), support (green dashed)
+  (a.resistance || []).filter(r => r !== a.level).forEach(r => series.createPriceLine({
+    price: r, color: '#f0526a', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'R ' + r }));
   (a.support || []).forEach(s => series.createPriceLine({
     price: s, color: '#2dd4a0', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'S ' + s }));
+  // the BREAKOUT line — bright magenta, bold, solid so it stands out
+  if (a.level) series.createPriceLine({
+    price: a.level, color: '#ff2fb0', lineWidth: 3, lineStyle: 0,
+    axisLabelVisible: true, title: '★ BREAKOUT ' + a.level });
 
   // breakout marker — the MOST RECENT cross up through the level
   if (a.signal === 'BREAKOUT') {

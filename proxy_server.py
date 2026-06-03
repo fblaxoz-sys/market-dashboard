@@ -1084,6 +1084,68 @@ def run_etf_scan(fmp_key=None):
             'scanned': len(universe), 'source': 'curated'}
 
 
+def run_etf_single(sym):
+    """Analyze ONE ticker (any ETF or stock) for a breakout/momentum setup."""
+    import numpy as np
+    rows = _yahoo_ohlc(sym, '2y')
+    if len(rows) < 120:
+        return {'sym': sym, 'error': 'not enough price history'}
+    highs=[r[2] for r in rows]; lows=[r[3] for r in rows]; closes=[r[4] for r in rows]; vols=[r[5] for r in rows]
+    price = closes[-1]; avgvol = float(np.mean(vols[-30:]))
+    def piv(h, l, w=8):
+        ph=[i for i in range(w,len(h)-w) if h[i]==max(h[i-w:i+w+1])]
+        pl=[i for i in range(w,len(l)-w) if l[i]==min(l[i-w:i+w+1])]
+        return ph, pl
+    def clu(levels, tol=0.025):
+        out=[]
+        for lv in sorted(levels):
+            for g in out:
+                if abs(lv-g['m'])/g['m']<=tol: g['vals'].append(lv); g['m']=float(np.mean(g['vals'])); break
+            else: out.append({'m':lv,'vals':[lv]})
+        return [(g['m'],len(g['vals'])) for g in out]
+    ph, pl = piv(highs, lows)
+    res = [(m,n) for m,n in clu([highs[i] for i in ph]) if n>=2]
+    sup = [(m,n) for m,n in clu([lows[i]  for i in pl]) if n>=2]
+    # SPY relative strength
+    try:
+        sc=[r[4] for r in _yahoo_ohlc('SPY','2y')]
+        spy_r={d:(sc[-1]/sc[-1-d]-1)*100 for d in (21,63,126)}
+        er={d:((closes[-1]/closes[-1-d]-1)*100 if len(closes)>d else 0) for d in (21,63,126)}
+        rs=round(0.25*(er[21]-spy_r[21])+0.5*(er[63]-spy_r[63])+0.25*(er[126]-spy_r[126]),1)
+    except Exception:
+        rs=0.0
+    signal, lvl, touches, bo = 'NONE', None, 0, None
+    for m,n in res:
+        below=any(closes[j]<m*0.995 for j in range(max(0,len(closes)-40),len(closes)-3))
+        cross=next((j for j in range(max(1,len(closes)-15),len(closes)) if closes[j]>m*1.005 and closes[j-1]<=m*1.01),None)
+        if below and price>m and cross is not None: signal,lvl,touches,bo='BREAKOUT',m,n,cross; break
+    if signal=='NONE':
+        for m,n in res:
+            if 0<(m-price)/price<=0.04: signal,lvl,touches='APPROACHING',m,n; break
+    if signal=='NONE':                          # no setup → watch the nearest ceiling above price
+        above=[(m,n) for m,n in res if m>price]
+        if above: lvl,touches=min(above,key=lambda x:x[0])
+        elif res: lvl,touches=res[-1]
+        else: lvl,touches=round(price*1.05,2),0
+    atr=_atr_series(highs,lows,closes)[-1]
+    vol_surge=None; vol_ok=False
+    if bo is not None and bo>=20:
+        b=float(np.mean(vols[bo-20:bo]));
+        if b>0: vol_surge=round(vols[bo]/b,2); vol_ok=vol_surge>=1.5
+    strength=max(0.0, price/lvl-1) if signal=='BREAKOUT' else 0.0
+    rng6=(max(closes[-126:])-min(closes[-126:]))/price
+    score=round(rng6*80+min(touches,5)*6+strength*150+max(-20,min(20,rs))*1.5+(12 if vol_ok else 0),1)
+    return {
+        'sym': sym, 'price': round(price,2), 'avgvol': int(avgvol), 'signal': signal,
+        'level': round(lvl,2), 'entry': round(lvl,2), 'stop': round(lvl-ATR_MULT*atr,2),
+        'target': round(lvl*(1+PROFIT_TARGET),2), 'rs': rs, 'score': score, 'touches': touches,
+        'vol_surge': vol_surge, 'vol_ok': bool(vol_ok),
+        'hi': bool(vol_ok and rs>0 and score>=60 and signal=='BREAKOUT'),
+        'support': [round(m,2) for m,_ in sup][:3], 'resistance': [round(m,2) for m,_ in res][-3:],
+        'ohlc': [[r[0],round(r[1],2),round(r[2],2),round(r[3],2),round(r[4],2)] for r in rows[-260:]],
+    }
+
+
 def run_etf_backtest(atr_mult=ATR_MULT, years=1):
     """Point-in-time backtest of the breakout BUY rule with an ATR trailing
     stop (Chandelier exit): enter at the close of the day price breaks above a
@@ -1307,6 +1369,27 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(json.dumps({'error': str(e)}).encode())
+            return
+
+        if parsed.path == '/etf-analyze':
+            qs  = urllib.parse.parse_qs(parsed.query)
+            sym = (qs.get('sym', [''])[0] or '').upper().strip()
+            if not sym:
+                self.send_error(400, 'sym required'); return
+            try:
+                print(f"\n[etf-analyze] {sym} …")
+                result  = run_etf_single(sym)
+                payload = json.dumps(result).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers(); self.wfile.write(payload)
+            except Exception as e:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({'sym': sym, 'error': str(e)}).encode())
             return
 
         if parsed.path == '/etf-backtest':
