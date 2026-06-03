@@ -1087,6 +1087,12 @@ def run_etf_backtest(hold=40, stop_frac=0.05):
             else: out.append({'m': lv, 'vals': [lv]})
         return [(g['m'], len(g['vals'])) for g in out]
 
+    # SPY for point-in-time relative strength (date → close)
+    try:
+        spy_rows = _yahoo_ohlc('SPY'); spy_map = {r[0]: r[4] for r in spy_rows}
+    except Exception:
+        spy_map = {}
+
     W = 8
     trades = []
     for sym, exp in CURATED_ETFS.items():
@@ -1094,11 +1100,12 @@ def run_etf_backtest(hold=40, stop_frac=0.05):
         try: rows = _yahoo_ohlc(sym)
         except Exception: continue
         if len(rows) < 280: continue
-        dates=[r[0] for r in rows]; highs=[r[2] for r in rows]; lows=[r[3] for r in rows]; closes=[r[4] for r in rows]
+        dates=[r[0] for r in rows]; highs=[r[2] for r in rows]; lows=[r[3] for r in rows]
+        closes=[r[4] for r in rows]; vols=[r[5] for r in rows]
         n = len(closes)
         ph = [i for i in range(W, n-W) if highs[i] == max(highs[i-W:i+W+1])]
-        start = max(60, n-252)                 # signals over the last ~year
-        in_pos = False; entry = lvl = 0.0; entry_i = 0
+        start = max(70, n-252)                 # signals over the last ~year
+        in_pos = False; entry = lvl = 0.0; entry_i = 0; e_vol = False; e_rs = 0.0
         i = start
         while i < n:
             if not in_pos:
@@ -1108,7 +1115,16 @@ def run_etf_backtest(hold=40, stop_frac=0.05):
                     if m <= 0: continue
                     below = any(closes[j] < m*0.995 for j in range(max(0, i-40), i))
                     if below and closes[i] > m*1.005 and closes[i-1] <= m*1.01:
-                        in_pos, entry, lvl, entry_i = True, closes[i], m, i; break
+                        in_pos, entry, lvl, entry_i = True, closes[i], m, i
+                        # point-in-time quality flags at the moment of the signal
+                        base = float(np.mean(vols[i-20:i])) if i >= 20 else 0
+                        e_vol = base > 0 and vols[i] >= 1.5*base
+                        d_now, d_then = dates[i], dates[i-63]
+                        if i >= 63 and d_now in spy_map and d_then in spy_map:
+                            e_rs = (closes[i]/closes[i-63]-1)*100 - (spy_map[d_now]/spy_map[d_then]-1)*100
+                        else:
+                            e_rs = 0.0
+                        break
             else:
                 exit_stop = closes[i] < lvl*(1-stop_frac)
                 exit_time = (i - entry_i) >= hold
@@ -1117,30 +1133,36 @@ def run_etf_backtest(hold=40, stop_frac=0.05):
                                    'entry': round(entry,2), 'exit': round(closes[i],2),
                                    'ret': round((closes[i]/entry-1)*100, 2),
                                    'days': i-entry_i,
-                                   'why': 'stop' if exit_stop else ('open' if i==n-1 and not exit_time else 'time')})
+                                   'why': 'stop' if exit_stop else ('open' if i==n-1 and not exit_time else 'time'),
+                                   'vol_ok': bool(e_vol), 'rs': round(e_rs,1),
+                                   'hi': bool(e_vol and e_rs > 0)})   # high-quality = vol-confirmed AND beating SPY
                     in_pos = False
             i += 1
         time.sleep(0.1)
 
-    rets = [t['ret'] for t in trades]
-    wins = [r for r in rets if r > 0]; losses = [r for r in rets if r <= 0]
-    n = len(rets)
-    gains = sum(wins); pains = abs(sum(losses))
-    stats = {
-        'trades': n,
-        'win_rate':   round(len(wins)/n*100) if n else 0,
-        'avg_ret':    round(float(np.mean(rets)), 2) if n else 0,
-        'avg_win':    round(float(np.mean(wins)), 2) if wins else 0,
-        'avg_loss':   round(float(np.mean(losses)), 2) if losses else 0,
-        'profit_factor': round(gains/pains, 2) if pains > 0 else None,
-        'best':  round(max(rets), 2) if n else 0,
-        'worst': round(min(rets), 2) if n else 0,
-        'expectancy': round(float(np.mean(rets)), 2) if n else 0,   # avg % per trade
-        'hold': hold, 'stop_pct': round(stop_frac*100),
-    }
+    def agg(ts):
+        rets = [t['ret'] for t in ts]
+        wins = [r for r in rets if r > 0]; losses = [r for r in rets if r <= 0]
+        n = len(rets); gains = sum(wins); pains = abs(sum(losses))
+        return {
+            'trades': n,
+            'win_rate':   round(len(wins)/n*100) if n else 0,
+            'avg_ret':    round(float(np.mean(rets)), 2) if n else 0,
+            'avg_win':    round(float(np.mean(wins)), 2) if wins else 0,
+            'avg_loss':   round(float(np.mean(losses)), 2) if losses else 0,
+            'profit_factor': round(gains/pains, 2) if pains > 0 else None,
+            'best':  round(max(rets), 2) if n else 0,
+            'worst': round(min(rets), 2) if n else 0,
+            'hold': hold, 'stop_pct': round(stop_frac*100),
+        }
+
     trades.sort(key=lambda t: t['date'])
-    print(f"  [etf-bt] {n} trades, win {stats['win_rate']}%, avg {stats['avg_ret']}%, PF {stats['profit_factor']}")
-    return {'stats': stats, 'trades': trades[-80:]}
+    hi = [t for t in trades if t['hi']]
+    stats_all, stats_hi = agg(trades), agg(hi)
+    print(f"  [etf-bt] ALL {stats_all['trades']} trades win {stats_all['win_rate']}% avg {stats_all['avg_ret']}% PF {stats_all['profit_factor']}")
+    print(f"  [etf-bt] HI  {stats_hi['trades']} trades win {stats_hi['win_rate']}% avg {stats_hi['avg_ret']}% PF {stats_hi['profit_factor']}")
+    return {'stats': stats_all, 'stats_all': stats_all, 'stats_hi': stats_hi,
+            'trades': [t for t in trades if t['hi']][-80:]}
 
 
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────

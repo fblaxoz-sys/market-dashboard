@@ -1800,25 +1800,27 @@ async function runETFBacktest() {
     const res = await fetch('/etf-backtest');
     const d = await res.json();
     if (d.error) throw new Error(d.error);
-    const s = d.stats;
-    const pf = s.profit_factor != null ? s.profit_factor : '—';
+    const A = d.stats_all || d.stats, H = d.stats_hi || d.stats;
     const card = (cls,label,val,sub) => `<div class="stat-card ${cls}"><div class="stat-label">${label}</div><div class="stat-value">${val}</div><div class="stat-sub">${sub}</div></div>`;
-    document.getElementById('etf-bt-stats').innerHTML =
-      card('sc-blue','Trades', s.trades, 'breakout signals, 1 yr') +
-      card(s.win_rate>=50?'sc-green':'sc-red','Win rate', s.win_rate+'%', 'profitable trades') +
+    const row = (s) => card('sc-blue','Trades', s.trades, '1-yr signals') +
+      card(s.win_rate>=50?'sc-green':'sc-red','Win rate', s.win_rate+'%', 'profitable') +
       card(s.avg_ret>=0?'sc-green':'sc-red','Avg / trade', (s.avg_ret>=0?'+':'')+s.avg_ret+'%', `win +${s.avg_win}% · loss ${s.avg_loss}%`) +
-      card(typeof pf==='number'&&pf>=1?'sc-green':'sc-amber','Profit factor', pf, 'gross win ÷ gross loss') +
+      card((s.profit_factor||0)>=1?'sc-green':'sc-amber','Profit factor', s.profit_factor ?? '—', 'wins ÷ losses') +
       card('sc-purple','Best / Worst', s.best+'% / '+s.worst+'%', `hold ${s.hold}d · stop ${s.stop_pct}%`);
+    document.getElementById('etf-bt-stats').innerHTML =
+      `<div style="grid-column:1/-1;font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:-4px;">ALL BREAKOUT SIGNALS</div>` + row(A) +
+      `<div style="grid-column:1/-1;font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:1px;margin:8px 0 -4px;">HIGH-QUALITY ONLY — volume-confirmed &amp; beating SPY</div>` + row(H);
     document.getElementById('etf-bt-trades').innerHTML = `<table>
-      <thead><tr><th>Entry date</th><th>Ticker</th><th class="r">Entry</th><th class="r">Exit</th><th class="r">Return</th><th class="r">Days</th><th>Exit reason</th></tr></thead>
+      <thead><tr><th>Entry date</th><th>Ticker</th><th class="r">Entry</th><th class="r">Exit</th><th class="r">Return</th><th class="r">RS</th><th class="r">Days</th><th>Exit</th></tr></thead>
       <tbody>${[...d.trades].reverse().map((t,i)=>`<tr style="animation-delay:${i*8}ms">
         <td>${t.date}</td><td class="ticker-cell">${t.sym}</td>
         <td class="r c-muted">$${t.entry}</td><td class="r c-muted">$${t.exit}</td>
         <td class="r ${t.ret>=0?'c-green':'c-red'}">${t.ret>=0?'+':''}${t.ret}%</td>
+        <td class="r ${t.rs>0?'c-green':'c-muted'}">${t.rs>0?'+':''}${t.rs}%</td>
         <td class="r c-muted">${t.days}</td>
         <td class="c-muted">${t.why}</td></tr>`).join('')}</tbody></table>`;
     document.getElementById('etf-updated').textContent =
-      `Backtest: ${s.trades} trades · ${s.win_rate}% win · ${s.avg_ret>=0?'+':''}${s.avg_ret}%/trade · PF ${pf}`;
+      `Backtest · all: ${A.win_rate}% win, ${A.avg_ret>=0?'+':''}${A.avg_ret}%/trade · high-quality: ${H.win_rate}% win, +${H.avg_ret}%/trade`;
   } catch(e) {
     document.getElementById('etf-bt-stats').innerHTML = `<div class="empty-state" style="grid-column:1/-1">Backtest failed: ${e.message.slice(0,140)}</div>`;
     console.error(e);
