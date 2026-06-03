@@ -1157,7 +1157,7 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1):
                                    'days': i-entry_i,
                                    'why': 'open' if i == n-1 and closes[i] >= trail else 'trail-stop',
                                    'vol_ok': bool(e_vol), 'rs': round(e_rs,1), 'score': e_score,
-                                   'hi': bool(e_vol and e_rs > 0)})   # high-quality = vol-confirmed AND beating SPY
+                                   'hi': bool(e_vol and e_rs > 0 and e_score >= 60)})   # vol-confirmed, beating SPY, AND score≥60 (learned from 5-yr: weak <60 setups dragged returns)
                     in_pos = False
             i += 1
         time.sleep(0.1)

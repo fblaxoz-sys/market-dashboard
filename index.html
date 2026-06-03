@@ -286,7 +286,7 @@ td.r{text-align:right;}
 
   <div class="section-header">
     <div class="section-title"><span class="dot dot-green"></span>&#11088; High-Quality Setups &mdash; about to break out &amp; beating the market</div>
-    <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">positive RS vs SPY · the ones worth trading</span>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">beating SPY + score&ge;60 (5-yr validated) · the ones worth trading</span>
   </div>
   <div class="table-wrap" id="etf-hq-table"><div class="empty-state">Hit Scan &mdash; these are the strongest pre-breakout setups</div></div>
 
@@ -1824,8 +1824,8 @@ async function runETFScan() {
     renderETFTables();
     document.getElementById('etf-updated').textContent =
       `Scanned ${d.scanned} ETFs · ${d.approaching.length} approaching, ${d.breakouts.length} broke out`;
-    // auto-show the top high-quality (beating-market) setup
-    const hq = d.approaching.filter(a => a.rs != null && a.rs > 0);
+    // auto-show the top high-quality (beating-market, score≥60) setup
+    const hq = d.approaching.filter(a => a.rs != null && a.rs > 0 && a.score >= 60);
     if (hq.length) showETFChart(hq[0].sym);
     else if (d.approaching.length) showETFChart(d.approaching[0].sym);
     else if (d.breakouts.length) showETFChart(d.breakouts[0].sym);
@@ -1961,7 +1961,7 @@ function renderOneETF(id, arr, emptyMsg) {
 }
 function renderETFTables() {
   const bo = etfData.breakouts, ap = etfData.approaching;
-  const hq = ap.filter(a => a.rs != null && a.rs > 0);   // high-quality = beating SPY, not yet broken out
+  const hq = ap.filter(a => a.rs != null && a.rs > 0 && a.score >= 60);   // high-quality = beating SPY + score≥60 (5-yr validated)
   renderOneETF('etf-hq-table',       hq, 'No high-quality setups right now (none beating the market near a breakout)');
   renderOneETF('etf-approach-table', ap, 'No setups approaching resistance');
   renderOneETF('etf-breakout-table', bo, 'No breakouts found');
