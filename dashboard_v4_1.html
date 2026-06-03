@@ -242,7 +242,7 @@ td.r{text-align:right;}
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
     <div>
       <h2 style="font-size:22px;font-weight:800;">ETF Swing Scanner</h2>
-      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Range breakouts &amp; setups &mdash; price&ge;$10, vol&ge;50k, no leverage/inverse, expense&lt;1%</p>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Curated liquid ETFs &mdash; price&ge;$10, vol&ge;50k, no leverage/inverse, expense&lt;1% · Yahoo data</p>
     </div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span id="etf-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
@@ -250,13 +250,6 @@ td.r{text-align:right;}
         <span id="etf-scan-icon">&#128269;</span> Scan ETFs
       </button>
     </div>
-  </div>
-
-  <div class="config-bar">
-    <label>FMP KEY (optional)</label>
-    <input id="fmp-key" type="password" placeholder="Paste FMP key to expand universe + real expense ratios (optional)" />
-    <button class="btn" onclick="saveFmpKey()">Save</button>
-    <span id="fmp-badge" class="key-badge" style="display:none"></span>
   </div>
 
   <div class="progress-wrap" id="etf-prog">
@@ -1764,8 +1757,7 @@ async function runETFScan() {
   document.getElementById('etf-prog-fill').style.width = '40%';
 
   try {
-    const url = '/etf-scan' + (fmpKey ? `?fmp_key=${encodeURIComponent(fmpKey)}` : '');
-    const res = await fetch(url);
+    const res = await fetch('/etf-scan');
     const d   = await res.json();
     if (d.error) throw new Error(d.error);
     etfData = d;
@@ -1862,7 +1854,6 @@ function showETFChart(sym) {
     document.getElementById('fred-key').value=fredKey; showBadge('fred-badge',true);
     document.getElementById('gdp-fred-key').value=fredKey; showBadge('gdp-fred-badge',true);
   }
-  if (fmpKey) { document.getElementById('fmp-key').value=fmpKey; showBadge('fmp-badge',true); }
   renderWLTags();
 })();
 </script>

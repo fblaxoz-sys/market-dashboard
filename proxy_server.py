@@ -908,28 +908,42 @@ def run_inflation_nowcast(fred_key, bt_months=24):
 # Curated: liquid, non-leveraged, non-inverse ETFs with net expense ratio < 1.0%.
 CURATED_ETFS = {
     # broad market
-    'SPY':0.09,'QQQ':0.20,'IWM':0.19,'DIA':0.16,'MDY':0.23,'VTI':0.03,'RSP':0.20,
-    # sectors (SPDR)
+    'SPY':0.09,'VOO':0.03,'IVV':0.03,'QQQ':0.20,'QQQM':0.15,'IWM':0.19,'DIA':0.16,
+    'MDY':0.23,'VTI':0.03,'ITOT':0.03,'RSP':0.20,'SCHX':0.03,'SCHB':0.03,'IWB':0.15,
+    'IWV':0.20,'VXF':0.06,'IJH':0.05,'IJR':0.06,'VB':0.05,'VO':0.04,'VV':0.04,'MGK':0.07,
+    # sectors (SPDR + Vanguard)
     'XLK':0.09,'XLF':0.09,'XLE':0.09,'XLV':0.09,'XLI':0.09,'XLY':0.09,'XLP':0.09,
     'XLU':0.09,'XLB':0.09,'XLRE':0.09,'XLC':0.09,
+    'VGT':0.09,'VHT':0.09,'VFH':0.09,'VDE':0.09,'VIS':0.09,'VCR':0.09,'VDC':0.09,
+    'VPU':0.09,'VAW':0.09,'VOX':0.09,'VNQ':0.13,'IYR':0.39,'IYW':0.39,'IYF':0.39,
     # industries / thematic
-    'IGV':0.40,'SMH':0.35,'SOXX':0.35,'KRE':0.35,'KBE':0.35,'XBI':0.35,'IBB':0.45,
-    'ITB':0.40,'XHB':0.35,'XRT':0.35,'KIE':0.35,'XOP':0.35,'OIH':0.35,'JETS':0.60,
-    'TAN':0.67,'ICLN':0.42,'LIT':0.75,'URA':0.69,'IYT':0.39,'XME':0.35,'GDX':0.51,
-    'GDXJ':0.52,'XAR':0.35,'HACK':0.60,'SKYY':0.60,'FDN':0.49,'ARKK':0.75,'ARKG':0.75,
-    'BOTZ':0.68,'ROBO':0.95,'PAVE':0.47,'IYR':0.39,'VNQ':0.13,'REM':0.48,
-    # factor / style
+    'IGV':0.40,'SMH':0.35,'SOXX':0.35,'XSD':0.35,'PSI':0.57,'IGM':0.41,'KRE':0.35,
+    'KBE':0.35,'KBWB':0.35,'XBI':0.35,'IBB':0.45,'ITB':0.40,'XHB':0.35,'NAIL':0.94,
+    'XRT':0.35,'KIE':0.35,'XOP':0.35,'OIH':0.35,'AMLP':0.85,'JETS':0.60,'TAN':0.67,
+    'ICLN':0.42,'LIT':0.75,'URA':0.69,'NLR':0.61,'IYT':0.39,'XME':0.35,'GDX':0.51,
+    'GDXJ':0.52,'SIL':0.65,'COPX':0.65,'XAR':0.35,'ITA':0.40,'HACK':0.60,'CIBR':0.60,
+    'BUG':0.65,'IHAK':0.47,'SKYY':0.60,'CLOU':0.68,'WCLD':0.45,'FDN':0.49,'ARKK':0.75,
+    'ARKG':0.75,'ARKW':0.82,'ARKF':0.75,'BOTZ':0.68,'ROBO':0.95,'PAVE':0.47,'FINX':0.65,
+    'BLOK':0.71,'ESPO':0.55,'HERO':0.50,'FFTY':0.80,'MOAT':0.46,'KWEB':0.70,'CQQQ':0.65,
+    'KARS':0.70,'DRIV':0.68,'IDRV':0.47,'REM':0.48,'REZ':0.48,'SCHH':0.07,
+    # factor / style / dividend
     'MTUM':0.15,'VLUE':0.15,'QUAL':0.15,'USMV':0.15,'SPLV':0.25,'VUG':0.04,'VTV':0.04,
-    'IWF':0.19,'IWD':0.19,'SCHD':0.06,'DVY':0.38,'VIG':0.06,
+    'IWF':0.19,'IWD':0.19,'SCHD':0.06,'DVY':0.38,'VIG':0.06,'VYM':0.06,'HDV':0.08,
+    'SDY':0.35,'NOBL':0.35,'DGRO':0.08,'COWZ':0.49,'SPHD':0.30,'CALF':0.59,
     # international
-    'EEM':0.68,'VWO':0.08,'EFA':0.32,'VEA':0.05,'FXI':0.74,'MCHI':0.59,'EWZ':0.59,
-    'EWJ':0.50,'INDA':0.64,'EWT':0.59,'EWY':0.59,'EWG':0.50,'EWU':0.50,'ILF':0.48,
-    # bonds
+    'EEM':0.68,'IEMG':0.09,'VWO':0.08,'EFA':0.32,'IEFA':0.07,'VEA':0.05,'ACWI':0.32,
+    'VEU':0.07,'VT':0.06,'FXI':0.74,'MCHI':0.59,'KWEB':0.70,'ASHR':0.65,'EWZ':0.59,
+    'EWJ':0.50,'INDA':0.64,'EWT':0.59,'EWY':0.59,'EWG':0.50,'EWU':0.50,'EWC':0.50,
+    'EWA':0.50,'EWH':0.50,'EWW':0.50,'EWS':0.50,'EWP':0.50,'EWQ':0.50,'EWI':0.50,
+    'EWL':0.50,'EWD':0.50,'EZU':0.59,'IEUR':0.09,'ILF':0.48,'EPP':0.49,'EWM':0.50,
+    'THD':0.59,'TUR':0.59,'EZA':0.59,'GXC':0.59,
+    # bonds (mostly filtered by the swing-range gate, but kept for completeness)
     'TLT':0.15,'IEF':0.15,'SHY':0.15,'LQD':0.14,'HYG':0.49,'JNK':0.40,'AGG':0.03,
-    'BND':0.03,'TIP':0.19,'MUB':0.07,'EMB':0.39,'BKLN':0.65,
+    'BND':0.03,'TIP':0.19,'MUB':0.07,'EMB':0.39,'BKLN':0.65,'VCIT':0.04,'VCSH':0.04,
     # commodities / metals
-    'GLD':0.40,'SLV':0.50,'IAU':0.25,'USO':0.60,'UNG':0.90,'DBC':0.85,'PDBC':0.59,
-    'CPER':0.88,'WEAT':0.85,
+    'GLD':0.40,'GLDM':0.10,'SLV':0.50,'IAU':0.25,'USO':0.60,'BNO':1.00,'UNG':0.90,
+    'DBC':0.85,'PDBC':0.59,'DBA':0.93,'CPER':0.88,'WEAT':0.85,'CORN':0.79,'PPLT':0.60,
+    'PALL':0.60,'SIVR':0.30,'SGOL':0.17,
 }
 
 def _yahoo_ohlc(sym, rng="2y"):
@@ -948,23 +962,9 @@ def _yahoo_ohlc(sym, rng="2y"):
 
 def run_etf_scan(fmp_key=None):
     import numpy as np
-
+    # FMP locked its ETF screener/expense endpoints behind a paid plan (Aug 2025),
+    # so we use a curated, vetted universe of liquid non-leveraged ETFs (<1% expense).
     universe = dict(CURATED_ETFS)
-    if fmp_key:                                  # expand with FMP screener (non-leveraged ETFs)
-        try:
-            import urllib.request, json as _json
-            u = (f"https://financialmodelingprep.com/api/v3/stock-screener?isEtf=true"
-                 f"&priceMoreThan=10&volumeMoreThan=50000&limit=1500&apikey={fmp_key}")
-            with urllib.request.urlopen(u, timeout=25) as r:
-                lst = _json.load(r)
-            bad = ('2X','3X','ULTRA','LEVERAGED','INVERSE','BEAR','BULL','-1X','SHORT')
-            for it in lst:
-                nm = (it.get('companyName') or '').upper()
-                if any(b in nm for b in bad): continue
-                universe.setdefault(it.get('symbol'), None)   # expense filled below if curated
-            print(f"  [etf] FMP universe: {len(lst)} ETFs → {len(universe)} after dedupe")
-        except Exception as e:
-            print(f"  [etf] FMP failed, using curated: {e}")
 
     def pivots(highs, lows, w=8):
         ph, pl = [], []
@@ -1034,7 +1034,7 @@ def run_etf_scan(fmp_key=None):
     approaching.sort(key=lambda x: -x['score'])
     print(f"  [etf] {len(breakouts)} breakouts, {len(approaching)} approaching")
     return {'breakouts': breakouts, 'approaching': approaching,
-            'scanned': len(universe), 'source': 'FMP+curated' if fmp_key else 'curated'}
+            'scanned': len(universe), 'source': 'curated'}
 
 
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
