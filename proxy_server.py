@@ -1010,7 +1010,9 @@ def run_etf_scan(fmp_key=None):
         # choppy flat line), and — for breakouts — a decisive push above the level.
         strength = max(0.0, price/lvl - 1) if signal == 'BREAKOUT' else 0.0
         clean    = min(touches, 5)                    # reward 2-5 tests, ignore excess chop
-        score = round(rng6*80 + clean*6 + strength*150, 1)
+        # for APPROACHING: the closer price is to the level, the higher the rank
+        prox = max(0.0, 1 - (lvl - price)/(price*0.04)) if signal == 'APPROACHING' else 0.0
+        score = round(rng6*80 + clean*6 + strength*150 + prox*50, 1)
         return {
             'sym': sym, 'price': round(price, 2), 'avgvol': int(avgvol),
             'expense': expense, 'signal': signal, 'level': round(lvl, 2),

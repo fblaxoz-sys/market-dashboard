@@ -266,11 +266,11 @@ td.r{text-align:right;}
     <div id="etf-chart" style="height:340px;"></div>
   </div>
 
-  <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Breakouts &mdash; broke above resistance</div></div>
-  <div class="table-wrap" id="etf-breakout-table"><div class="empty-state">Hit Scan to find ETF breakouts</div></div>
-
-  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>Approaching &mdash; testing resistance</div></div>
+  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>Approaching &mdash; about to break out (ranked by proximity + quality)</div></div>
   <div class="table-wrap" id="etf-approach-table"><div class="empty-state">Hit Scan to find setups nearing breakout</div></div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Already broke out</div></div>
+  <div class="table-wrap" id="etf-breakout-table"><div class="empty-state">Hit Scan to find ETF breakouts</div></div>
 </div>
 </div>
 
@@ -1764,9 +1764,10 @@ async function runETFScan() {
     document.getElementById('etf-prog-fill').style.width = '100%';
     renderETFTables();
     document.getElementById('etf-updated').textContent =
-      `Scanned ${d.scanned} ETFs (${d.source}) · ${d.breakouts.length} breakouts, ${d.approaching.length} approaching`;
-    // auto-show the top breakout chart
-    if (d.breakouts.length) showETFChart(d.breakouts[0].sym);
+      `Scanned ${d.scanned} ETFs · ${d.approaching.length} approaching, ${d.breakouts.length} broke out`;
+    // auto-show the top "about to break out" chart
+    if (d.approaching.length) showETFChart(d.approaching[0].sym);
+    else if (d.breakouts.length) showETFChart(d.breakouts[0].sym);
   } catch(e) {
     document.getElementById('etf-breakout-table').innerHTML =
       `<div class="empty-state">Scan failed: ${e.message.slice(0,140)}</div>`;
