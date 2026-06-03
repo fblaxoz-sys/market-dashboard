@@ -1034,9 +1034,13 @@ def run_etf_scan(fmp_key=None):
         rs_pts   = max(-20.0, min(20.0, rs))          # relative strength, capped ±20
         score = round(rng6*80 + clean*6 + strength*150 + prox*50 + rs_pts*1.5
                       + (12 if vol_ok else 0) + (15 if retested else 0), 1)
+        # BUY trigger = the breakout level; STOP = nearest support below it (else ~7% under)
+        sups_below = [m for m, _ in sup if m < lvl*0.995]
+        stop = round(max(sups_below), 2) if sups_below else round(lvl*0.93, 2)
         return {
             'sym': sym, 'price': round(price, 2), 'avgvol': int(avgvol),
             'expense': expense, 'signal': signal, 'level': round(lvl, 2),
+            'entry': round(lvl, 2), 'stop': stop,
             'touches': touches, 'score': score, 'rs': rs,
             'vol_surge': vol_surge, 'vol_ok': bool(vol_ok), 'retested': bool(retested),
             'support':    [round(m, 2) for m, n in sup][:3],
@@ -1066,6 +1070,77 @@ def run_etf_scan(fmp_key=None):
     print(f"  [etf] {len(breakouts)} breakouts, {len(approaching)} approaching")
     return {'breakouts': breakouts, 'approaching': approaching,
             'scanned': len(universe), 'source': 'curated'}
+
+
+def run_etf_backtest(hold=40, stop_frac=0.05):
+    """1-year point-in-time backtest of the breakout BUY rule:
+    enter at the close of the day price breaks above a tested resistance level;
+    exit on a close >stop_frac below the level (failed breakout) OR after `hold`
+    trading days. No look-ahead: resistance is only from pivots confirmed earlier."""
+    import numpy as np
+
+    def cl(levels, tol=0.025):
+        out = []
+        for lv in sorted(levels):
+            for g in out:
+                if abs(lv-g['m'])/g['m'] <= tol: g['vals'].append(lv); g['m'] = float(np.mean(g['vals'])); break
+            else: out.append({'m': lv, 'vals': [lv]})
+        return [(g['m'], len(g['vals'])) for g in out]
+
+    W = 8
+    trades = []
+    for sym, exp in CURATED_ETFS.items():
+        if exp is not None and exp >= 1.0: continue
+        try: rows = _yahoo_ohlc(sym)
+        except Exception: continue
+        if len(rows) < 280: continue
+        dates=[r[0] for r in rows]; highs=[r[2] for r in rows]; lows=[r[3] for r in rows]; closes=[r[4] for r in rows]
+        n = len(closes)
+        ph = [i for i in range(W, n-W) if highs[i] == max(highs[i-W:i+W+1])]
+        start = max(60, n-252)                 # signals over the last ~year
+        in_pos = False; entry = lvl = 0.0; entry_i = 0
+        i = start
+        while i < n:
+            if not in_pos:
+                conf = [highs[p] for p in ph if p <= i-W]            # confirmed-by-now pivots
+                levels = [m for m, c in cl(conf) if c >= 2]
+                for m in levels:
+                    if m <= 0: continue
+                    below = any(closes[j] < m*0.995 for j in range(max(0, i-40), i))
+                    if below and closes[i] > m*1.005 and closes[i-1] <= m*1.01:
+                        in_pos, entry, lvl, entry_i = True, closes[i], m, i; break
+            else:
+                exit_stop = closes[i] < lvl*(1-stop_frac)
+                exit_time = (i - entry_i) >= hold
+                if exit_stop or exit_time or i == n-1:
+                    trades.append({'sym': sym, 'date': dates[entry_i],
+                                   'entry': round(entry,2), 'exit': round(closes[i],2),
+                                   'ret': round((closes[i]/entry-1)*100, 2),
+                                   'days': i-entry_i,
+                                   'why': 'stop' if exit_stop else ('open' if i==n-1 and not exit_time else 'time')})
+                    in_pos = False
+            i += 1
+        time.sleep(0.1)
+
+    rets = [t['ret'] for t in trades]
+    wins = [r for r in rets if r > 0]; losses = [r for r in rets if r <= 0]
+    n = len(rets)
+    gains = sum(wins); pains = abs(sum(losses))
+    stats = {
+        'trades': n,
+        'win_rate':   round(len(wins)/n*100) if n else 0,
+        'avg_ret':    round(float(np.mean(rets)), 2) if n else 0,
+        'avg_win':    round(float(np.mean(wins)), 2) if wins else 0,
+        'avg_loss':   round(float(np.mean(losses)), 2) if losses else 0,
+        'profit_factor': round(gains/pains, 2) if pains > 0 else None,
+        'best':  round(max(rets), 2) if n else 0,
+        'worst': round(min(rets), 2) if n else 0,
+        'expectancy': round(float(np.mean(rets)), 2) if n else 0,   # avg % per trade
+        'hold': hold, 'stop_pct': round(stop_frac*100),
+    }
+    trades.sort(key=lambda t: t['date'])
+    print(f"  [etf-bt] {n} trades, win {stats['win_rate']}%, avg {stats['avg_ret']}%, PF {stats['profit_factor']}")
+    return {'stats': stats, 'trades': trades[-80:]}
 
 
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
@@ -1156,6 +1231,26 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 err = traceback.format_exc()
                 print(f"[etf] ERROR:\n{err}")
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': err}).encode())
+            return
+
+        if parsed.path == '/etf-backtest':
+            try:
+                print("\n[etf-bt] 1-year breakout backtest …")
+                result  = cached_ml("etf-bt", lambda: run_etf_backtest())
+                payload = json.dumps(result).encode()
+                print(f"[etf-bt] Done → {result['stats']['trades']} trades")
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers(); self.wfile.write(payload)
+            except Exception:
+                err = traceback.format_exc()
+                print(f"[etf-bt] ERROR:\n{err}")
                 self.send_response(500)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
