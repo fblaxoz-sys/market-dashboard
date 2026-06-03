@@ -1119,14 +1119,14 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1):
         atr = _atr_series(highs, lows, closes)
         ph = [i for i in range(W, n-W) if highs[i] == max(highs[i-W:i+W+1])]
         start = max(70, n - 252*years)         # signals over the last `years`
-        in_pos = False; entry = lvl = 0.0; entry_i = 0; e_vol = False; e_rs = 0.0
+        in_pos = False; entry = lvl = 0.0; entry_i = 0; e_vol = False; e_rs = 0.0; e_score = 0.0
         hh = trail = 0.0
         i = start
         while i < n:
             if not in_pos:
                 conf = [highs[p] for p in ph if p <= i-W]            # confirmed-by-now pivots
-                levels = [m for m, c in cl(conf) if c >= 2]
-                for m in levels:
+                levels = [(m, c) for m, c in cl(conf) if c >= 2]
+                for m, c in levels:
                     if m <= 0: continue
                     below = any(closes[j] < m*0.995 for j in range(max(0, i-40), i))
                     if below and closes[i] > m*1.005 and closes[i-1] <= m*1.01:
@@ -1139,6 +1139,12 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1):
                             e_rs = (closes[i]/closes[i-63]-1)*100 - (spy_map[d_now]/spy_map[d_then]-1)*100
                         else:
                             e_rs = 0.0
+                        # same swing-quality score the scanner uses, point-in-time at entry
+                        wlo = max(0, i-126)
+                        rng6 = (max(closes[wlo:i+1]) - min(closes[wlo:i+1])) / closes[i]
+                        strength = closes[i]/m - 1
+                        rs_pts = max(-20.0, min(20.0, e_rs))
+                        e_score = round(rng6*80 + min(c,5)*6 + strength*150 + rs_pts*1.5 + (12 if e_vol else 0), 1)
                         break
             else:
                 hh = max(hh, highs[i])
@@ -1150,7 +1156,7 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1):
                                    'ret': round((closes[i]/entry-1)*100, 2),
                                    'days': i-entry_i,
                                    'why': 'open' if i == n-1 and closes[i] >= trail else 'trail-stop',
-                                   'vol_ok': bool(e_vol), 'rs': round(e_rs,1),
+                                   'vol_ok': bool(e_vol), 'rs': round(e_rs,1), 'score': e_score,
                                    'hi': bool(e_vol and e_rs > 0)})   # high-quality = vol-confirmed AND beating SPY
                     in_pos = False
             i += 1

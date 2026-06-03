@@ -1879,8 +1879,8 @@ async function runETFBacktest(years) {
 }
 
 const BT_COLS = [['date','Entry date',''],['sym','Ticker',''],['entry','Buy','r'],['exit','Exit','r'],
-                 ['ret','Return','r'],['rs','RS','r'],['days','Days','r'],['why','Exit','']];
-const BT_SORTV = {date:t=>t.date, sym:t=>t.sym, entry:t=>t.entry, exit:t=>t.exit, ret:t=>t.ret, rs:t=>t.rs, days:t=>t.days, why:t=>t.why};
+                 ['ret','Return','r'],['score','Score','r'],['rs','RS','r'],['days','Days','r'],['why','Exit','']];
+const BT_SORTV = {date:t=>t.date, sym:t=>t.sym, entry:t=>t.entry, exit:t=>t.exit, ret:t=>t.ret, score:t=>(t.score??0), rs:t=>t.rs, days:t=>t.days, why:t=>t.why};
 function sortBt(k) { btSort = (btSort.k===k) ? {k,d:-btSort.d} : {k,d:(['sym','why','date'].includes(k)?1:-1)}; renderBtTrades(); }
 function renderBtTrades() {
   if (!btTradesData.length) { document.getElementById('etf-bt-trades').innerHTML = '<div class="empty-state">No trades</div>'; return; }
@@ -1892,6 +1892,7 @@ function renderBtTrades() {
       <td>${t.date}</td><td class="ticker-cell">${t.sym}</td>
       <td class="r c-muted">$${t.entry}</td><td class="r c-muted">$${t.exit}</td>
       <td class="r ${t.ret>=0?'c-green':'c-red'}">${t.ret>=0?'+':''}${t.ret}%</td>
+      <td class="r c-muted">${t.score ?? '—'}</td>
       <td class="r ${t.rs>0?'c-green':'c-muted'}">${t.rs>0?'+':''}${t.rs}%</td>
       <td class="r c-muted">${t.days}</td><td class="c-muted">${t.why}</td></tr>`).join('')}</tbody></table>`;
 }
