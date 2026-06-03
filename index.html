@@ -240,7 +240,7 @@ td.r{text-align:right;}
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
     <div>
       <h2 style="font-size:22px;font-weight:800;">GDP Predictor</h2>
-      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Live FRED data &mdash; weighted leading-indicator model (quarterly)</p>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">25-year ML model &mdash; multi-model ensemble, walk-forward validated</p>
     </div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span id="gdp-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
@@ -265,23 +265,7 @@ td.r{text-align:right;}
     <div class="progress-track"><div class="progress-fill" id="gdp-prog-fill" style="width:0%"></div></div>
   </div>
 
-  <!-- Simple weighted model -->
-  <div class="pred-hero">
-    <div class="pred-card" style="border-top:3px solid var(--green);">
-      <div class="pred-label">Current quarter GDP YoY &mdash; <strong style="color:var(--green)">Simple Model</strong></div>
-      <div class="pred-value" id="gdp-pred-cur-val" style="color:var(--green);">&#8212;</div>
-      <div class="pred-sub" id="gdp-pred-cur-sub">Load data to see prediction</div>
-      <div id="gdp-pred-cur-dir"></div>
-    </div>
-    <div class="pred-card" style="border-top:3px solid var(--blue);">
-      <div class="pred-label">Next quarter GDP YoY &mdash; <strong style="color:var(--blue)">Simple Model</strong></div>
-      <div class="pred-value" id="gdp-pred-nxt-val" style="color:var(--blue);">&#8212;</div>
-      <div class="pred-sub" id="gdp-pred-nxt-sub">Load data to see prediction</div>
-      <div id="gdp-pred-nxt-dir"></div>
-    </div>
-  </div>
-
-  <!-- ML Nowcast result card — hidden until model runs -->
+  <!-- 25-Year ML Model — the only GDP prediction -->
   <div id="gdp-ml-section" style="display:none;margin-bottom:24px;">
     <div class="section-header">
       <div class="section-title"><span class="dot dot-amber"></span>25-Year ML Model</div>
@@ -315,20 +299,10 @@ td.r{text-align:right;}
   <div class="section-header"><div class="section-title"><span class="dot dot-blue"></span>Leading Indicators</div></div>
   <div class="drivers-grid" id="gdp-drivers-grid"><div class="empty-state" style="grid-column:1/-1;padding:32px;">Hit Refresh to load FRED data</div></div>
 
-  <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Real GDP YoY Trend + Predictions</div></div>
+  <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Real GDP YoY Trend + ML Predictions</div></div>
   <div class="chart-wrap"><canvas id="gdp-chart"></canvas></div>
 
-  <div class="section-header"><div class="section-title"><span class="dot dot-purple"></span>Simple Model Backtest &mdash; Accuracy</div></div>
-  <div class="bt-controls">
-    <label>Quarters to backtest:</label>
-    <select id="gdp-bt-quarters" onchange="runGDPBacktest()">
-      <option value="8">8 quarters</option>
-      <option value="12" selected>12 quarters</option>
-      <option value="16">16 quarters</option>
-    </select>
-    <div class="accuracy-pills" id="gdp-acc-pills"></div>
-  </div>
-  <div class="table-wrap" id="gdp-bt-table"><div class="empty-state">Load data first, then backtest runs automatically</div></div>
+  <input type="hidden" id="gdp-bt-quarters" value="12">
 </div>
 </div>
 
@@ -1214,17 +1188,15 @@ async function loadGDP() {
 
   showBadge('gdp-fred-badge', true);
   renderGDPDrivers();
-  const preds  = buildGDPPredictions();
-  const btRows = computeGDPBacktest(parseInt(document.getElementById('gdp-bt-quarters').value) || 12);
-  renderGDPPredHero(preds);
-  renderGDPChart(preds, btRows);
-  runGDPBacktest();
+  renderGDPChart(buildGDPPredictions());        // actual GDP line; ML line added when model runs
 
   document.getElementById('gdp-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-  // Show ML button after FRED rate-limit window clears (~15s)
-  setTimeout(() => { document.getElementById('gdp-ml-btn').style.display = ''; }, 15000);
+  document.getElementById('gdp-ml-btn').style.display = '';
   btn.disabled = false;
   document.getElementById('gdp-refresh-icon').textContent = '↻';
+
+  // The 25-year ML model is the prediction — run it automatically (cached 6h server-side)
+  runMLNowcast();
 }
 
 function gdpYoY(data, idx) {
@@ -1628,18 +1600,14 @@ function renderGDPChart(preds, btRows=[], mlData=[]) {
 
 
   const datasets = [
-    // Actual — always first reference line
+    // Actual GDP — reference line
     {label:'Actual GDP YoY %', data:preds.map(p=>p.actual),
       borderColor:'#2dd4a0', backgroundColor:'#2dd4a010', tension:0.4,
       borderWidth:2, pointRadius:4, pointBackgroundColor:'#2dd4a0', spanGaps:false},
-    // Simple model — thin dashed, background context
-    {label:'Simple Model', data:pastPred.map((v,i) => v ?? preds[i].predicted),
-      borderColor:'#60a5fa', backgroundColor:'transparent', tension:0.4,
-      borderWidth:1.5, borderDash:[5,4], pointRadius:2, pointBackgroundColor:'#60a5fa', spanGaps:false},
   ];
 
   if (mlData.length) {
-    // 25-year ML model — solid, prominent
+    // 25-year ML model — solid, prominent (the only prediction)
     datasets.push({
       label:'25-yr ML Model',
       data: resolvedMlPred,
