@@ -2002,9 +2002,13 @@ function showETFChart(sym) {
   (a.support || []).forEach(s => series.createPriceLine({
     price: s, color: '#2dd4a0', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'S ' + s }));
 
-  // breakout marker — first bar that closed above the level
+  // breakout marker — the MOST RECENT cross up through the level
   if (a.signal === 'BREAKOUT') {
-    const hit = a.ohlc.find(([t,o,h,l,c]) => c > a.level);
+    let hit = null;
+    for (let j = 1; j < a.ohlc.length; j++) {
+      if (a.ohlc[j][4] > a.level && a.ohlc[j-1][4] <= a.level) hit = a.ohlc[j];
+    }
+    if (!hit) hit = a.ohlc.find(([t,o,h,l,c]) => c > a.level);   // fallback
     if (hit) series.setMarkers([{ time: hit[0], position: 'belowBar',
       color: '#f5a623', shape: 'arrowUp', text: 'breakout $' + a.level }]);
   }
