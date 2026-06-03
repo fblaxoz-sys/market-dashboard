@@ -6,6 +6,7 @@
 <title>Market Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 :root{
   --bg:#0a0a0f;--surface:#111118;--surface2:#18181f;
@@ -174,6 +175,7 @@ td.r{text-align:right;}
 <nav class="nav">
   <div class="nav-brand">&#9889; Market Dashboard</div>
   <button class="tab-btn active" onclick="switchTab('momentum')">&#128200; Momentum Tracker</button>
+  <button class="tab-btn" onclick="switchTab('etf')">&#128201; ETF Swings</button>
   <button class="tab-btn" onclick="switchTab('inflation')">&#127777; Inflation Predictor</button>
   <button class="tab-btn" onclick="switchTab('gdp')">&#128202; GDP Predictor</button>
 </nav>
@@ -231,6 +233,51 @@ td.r{text-align:right;}
   <div class="table-wrap" id="top-table"><div class="empty-state">Enter your Polygon key above and hit Refresh</div></div>
   <div class="section-header"><div class="section-title"><span class="dot dot-red"></span>Bottom 5 Momentum</div></div>
   <div class="table-wrap" id="bot-table"><div class="empty-state">Enter your Polygon key above and hit Refresh</div></div>
+</div>
+</div>
+
+<!-- ── TAB: ETF SWINGS ── -->
+<div class="tab-panel" id="tab-etf">
+<div class="wrap">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <h2 style="font-size:22px;font-weight:800;">ETF Swing Scanner</h2>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Range breakouts &amp; setups &mdash; price&ge;$10, vol&ge;50k, no leverage/inverse, expense&lt;1%</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span id="etf-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <button class="btn btn-primary" id="etf-scan-btn" onclick="runETFScan()">
+        <span id="etf-scan-icon">&#128269;</span> Scan ETFs
+      </button>
+    </div>
+  </div>
+
+  <div class="config-bar">
+    <label>FMP KEY (optional)</label>
+    <input id="fmp-key" type="password" placeholder="Paste FMP key to expand universe + real expense ratios (optional)" />
+    <button class="btn" onclick="saveFmpKey()">Save</button>
+    <span id="fmp-badge" class="key-badge" style="display:none"></span>
+  </div>
+
+  <div class="progress-wrap" id="etf-prog">
+    <div class="progress-label" id="etf-prog-lbl">Scanning ETFs…</div>
+    <div class="progress-track"><div class="progress-fill" id="etf-prog-fill" style="width:0%"></div></div>
+  </div>
+
+  <!-- Candlestick chart for the selected ticker -->
+  <div id="etf-chart-wrap" class="chart-wrap" style="display:none;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div id="etf-chart-title" style="font-size:16px;font-weight:800;"></div>
+      <div id="etf-chart-legend" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></div>
+    </div>
+    <div id="etf-chart" style="height:340px;"></div>
+  </div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Breakouts &mdash; broke above resistance</div></div>
+  <div class="table-wrap" id="etf-breakout-table"><div class="empty-state">Hit Scan to find ETF breakouts</div></div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>Approaching &mdash; testing resistance</div></div>
+  <div class="table-wrap" id="etf-approach-table"><div class="empty-state">Hit Scan to find setups nearing breakout</div></div>
 </div>
 </div>
 
@@ -433,7 +480,7 @@ let cpiChart = null;
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
 
 function switchTab(id) {
-  const ids = ['momentum','inflation','gdp'];
+  const ids = ['momentum','etf','inflation','gdp'];
   document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', ids[i] === id));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-'+id));
 }
@@ -1692,12 +1739,130 @@ function runGDPBacktest() {
 }
 
 // ── INIT ──────────────────────────────────────────────
+// ════════════════════════════════════════════════════════
+// TAB — ETF SWING SCANNER
+// ════════════════════════════════════════════════════════
+let fmpKey  = localStorage.getItem('fmp_key') || '';
+let etfData = { breakouts: [], approaching: [] };
+let etfChart = null;
+
+function saveFmpKey() {
+  const v = document.getElementById('fmp-key').value.trim();
+  if (!v) return;
+  fmpKey = v;
+  localStorage.setItem('fmp_key', v);
+  showBadge('fmp-badge', true);
+}
+
+async function runETFScan() {
+  const btn = document.getElementById('etf-scan-btn');
+  btn.disabled = true;
+  document.getElementById('etf-scan-icon').innerHTML = '<span class="spinner"></span>';
+  const prog = document.getElementById('etf-prog');
+  prog.classList.add('visible');
+  document.getElementById('etf-prog-lbl').textContent = 'Scanning ETFs for swing breakouts… (~1-2 min first run)';
+  document.getElementById('etf-prog-fill').style.width = '40%';
+
+  try {
+    const url = '/etf-scan' + (fmpKey ? `?fmp_key=${encodeURIComponent(fmpKey)}` : '');
+    const res = await fetch(url);
+    const d   = await res.json();
+    if (d.error) throw new Error(d.error);
+    etfData = d;
+    document.getElementById('etf-prog-fill').style.width = '100%';
+    renderETFTables();
+    document.getElementById('etf-updated').textContent =
+      `Scanned ${d.scanned} ETFs (${d.source}) · ${d.breakouts.length} breakouts, ${d.approaching.length} approaching`;
+    // auto-show the top breakout chart
+    if (d.breakouts.length) showETFChart(d.breakouts[0].sym);
+  } catch(e) {
+    document.getElementById('etf-breakout-table').innerHTML =
+      `<div class="empty-state">Scan failed: ${e.message.slice(0,140)}</div>`;
+    console.error(e);
+  }
+  prog.classList.remove('visible');
+  btn.disabled = false;
+  document.getElementById('etf-scan-icon').textContent = '🔍';
+}
+
+function etfRow(a) {
+  const expStr = a.expense != null ? a.expense + '%' : '—';
+  const dist = a.signal === 'BREAKOUT'
+    ? `+${((a.price/a.level - 1)*100).toFixed(1)}% above`
+    : `${((a.level/a.price - 1)*100).toFixed(1)}% below`;
+  return `<tr style="cursor:pointer" onclick="showETFChart('${a.sym}')">
+    <td class="ticker-cell">${a.sym}</td>
+    <td class="r">$${a.price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+    <td class="r c-muted">$${a.level}</td>
+    <td class="r ${a.signal==='BREAKOUT'?'c-green':'c-amber'}">${dist}</td>
+    <td class="r">${a.touches}×</td>
+    <td class="r c-muted">${(a.avgvol/1e6).toFixed(1)}M</td>
+    <td class="r c-muted">${expStr}</td>
+    <td class="r"><div class="score-bar-wrap"><span style="min-width:36px;text-align:right">${a.score}</span></div></td>
+  </tr>`;
+}
+
+function renderETFTables() {
+  const head = `<thead><tr><th>Ticker</th><th class="r">Price</th><th class="r">Level</th>
+    <th class="r">Position</th><th class="r">Tests</th><th class="r">Avg Vol</th><th class="r">Expense</th><th class="r">Score</th></tr></thead>`;
+  const bo = etfData.breakouts, ap = etfData.approaching;
+  document.getElementById('etf-breakout-table').innerHTML = bo.length
+    ? `<table>${head}<tbody>${bo.map(etfRow).join('')}</tbody></table>`
+    : '<div class="empty-state">No breakouts found</div>';
+  document.getElementById('etf-approach-table').innerHTML = ap.length
+    ? `<table>${head}<tbody>${ap.map(etfRow).join('')}</tbody></table>`
+    : '<div class="empty-state">No setups approaching resistance</div>';
+}
+
+function showETFChart(sym) {
+  const a = [...etfData.breakouts, ...etfData.approaching].find(x => x.sym === sym);
+  if (!a) return;
+  const wrap = document.getElementById('etf-chart-wrap');
+  wrap.style.display = '';
+  document.getElementById('etf-chart-title').textContent =
+    `${a.sym} — ${a.signal === 'BREAKOUT' ? 'Breakout above' : 'Approaching'} $${a.level}`;
+  document.getElementById('etf-chart-legend').innerHTML =
+    `<span style="color:var(--red)">━ resistance</span>  <span style="color:var(--green)">━ support</span>  ·  ${a.touches} tests · score ${a.score}`;
+
+  const el = document.getElementById('etf-chart');
+  el.innerHTML = '';
+  etfChart = LightweightCharts.createChart(el, {
+    height: 340,
+    layout: { background: { color: 'transparent' }, textColor: '#6b6b80', fontFamily: "'Space Mono'" },
+    grid: { vertLines: { color: '#ffffff08' }, horzLines: { color: '#ffffff08' } },
+    timeScale: { borderColor: '#ffffff18' },
+    rightPriceScale: { borderColor: '#ffffff18' },
+    crosshair: { mode: 0 },
+  });
+  const series = etfChart.addCandlestickSeries({
+    upColor: '#2dd4a0', downColor: '#f0526a', borderVisible: false,
+    wickUpColor: '#2dd4a0', wickDownColor: '#f0526a',
+  });
+  series.setData(a.ohlc.map(([t,o,h,l,c]) => ({ time: t, open: o, high: h, low: l, close: c })));
+
+  // resistance / support lines
+  (a.resistance || []).forEach(r => series.createPriceLine({
+    price: r, color: '#f0526a', lineWidth: r === a.level ? 2 : 1,
+    lineStyle: 2, axisLabelVisible: true, title: 'R ' + r }));
+  (a.support || []).forEach(s => series.createPriceLine({
+    price: s, color: '#2dd4a0', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'S ' + s }));
+
+  // breakout marker — first bar that closed above the level
+  if (a.signal === 'BREAKOUT') {
+    const hit = a.ohlc.find(([t,o,h,l,c]) => c > a.level);
+    if (hit) series.setMarkers([{ time: hit[0], position: 'belowBar',
+      color: '#f5a623', shape: 'arrowUp', text: 'breakout $' + a.level }]);
+  }
+  etfChart.timeScale().fitContent();
+}
+
 (function init(){
   if (polyKey) { document.getElementById('poly-key').value=polyKey; showBadge('poly-badge',true); }
   if (fredKey) {
     document.getElementById('fred-key').value=fredKey; showBadge('fred-badge',true);
     document.getElementById('gdp-fred-key').value=fredKey; showBadge('gdp-fred-badge',true);
   }
+  if (fmpKey) { document.getElementById('fmp-key').value=fmpKey; showBadge('fmp-badge',true); }
   renderWLTags();
 })();
 </script>

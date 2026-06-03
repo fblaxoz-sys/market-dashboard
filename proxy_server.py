@@ -899,6 +899,144 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     }
 
 
+# ── ETF MOMENTUM SCANNER ──────────────────────────────────────────────────────
+# Finds range-bound ETFs breaking above (or approaching) a tested resistance level
+# — the IGV pattern: floor ~76, ceiling ~89 tested repeatedly, then breaks through.
+# Price/volume/charts from Yahoo Finance (free, no key). Universe + expense ratio
+# from a curated vetted list (expanded by FMP when a key is supplied).
+
+# Curated: liquid, non-leveraged, non-inverse ETFs with net expense ratio < 1.0%.
+CURATED_ETFS = {
+    # broad market
+    'SPY':0.09,'QQQ':0.20,'IWM':0.19,'DIA':0.16,'MDY':0.23,'VTI':0.03,'RSP':0.20,
+    # sectors (SPDR)
+    'XLK':0.09,'XLF':0.09,'XLE':0.09,'XLV':0.09,'XLI':0.09,'XLY':0.09,'XLP':0.09,
+    'XLU':0.09,'XLB':0.09,'XLRE':0.09,'XLC':0.09,
+    # industries / thematic
+    'IGV':0.40,'SMH':0.35,'SOXX':0.35,'KRE':0.35,'KBE':0.35,'XBI':0.35,'IBB':0.45,
+    'ITB':0.40,'XHB':0.35,'XRT':0.35,'KIE':0.35,'XOP':0.35,'OIH':0.35,'JETS':0.60,
+    'TAN':0.67,'ICLN':0.42,'LIT':0.75,'URA':0.69,'IYT':0.39,'XME':0.35,'GDX':0.51,
+    'GDXJ':0.52,'XAR':0.35,'HACK':0.60,'SKYY':0.60,'FDN':0.49,'ARKK':0.75,'ARKG':0.75,
+    'BOTZ':0.68,'ROBO':0.95,'PAVE':0.47,'IYR':0.39,'VNQ':0.13,'REM':0.48,
+    # factor / style
+    'MTUM':0.15,'VLUE':0.15,'QUAL':0.15,'USMV':0.15,'SPLV':0.25,'VUG':0.04,'VTV':0.04,
+    'IWF':0.19,'IWD':0.19,'SCHD':0.06,'DVY':0.38,'VIG':0.06,
+    # international
+    'EEM':0.68,'VWO':0.08,'EFA':0.32,'VEA':0.05,'FXI':0.74,'MCHI':0.59,'EWZ':0.59,
+    'EWJ':0.50,'INDA':0.64,'EWT':0.59,'EWY':0.59,'EWG':0.50,'EWU':0.50,'ILF':0.48,
+    # bonds
+    'TLT':0.15,'IEF':0.15,'SHY':0.15,'LQD':0.14,'HYG':0.49,'JNK':0.40,'AGG':0.03,
+    'BND':0.03,'TIP':0.19,'MUB':0.07,'EMB':0.39,'BKLN':0.65,
+    # commodities / metals
+    'GLD':0.40,'SLV':0.50,'IAU':0.25,'USO':0.60,'UNG':0.90,'DBC':0.85,'PDBC':0.59,
+    'CPER':0.88,'WEAT':0.85,
+}
+
+def _yahoo_ohlc(sym, rng="2y"):
+    import urllib.request, json as _json, datetime as _dt
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval=1d"
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        d = _json.load(r)
+    res = d['chart']['result'][0]; q = res['indicators']['quote'][0]
+    ts = res['timestamp']
+    rows = []
+    for t, o, h, l, c, v in zip(ts, q['open'], q['high'], q['low'], q['close'], q['volume']):
+        if None in (o, h, l, c, v): continue
+        rows.append((_dt.date.fromtimestamp(t).isoformat(), o, h, l, c, v))
+    return rows
+
+def run_etf_scan(fmp_key=None):
+    import numpy as np
+
+    universe = dict(CURATED_ETFS)
+    if fmp_key:                                  # expand with FMP screener (non-leveraged ETFs)
+        try:
+            import urllib.request, json as _json
+            u = (f"https://financialmodelingprep.com/api/v3/stock-screener?isEtf=true"
+                 f"&priceMoreThan=10&volumeMoreThan=50000&limit=1500&apikey={fmp_key}")
+            with urllib.request.urlopen(u, timeout=25) as r:
+                lst = _json.load(r)
+            bad = ('2X','3X','ULTRA','LEVERAGED','INVERSE','BEAR','BULL','-1X','SHORT')
+            for it in lst:
+                nm = (it.get('companyName') or '').upper()
+                if any(b in nm for b in bad): continue
+                universe.setdefault(it.get('symbol'), None)   # expense filled below if curated
+            print(f"  [etf] FMP universe: {len(lst)} ETFs → {len(universe)} after dedupe")
+        except Exception as e:
+            print(f"  [etf] FMP failed, using curated: {e}")
+
+    def pivots(highs, lows, w=8):
+        ph, pl = [], []
+        for i in range(w, len(highs)-w):
+            if highs[i] == max(highs[i-w:i+w+1]): ph.append(i)
+            if lows[i]  == min(lows[i-w:i+w+1]):  pl.append(i)
+        return ph, pl
+
+    def cluster(levels, tol=0.025):
+        out = []
+        for lv in sorted(levels):
+            for g in out:
+                if abs(lv-g['m'])/g['m'] <= tol:
+                    g['vals'].append(lv); g['m'] = float(np.mean(g['vals'])); break
+            else:
+                out.append({'m': lv, 'vals': [lv]})
+        return [(g['m'], len(g['vals'])) for g in out]
+
+    def analyze(sym, expense):
+        rows = _yahoo_ohlc(sym)
+        if len(rows) < 120: return None
+        highs=[r[2] for r in rows]; lows=[r[3] for r in rows]; closes=[r[4] for r in rows]; vols=[r[5] for r in rows]
+        price = closes[-1]; avgvol = float(np.mean(vols[-30:]))
+        if price < 10 or avgvol < 50000: return None      # user's liquidity/price filters
+        # Momentum-swing gate: needs a real range to trade (filters flat bond/min-vol funds).
+        rng6 = (max(closes[-126:]) - min(closes[-126:])) / price      # ~6-month swing size
+        if rng6 < 0.08: return None
+        ph, pl = pivots(highs, lows)
+        res = [(m, n) for m, n in cluster([highs[i] for i in ph]) if n >= 2]
+        sup = [(m, n) for m, n in cluster([lows[i]  for i in pl]) if n >= 2]
+        signal, lvl, touches = None, None, 0
+        for m, n in res:
+            below = any(closes[j] < m*0.995 for j in range(max(0,len(closes)-40), len(closes)-3))
+            broke = any(closes[j] > m*1.005 and closes[j-1] <= m*1.01 for j in range(max(1,len(closes)-15), len(closes)))
+            if below and price > m and broke:
+                signal, lvl, touches = 'BREAKOUT', m, n; break
+        if not signal:
+            for m, n in res:
+                if 0 < (m-price)/price <= 0.04:
+                    signal, lvl, touches = 'APPROACHING', m, n; break
+        if not signal: return None
+        # Score favors the IGV profile: a sizable swing, a few clean tests (not a
+        # choppy flat line), and — for breakouts — a decisive push above the level.
+        strength = max(0.0, price/lvl - 1) if signal == 'BREAKOUT' else 0.0
+        clean    = min(touches, 5)                    # reward 2-5 tests, ignore excess chop
+        score = round(rng6*80 + clean*6 + strength*150, 1)
+        return {
+            'sym': sym, 'price': round(price, 2), 'avgvol': int(avgvol),
+            'expense': expense, 'signal': signal, 'level': round(lvl, 2),
+            'touches': touches, 'score': score,
+            'support':    [round(m, 2) for m, n in sup][:3],
+            'resistance': [round(m, 2) for m, n in res][-3:],
+            'ohlc': [[r[0], round(r[1],2), round(r[2],2), round(r[3],2), round(r[4],2)] for r in rows[-260:]],
+        }
+
+    breakouts, approaching = [], []
+    for i, (sym, exp) in enumerate(universe.items()):
+        if exp is not None and exp >= 1.0: continue       # net expense ratio < 1%
+        try:
+            a = analyze(sym, exp)
+            if a:
+                (breakouts if a['signal'] == 'BREAKOUT' else approaching).append(a)
+        except Exception as e:
+            pass
+        time.sleep(0.15)                                  # be gentle to Yahoo
+    breakouts.sort(key=lambda x: -x['score'])
+    approaching.sort(key=lambda x: -x['score'])
+    print(f"  [etf] {len(breakouts)} breakouts, {len(approaching)} approaching")
+    return {'breakouts': breakouts, 'approaching': approaching,
+            'scanned': len(universe), 'source': 'FMP+curated' if fmp_key else 'curated'}
+
+
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
 
 class Handler(SimpleHTTPRequestHandler):
@@ -964,6 +1102,29 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 err = traceback.format_exc()
                 print(f"[inflation] ERROR:\n{err}")
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': err}).encode())
+            return
+
+        if parsed.path == '/etf-scan':
+            qs      = urllib.parse.parse_qs(parsed.query)
+            fmp_key = qs.get('fmp_key', [''])[0] or None
+            try:
+                print(f"\n[etf] Scan request (fmp={'yes' if fmp_key else 'no'}) …")
+                key = f"etf:{'fmp' if fmp_key else 'curated'}"
+                result  = cached_ml(key, lambda: run_etf_scan(fmp_key))
+                payload = json.dumps(result).encode()
+                print(f"[etf] Done → {len(result['breakouts'])} breakouts")
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers(); self.wfile.write(payload)
+            except Exception:
+                err = traceback.format_exc()
+                print(f"[etf] ERROR:\n{err}")
                 self.send_response(500)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
