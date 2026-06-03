@@ -983,50 +983,79 @@ def run_etf_scan(fmp_key=None):
                 out.append({'m': lv, 'vals': [lv]})
         return [(g['m'], len(g['vals'])) for g in out]
 
-    def analyze(sym, expense):
+    def rets(c):
+        return {d: ((c[-1]/c[-1-d]-1)*100 if len(c) > d else 0.0) for d in (21, 63, 126)}
+
+    def analyze(sym, expense, spy_ret):
         rows = _yahoo_ohlc(sym)
         if len(rows) < 120: return None
         highs=[r[2] for r in rows]; lows=[r[3] for r in rows]; closes=[r[4] for r in rows]; vols=[r[5] for r in rows]
         price = closes[-1]; avgvol = float(np.mean(vols[-30:]))
         if price < 10 or avgvol < 50000: return None      # user's liquidity/price filters
-        # Momentum-swing gate: needs a real range to trade (filters flat bond/min-vol funds).
         rng6 = (max(closes[-126:]) - min(closes[-126:])) / price      # ~6-month swing size
         if rng6 < 0.08: return None
         ph, pl = pivots(highs, lows)
         res = [(m, n) for m, n in cluster([highs[i] for i in ph]) if n >= 2]
         sup = [(m, n) for m, n in cluster([lows[i]  for i in pl]) if n >= 2]
-        signal, lvl, touches = None, None, 0
+        signal, lvl, touches, bo_idx = None, None, 0, None
         for m, n in res:
             below = any(closes[j] < m*0.995 for j in range(max(0,len(closes)-40), len(closes)-3))
-            broke = any(closes[j] > m*1.005 and closes[j-1] <= m*1.01 for j in range(max(1,len(closes)-15), len(closes)))
-            if below and price > m and broke:
-                signal, lvl, touches = 'BREAKOUT', m, n; break
+            cross = next((j for j in range(max(1,len(closes)-15), len(closes))
+                          if closes[j] > m*1.005 and closes[j-1] <= m*1.01), None)
+            if below and price > m and cross is not None:
+                signal, lvl, touches, bo_idx = 'BREAKOUT', m, n, cross; break
         if not signal:
             for m, n in res:
                 if 0 < (m-price)/price <= 0.04:
                     signal, lvl, touches = 'APPROACHING', m, n; break
         if not signal: return None
-        # Score favors the IGV profile: a sizable swing, a few clean tests (not a
-        # choppy flat line), and — for breakouts — a decisive push above the level.
+
+        # ── Relative strength vs SPY (1/3/6-mo, weighted toward 3-mo) ──────
+        er = rets(closes)
+        rs = round(0.25*(er[21]-spy_ret[21]) + 0.5*(er[63]-spy_ret[63]) + 0.25*(er[126]-spy_ret[126]), 1)
+
+        # ── Volume confirmation on the breakout bar (≥1.5× 20-day avg) ─────
+        vol_surge, vol_ok = None, False
+        if bo_idx is not None and bo_idx >= 20:
+            base = float(np.mean(vols[bo_idx-20:bo_idx]))
+            if base > 0:
+                vol_surge = round(vols[bo_idx]/base, 2); vol_ok = vol_surge >= 1.5
+
+        # ── Break-and-retest: after breaking, dipped back to the level and held ─
+        retested = False
+        if bo_idx is not None:
+            for k in range(bo_idx+1, len(closes)):
+                if lows[k] <= lvl*1.015 and closes[k] >= lvl*0.99:   # pulled back to level
+                    retested = price > lvl; break
+
         strength = max(0.0, price/lvl - 1) if signal == 'BREAKOUT' else 0.0
-        clean    = min(touches, 5)                    # reward 2-5 tests, ignore excess chop
-        # for APPROACHING: the closer price is to the level, the higher the rank
-        prox = max(0.0, 1 - (lvl - price)/(price*0.04)) if signal == 'APPROACHING' else 0.0
-        score = round(rng6*80 + clean*6 + strength*150 + prox*50, 1)
+        clean    = min(touches, 5)
+        prox     = max(0.0, 1 - (lvl - price)/(price*0.04)) if signal == 'APPROACHING' else 0.0
+        rs_pts   = max(-20.0, min(20.0, rs))          # relative strength, capped ±20
+        score = round(rng6*80 + clean*6 + strength*150 + prox*50 + rs_pts*1.5
+                      + (12 if vol_ok else 0) + (15 if retested else 0), 1)
         return {
             'sym': sym, 'price': round(price, 2), 'avgvol': int(avgvol),
             'expense': expense, 'signal': signal, 'level': round(lvl, 2),
-            'touches': touches, 'score': score,
+            'touches': touches, 'score': score, 'rs': rs,
+            'vol_surge': vol_surge, 'vol_ok': bool(vol_ok), 'retested': bool(retested),
             'support':    [round(m, 2) for m, n in sup][:3],
             'resistance': [round(m, 2) for m, n in res][-3:],
             'ohlc': [[r[0], round(r[1],2), round(r[2],2), round(r[3],2), round(r[4],2)] for r in rows[-260:]],
         }
 
+    # SPY benchmark returns (for relative strength), fetched once
+    try:
+        spy_closes = [r[4] for r in _yahoo_ohlc('SPY')]
+        spy_ret = rets(spy_closes)
+    except Exception:
+        spy_ret = {21: 0.0, 63: 0.0, 126: 0.0}
+
     breakouts, approaching = [], []
     for i, (sym, exp) in enumerate(universe.items()):
         if exp is not None and exp >= 1.0: continue       # net expense ratio < 1%
         try:
-            a = analyze(sym, exp)
+            a = analyze(sym, exp, spy_ret)
             if a:
                 (breakouts if a['signal'] == 'BREAKOUT' else approaching).append(a)
         except Exception as e:

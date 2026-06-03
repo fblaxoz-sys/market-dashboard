@@ -1783,12 +1783,21 @@ function etfRow(a) {
   const dist = a.signal === 'BREAKOUT'
     ? `+${((a.price/a.level - 1)*100).toFixed(1)}% above`
     : `${((a.level/a.price - 1)*100).toFixed(1)}% below`;
+  const rs = a.rs != null
+    ? `<span class="${a.rs>0?'c-green':'c-red'}">${a.rs>0?'+':''}${a.rs}%</span>` : '—';
+  // confirmation badges
+  let sig = '';
+  if (a.vol_ok)   sig += `<span class="wl-badge" style="background:#2dd4a022;color:var(--green);border-color:#2dd4a044" title="Breakout volume ${a.vol_surge}× the 20-day average">Vol ${a.vol_surge}×</span>`;
+  if (a.retested) sig += `<span class="wl-badge" style="background:#f5a62322;color:var(--amber);border-color:#f5a62344" title="Broke out, pulled back to the level and held">Retest&#10003;</span>`;
+  if (!sig) sig = '<span class="c-muted" style="font-size:10px">—</span>';
   return `<tr style="cursor:pointer" onclick="showETFChart('${a.sym}')">
     <td class="ticker-cell">${a.sym}</td>
     <td class="r">$${a.price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
     <td class="r c-muted">$${a.level}</td>
     <td class="r ${a.signal==='BREAKOUT'?'c-green':'c-amber'}">${dist}</td>
+    <td class="r">${rs}</td>
     <td class="r">${a.touches}×</td>
+    <td>${sig}</td>
     <td class="r c-muted">${(a.avgvol/1e6).toFixed(1)}M</td>
     <td class="r c-muted">${expStr}</td>
     <td class="r"><div class="score-bar-wrap"><span style="min-width:36px;text-align:right">${a.score}</span></div></td>
@@ -1797,7 +1806,8 @@ function etfRow(a) {
 
 function renderETFTables() {
   const head = `<thead><tr><th>Ticker</th><th class="r">Price</th><th class="r">Level</th>
-    <th class="r">Position</th><th class="r">Tests</th><th class="r">Avg Vol</th><th class="r">Expense</th><th class="r">Score</th></tr></thead>`;
+    <th class="r">Position</th><th class="r" title="Relative strength vs SPY (1/3/6-mo)">RS</th><th class="r">Tests</th>
+    <th>Confirm</th><th class="r">Avg Vol</th><th class="r">Expense</th><th class="r">Score</th></tr></thead>`;
   const bo = etfData.breakouts, ap = etfData.approaching;
   document.getElementById('etf-breakout-table').innerHTML = bo.length
     ? `<table>${head}<tbody>${bo.map(etfRow).join('')}</tbody></table>`
@@ -1814,8 +1824,11 @@ function showETFChart(sym) {
   wrap.style.display = '';
   document.getElementById('etf-chart-title').textContent =
     `${a.sym} — ${a.signal === 'BREAKOUT' ? 'Breakout above' : 'Approaching'} $${a.level}`;
+  const rsTxt = a.rs != null ? ` · <span style="color:${a.rs>0?'var(--green)':'var(--red)'}">RS ${a.rs>0?'+':''}${a.rs}% vs SPY</span>` : '';
+  const volTxt = a.vol_ok ? ` · <span style="color:var(--green)">vol ${a.vol_surge}×&#10003;</span>` : '';
+  const retTxt = a.retested ? ` · <span style="color:var(--amber)">retested&#10003;</span>` : '';
   document.getElementById('etf-chart-legend').innerHTML =
-    `<span style="color:var(--red)">━ resistance</span>  <span style="color:var(--green)">━ support</span>  ·  ${a.touches} tests · score ${a.score}`;
+    `<span style="color:var(--red)">━ resistance</span>  <span style="color:var(--green)">━ support</span> · ${a.touches} tests${rsTxt}${volTxt}${retTxt}`;
 
   const el = document.getElementById('etf-chart');
   el.innerHTML = '';
