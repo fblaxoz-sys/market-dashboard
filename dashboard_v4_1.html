@@ -176,6 +176,7 @@ td.r{text-align:right;}
   <div class="nav-brand">&#9889; Market Dashboard</div>
   <button class="tab-btn active" onclick="switchTab('momentum')">&#128200; Momentum Tracker</button>
   <button class="tab-btn" onclick="switchTab('etf')">&#128201; ETF Swings</button>
+  <button class="tab-btn" onclick="switchTab('positions')">&#128204; My Positions</button>
   <button class="tab-btn" onclick="switchTab('inflation')">&#127777; Inflation Predictor</button>
   <button class="tab-btn" onclick="switchTab('gdp')">&#128202; GDP Predictor</button>
 </nav>
@@ -287,6 +288,40 @@ td.r{text-align:right;}
 
   <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Already broke out</div></div>
   <div class="table-wrap" id="etf-breakout-table"><div class="empty-state">Hit Scan to find ETF breakouts</div></div>
+</div>
+</div>
+
+<!-- ── TAB: MY POSITIONS ── -->
+<div class="tab-panel" id="tab-positions">
+<div class="wrap">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <h2 style="font-size:22px;font-weight:800;">My Positions</h2>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Trailing-stop sell tracker &mdash; 6&times; ATR Chandelier stop from your entry · Yahoo daily data</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="pos-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <button class="btn btn-primary" onclick="renderPositions()"><span id="pos-refresh-icon">&#8635;</span> Refresh</button>
+    </div>
+  </div>
+
+  <div class="config-bar">
+    <label>ADD POSITION</label>
+    <input id="pos-sym"   type="text"   style="flex:0 0 110px;min-width:90px" placeholder="Ticker e.g. IGV" />
+    <input id="pos-price" type="number" style="flex:0 0 130px;min-width:100px" step="0.01" placeholder="Entry price" />
+    <input id="pos-date"  type="date"   style="flex:0 0 160px;min-width:140px" />
+    <button class="btn" onclick="addPosition()">Add</button>
+  </div>
+
+  <div id="pos-chart-wrap" class="chart-wrap" style="display:none;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+      <div id="pos-chart-title" style="font-size:16px;font-weight:800;"></div>
+      <div id="pos-chart-legend" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></div>
+    </div>
+    <div id="pos-chart" style="height:340px;"></div>
+  </div>
+
+  <div class="table-wrap" id="positions-table"><div class="empty-state">Add an ETF you bought above &mdash; it'll track the trailing stop so you know when to sell</div></div>
 </div>
 </div>
 
@@ -489,7 +524,8 @@ let cpiChart = null;
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
 
 function switchTab(id) {
-  const ids = ['momentum','etf','inflation','gdp'];
+  const ids = ['momentum','etf','positions','inflation','gdp'];
+  if (id === 'positions') setTimeout(renderPositions, 50);
   document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', ids[i] === id));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-'+id));
 }
@@ -1968,6 +2004,147 @@ async function showTradeChart(sym, date) {
   etfChart.timeScale().fitContent();
 }
 
+// ════════════════════════════════════════════════════════
+// TAB — MY POSITIONS (trailing-stop sell tracker)
+// ════════════════════════════════════════════════════════
+let positions = JSON.parse(localStorage.getItem('positions') || '[]');
+let posChart  = null;
+const posOhlcCache = {};
+
+function savePositions() { localStorage.setItem('positions', JSON.stringify(positions)); }
+
+function addPosition() {
+  const sym = document.getElementById('pos-sym').value.trim().toUpperCase();
+  const price = parseFloat(document.getElementById('pos-price').value);
+  const date = document.getElementById('pos-date').value || new Date().toISOString().slice(0,10);
+  if (!sym || !(price > 0)) { alert('Enter a ticker and a valid entry price.'); return; }
+  positions.push({ sym, price, date });
+  savePositions();
+  document.getElementById('pos-sym').value = '';
+  document.getElementById('pos-price').value = '';
+  renderPositions();
+}
+
+function removePosition(i) { positions.splice(i, 1); savePositions(); renderPositions(); }
+
+async function getOHLC(sym) {
+  if (posOhlcCache[sym]) return posOhlcCache[sym];
+  const res = await fetch(`/etf-chart?sym=${encodeURIComponent(sym)}`);
+  const d = await res.json();
+  if (d.error || !d.ohlc) throw new Error('no data');
+  posOhlcCache[sym] = d.ohlc;
+  return d.ohlc;
+}
+
+function atrSeries(ohlc, p=14) {
+  const tr = [ohlc[0][2]-ohlc[0][3]];
+  for (let k=1; k<ohlc.length; k++) {
+    const h=ohlc[k][2], l=ohlc[k][3], pc=ohlc[k-1][4];
+    tr.push(Math.max(h-l, Math.abs(h-pc), Math.abs(l-pc)));
+  }
+  const atr = [];
+  for (let k=0; k<ohlc.length; k++) {
+    const s = Math.max(0, k-p+1), sl = tr.slice(s, k+1);
+    atr.push(sl.reduce((a,b)=>a+b,0)/sl.length);
+  }
+  return atr;
+}
+
+// 6× ATR Chandelier trailing stop computed from the entry date forward
+function computeTrail(ohlc, entryDate, mult=6) {
+  let ei = ohlc.findIndex(r => r[0] >= entryDate);
+  if (ei < 0) ei = ohlc.length - 1;
+  const atr = atrSeries(ohlc);
+  let hh = ohlc[ei][2], trail = hh - mult*atr[ei];
+  const line = [{ time: ohlc[ei][0], value: trail }];
+  let triggered = null;
+  for (let k=ei+1; k<ohlc.length; k++) {
+    hh = Math.max(hh, ohlc[k][2]);
+    trail = Math.max(trail, hh - mult*atr[k]);
+    line.push({ time: ohlc[k][0], value: trail });
+    if (ohlc[k][4] < trail) { triggered = { date: ohlc[k][0], price: ohlc[k][4] }; break; }
+  }
+  return { ei, hh, trail, current: ohlc[ohlc.length-1][4], triggered, line };
+}
+
+async function renderPositions() {
+  const tb = document.getElementById('positions-table');
+  if (!positions.length) {
+    tb.innerHTML = '<div class="empty-state">Add an ETF you bought above &mdash; it\'ll track the trailing stop so you know when to sell</div>';
+    document.getElementById('pos-chart-wrap').style.display = 'none';
+    return;
+  }
+  tb.innerHTML = '<div class="empty-state">Loading positions…</div>';
+  const rows = await Promise.all(positions.map(async (p, idx) => {
+    try {
+      const ohlc = await getOHLC(p.sym);
+      const t = computeTrail(ohlc, p.date, 6);
+      const sold = !!t.triggered;
+      const exitPx = sold ? t.triggered.price : t.current;
+      const pl = (exitPx / p.price - 1) * 100;
+      const stopBelow = ((t.current - t.trail) / t.current * 100);
+      const status = sold
+        ? `<span class="wl-badge" style="background:#f0526a22;color:var(--red);border-color:#f0526a55">&#9210; SOLD</span>`
+        : `<span class="wl-badge" style="background:#2dd4a022;color:var(--green);border-color:#2dd4a055">&#9679; HOLD</span>`;
+      const sellCell = sold
+        ? `<span class="c-red">stop hit ${t.triggered.date}<br>@ $${t.triggered.price}</span>`
+        : `<span class="c-amber">$${t.trail.toFixed(2)} <span style="opacity:.6;font-size:10px">(${stopBelow.toFixed(1)}% below)</span></span>`;
+      return `<tr style="cursor:pointer" onclick="showPositionChart('${p.sym}',${idx})">
+        <td class="ticker-cell">${p.sym} ${status}</td>
+        <td class="r c-muted">$${p.price}<br><span style="font-size:9px">${p.date}</span></td>
+        <td class="r">$${exitPx.toFixed(2)}</td>
+        <td class="r ${pl>=0?'c-green':'c-red'}">${pl>=0?'+':''}${pl.toFixed(1)}%</td>
+        <td class="r">${sellCell}</td>
+        <td class="r c-muted">$${t.hh.toFixed(2)}</td>
+        <td class="r"><button onclick="event.stopPropagation();removePosition(${idx})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
+      </tr>`;
+    } catch(e) {
+      return `<tr><td class="ticker-cell">${p.sym}</td><td colspan="5" class="c-muted">data unavailable</td>
+        <td class="r"><button onclick="removePosition(${idx})" style="background:none;border:none;color:var(--muted);cursor:pointer">&times;</button></td></tr>`;
+    }
+  }));
+  tb.innerHTML = `<table><thead><tr>
+    <th>Ticker</th><th class="r">Entry</th><th class="r">Now / Exit</th><th class="r">P/L</th>
+    <th class="r">Trailing stop &mdash; sell level</th><th class="r">High since</th><th></th>
+  </tr></thead><tbody>${rows.join('')}</tbody></table>`;
+  document.getElementById('pos-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  // auto-show first position's chart
+  if (positions[0]) showPositionChart(positions[0].sym, 0);
+}
+
+async function showPositionChart(sym, idx) {
+  const p = positions[idx]; if (!p) return;
+  const wrap = document.getElementById('pos-chart-wrap'); wrap.style.display = '';
+  document.getElementById('pos-chart-title').textContent = `${sym} — loading…`;
+  let ohlc;
+  try { ohlc = await getOHLC(sym); } catch(e) { document.getElementById('pos-chart-title').textContent = sym+' — unavailable'; return; }
+  const t = computeTrail(ohlc, p.date, 6);
+  const sold = !!t.triggered;
+  const exitPx = sold ? t.triggered.price : t.current;
+  const pl = (exitPx/p.price - 1)*100;
+  document.getElementById('pos-chart-title').innerHTML =
+    `${sym} — bought ${p.date} @ $${p.price} · ${sold?'SOLD':'now'} $${exitPx.toFixed(2)} <span style="color:${pl>=0?'var(--green)':'var(--red)'}">(${pl>=0?'+':''}${pl.toFixed(1)}%)</span>`;
+  document.getElementById('pos-chart-legend').innerHTML = sold
+    ? `<span style="color:var(--red)">trailing stop hit ${t.triggered.date} → sell signal</span>`
+    : `<span style="color:var(--amber)">━ trailing stop (sell if it closes below $${t.trail.toFixed(2)})</span>`;
+
+  const el = document.getElementById('pos-chart'); el.innerHTML = '';
+  posChart = LightweightCharts.createChart(el, {
+    height: 340,
+    layout: { background:{color:'transparent'}, textColor:'#6b6b80', fontFamily:"'Space Mono'" },
+    grid: { vertLines:{color:'#ffffff08'}, horzLines:{color:'#ffffff08'} },
+    timeScale: { borderColor:'#ffffff18' }, rightPriceScale: { borderColor:'#ffffff18' },
+  });
+  const candle = posChart.addCandlestickSeries({ upColor:'#2dd4a0', downColor:'#f0526a', borderVisible:false, wickUpColor:'#2dd4a0', wickDownColor:'#f0526a' });
+  candle.setData(ohlc.map(([d,o,h,l,c]) => ({ time:d, open:o, high:h, low:l, close:c })));
+  const trailLine = posChart.addLineSeries({ color:'#f5a623', lineWidth:2, lineStyle:0, priceLineVisible:false });
+  trailLine.setData(t.line);
+  const markers = [{ time: ohlc[Math.max(0,t.ei)][0], position:'belowBar', color:'#2dd4a0', shape:'arrowUp', text:'BUY $'+p.price }];
+  if (sold) markers.push({ time:t.triggered.date, position:'aboveBar', color:'#f0526a', shape:'arrowDown', text:'SELL $'+t.triggered.price });
+  candle.setMarkers(markers);
+  posChart.timeScale().fitContent();
+}
+
 (function init(){
   if (polyKey) { document.getElementById('poly-key').value=polyKey; showBadge('poly-badge',true); }
   if (fredKey) {
@@ -1975,6 +2152,7 @@ async function showTradeChart(sym, date) {
     document.getElementById('gdp-fred-key').value=fredKey; showBadge('gdp-fred-badge',true);
   }
   renderWLTags();
+  const pd = document.getElementById('pos-date'); if (pd) pd.value = new Date().toISOString().slice(0,10);
 })();
 </script>
 </body>
