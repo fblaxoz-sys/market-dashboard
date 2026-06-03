@@ -1912,7 +1912,9 @@ function etfRow(a) {
   return `<tr style="cursor:pointer" onclick="showETFChart('${a.sym}')">
     <td class="ticker-cell">${a.sym}</td>
     <td class="r">$${a.price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-    <td class="r"><span class="c-green">$${a.entry ?? a.level}</span><br><span style="font-size:9px;color:var(--red);opacity:.85" title="6× ATR trailing stop (ratchets up as price rises)">stop $${a.stop ?? '—'}${a.atr_pct?` (-${a.atr_pct}%)`:''}</span></td>
+    <td class="r"><span class="c-green">$${a.entry ?? a.level}</span><br>
+      <span style="font-size:9px;color:var(--amber);opacity:.9" title="Sell half at +20%, trail the rest">tgt $${a.target ?? '—'}</span>
+      <span style="font-size:9px;color:var(--red);opacity:.85" title="6× ATR trailing stop (ratchets up as price rises)"> · stop $${a.stop ?? '—'}</span></td>
     <td class="r ${a.signal==='BREAKOUT'?'c-green':'c-amber'}">${dist}</td>
     <td class="r">${rs}</td>
     <td class="r">${a.touches}×</td>
@@ -2144,23 +2146,29 @@ async function renderPositions() {
       const sellCell = sold
         ? `<span class="c-red">stop hit ${t.triggered.date}<br>@ $${t.triggered.price}</span>`
         : `<span class="c-amber">$${t.trail.toFixed(2)} <span style="opacity:.6;font-size:10px">(${stopBelow.toFixed(1)}% below)</span></span>`;
+      const target = p.price * 1.20;
+      const tpHit = t.hh >= target;     // +20% reached at some point → take half
+      const tpCell = tpHit
+        ? `<span class="c-green">&#10003; +20% hit<br><span style="font-size:9px">sell half $${target.toFixed(2)}</span></span>`
+        : `<span class="c-muted">$${target.toFixed(2)}<br><span style="font-size:9px">(+${((target/t.current-1)*100).toFixed(1)}% away)</span></span>`;
       return `<tr style="cursor:pointer" onclick="showPositionChart('${p.sym}',${idx})">
         <td class="ticker-cell">${p.sym} ${status}</td>
         <td class="r c-muted">$${p.price}<br><span style="font-size:9px">${p.date}</span></td>
         <td class="r">$${exitPx.toFixed(2)}</td>
         <td class="r ${pl>=0?'c-green':'c-red'}">${pl>=0?'+':''}${pl.toFixed(1)}%</td>
+        <td class="r">${tpCell}</td>
         <td class="r">${sellCell}</td>
         <td class="r c-muted">$${t.hh.toFixed(2)}</td>
         <td class="r"><button onclick="event.stopPropagation();removePosition(${idx})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
       </tr>`;
     } catch(e) {
-      return `<tr><td class="ticker-cell">${p.sym}</td><td colspan="5" class="c-muted">data unavailable</td>
+      return `<tr><td class="ticker-cell">${p.sym}</td><td colspan="6" class="c-muted">data unavailable</td>
         <td class="r"><button onclick="removePosition(${idx})" style="background:none;border:none;color:var(--muted);cursor:pointer">&times;</button></td></tr>`;
     }
   }));
   tb.innerHTML = `<table><thead><tr>
     <th>Ticker</th><th class="r">Entry</th><th class="r">Now / Exit</th><th class="r">P/L</th>
-    <th class="r">Trailing stop &mdash; sell level</th><th class="r">High since</th><th></th>
+    <th class="r">Take half @ +20%</th><th class="r">Trailing stop &mdash; sell level</th><th class="r">High since</th><th></th>
   </tr></thead><tbody>${rows.join('')}</tbody></table>`;
   document.getElementById('pos-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
   // auto-show first position's chart
@@ -2194,6 +2202,7 @@ async function showPositionChart(sym, idx) {
   candle.setData(ohlc.map(([d,o,h,l,c]) => ({ time:d, open:o, high:h, low:l, close:c })));
   const trailLine = posChart.addLineSeries({ color:'#f5a623', lineWidth:2, lineStyle:0, priceLineVisible:false });
   trailLine.setData(t.line);
+  candle.createPriceLine({ price: p.price*1.20, color:'#2dd4a0', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'take half +20%' });
   const markers = [{ time: ohlc[Math.max(0,t.ei)][0], position:'belowBar', color:'#2dd4a0', shape:'arrowUp', text:'BUY $'+p.price }];
   if (sold) markers.push({ time:t.triggered.date, position:'aboveBar', color:'#f0526a', shape:'arrowDown', text:'SELL $'+t.triggered.price });
   candle.setMarkers(markers);
