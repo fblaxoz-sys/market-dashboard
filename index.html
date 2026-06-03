@@ -276,7 +276,13 @@ td.r{text-align:right;}
     <div class="table-wrap" id="etf-bt-trades"></div>
   </div>
 
-  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>Approaching &mdash; about to break out (ranked by proximity + quality)</div></div>
+  <div class="section-header">
+    <div class="section-title"><span class="dot dot-green"></span>&#11088; High-Quality Setups &mdash; about to break out &amp; beating the market</div>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">positive RS vs SPY · the ones worth trading</span>
+  </div>
+  <div class="table-wrap" id="etf-hq-table"><div class="empty-state">Hit Scan &mdash; these are the strongest pre-breakout setups</div></div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>All approaching &mdash; testing resistance</div></div>
   <div class="table-wrap" id="etf-approach-table"><div class="empty-state">Hit Scan to find setups nearing breakout</div></div>
 
   <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Already broke out</div></div>
@@ -1775,8 +1781,10 @@ async function runETFScan() {
     renderETFTables();
     document.getElementById('etf-updated').textContent =
       `Scanned ${d.scanned} ETFs · ${d.approaching.length} approaching, ${d.breakouts.length} broke out`;
-    // auto-show the top "about to break out" chart
-    if (d.approaching.length) showETFChart(d.approaching[0].sym);
+    // auto-show the top high-quality (beating-market) setup
+    const hq = d.approaching.filter(a => a.rs != null && a.rs > 0);
+    if (hq.length) showETFChart(hq[0].sym);
+    else if (d.approaching.length) showETFChart(d.approaching[0].sym);
     else if (d.breakouts.length) showETFChart(d.breakouts[0].sym);
   } catch(e) {
     document.getElementById('etf-breakout-table').innerHTML =
@@ -1800,19 +1808,19 @@ async function runETFBacktest() {
     const res = await fetch('/etf-backtest');
     const d = await res.json();
     if (d.error) throw new Error(d.error);
-    const A = d.stats_all || d.stats, H = d.stats_hi || d.stats;
+    const H = d.stats_hi || d.stats;
     const card = (cls,label,val,sub) => `<div class="stat-card ${cls}"><div class="stat-label">${label}</div><div class="stat-value">${val}</div><div class="stat-sub">${sub}</div></div>`;
-    const row = (s) => card('sc-blue','Trades', s.trades, '1-yr signals') +
-      card(s.win_rate>=50?'sc-green':'sc-red','Win rate', s.win_rate+'%', 'profitable') +
-      card(s.avg_ret>=0?'sc-green':'sc-red','Avg / trade', (s.avg_ret>=0?'+':'')+s.avg_ret+'%', `win +${s.avg_win}% · loss ${s.avg_loss}%`) +
-      card((s.profit_factor||0)>=1?'sc-green':'sc-amber','Profit factor', s.profit_factor ?? '—', 'wins ÷ losses') +
-      card('sc-purple','Best / Worst', s.best+'% / '+s.worst+'%', `hold ${s.hold}d · stop ${s.stop_pct}%`);
     document.getElementById('etf-bt-stats').innerHTML =
-      `<div style="grid-column:1/-1;font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:-4px;">ALL BREAKOUT SIGNALS</div>` + row(A) +
-      `<div style="grid-column:1/-1;font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:1px;margin:8px 0 -4px;">HIGH-QUALITY ONLY — volume-confirmed &amp; beating SPY</div>` + row(H);
+      card('sc-blue','Trades', H.trades, 'high-quality, 1 yr') +
+      card(H.win_rate>=50?'sc-green':'sc-red','Win rate', H.win_rate+'%', 'profitable') +
+      card(H.avg_ret>=0?'sc-green':'sc-red','Avg / trade', (H.avg_ret>=0?'+':'')+H.avg_ret+'%', `win +${H.avg_win}% · loss ${H.avg_loss}%`) +
+      card((H.profit_factor||0)>=1?'sc-green':'sc-amber','Profit factor', H.profit_factor ?? '—', 'wins ÷ losses') +
+      card('sc-purple','Best / Worst', H.best+'% / '+H.worst+'%', `hold ${H.hold}d · stop ${H.stop_pct}%`);
+    // store trades for click-to-chart
+    etfBtTrades = {}; d.trades.forEach(t => { etfBtTrades[t.sym + '|' + t.date] = t; });
     document.getElementById('etf-bt-trades').innerHTML = `<table>
-      <thead><tr><th>Entry date</th><th>Ticker</th><th class="r">Entry</th><th class="r">Exit</th><th class="r">Return</th><th class="r">RS</th><th class="r">Days</th><th>Exit</th></tr></thead>
-      <tbody>${[...d.trades].reverse().map((t,i)=>`<tr style="animation-delay:${i*8}ms">
+      <thead><tr><th>Entry date</th><th>Ticker</th><th class="r">Buy</th><th class="r">Exit</th><th class="r">Return</th><th class="r">RS</th><th class="r">Days</th><th>Exit</th></tr></thead>
+      <tbody>${[...d.trades].reverse().map((t,i)=>`<tr style="cursor:pointer;animation-delay:${i*8}ms" onclick="showTradeChart('${t.sym}','${t.date}')">
         <td>${t.date}</td><td class="ticker-cell">${t.sym}</td>
         <td class="r c-muted">$${t.entry}</td><td class="r c-muted">$${t.exit}</td>
         <td class="r ${t.ret>=0?'c-green':'c-red'}">${t.ret>=0?'+':''}${t.ret}%</td>
@@ -1820,7 +1828,7 @@ async function runETFBacktest() {
         <td class="r c-muted">${t.days}</td>
         <td class="c-muted">${t.why}</td></tr>`).join('')}</tbody></table>`;
     document.getElementById('etf-updated').textContent =
-      `Backtest · all: ${A.win_rate}% win, ${A.avg_ret>=0?'+':''}${A.avg_ret}%/trade · high-quality: ${H.win_rate}% win, +${H.avg_ret}%/trade`;
+      `Backtest (high-quality): ${H.trades} trades · ${H.win_rate}% win · ${H.avg_ret>=0?'+':''}${H.avg_ret}%/trade · PF ${H.profit_factor ?? '—'} · click a trade to chart it`;
   } catch(e) {
     document.getElementById('etf-bt-stats').innerHTML = `<div class="empty-state" style="grid-column:1/-1">Backtest failed: ${e.message.slice(0,140)}</div>`;
     console.error(e);
@@ -1860,6 +1868,10 @@ function renderETFTables() {
     <th class="r">Position</th><th class="r" title="Relative strength vs SPY (1/3/6-mo)">RS</th><th class="r">Tests</th>
     <th>Confirm</th><th class="r">Avg Vol</th><th class="r">Expense</th><th class="r">Score</th></tr></thead>`;
   const bo = etfData.breakouts, ap = etfData.approaching;
+  const hq = ap.filter(a => a.rs != null && a.rs > 0);   // high-quality = beating SPY, not yet broken out
+  document.getElementById('etf-hq-table').innerHTML = hq.length
+    ? `<table>${head}<tbody>${hq.map(etfRow).join('')}</tbody></table>`
+    : '<div class="empty-state">No high-quality setups right now (none beating the market near a breakout)</div>';
   document.getElementById('etf-breakout-table').innerHTML = bo.length
     ? `<table>${head}<tbody>${bo.map(etfRow).join('')}</tbody></table>`
     : '<div class="empty-state">No breakouts found</div>';
@@ -1910,6 +1922,49 @@ function showETFChart(sym) {
     if (hit) series.setMarkers([{ time: hit[0], position: 'belowBar',
       color: '#f5a623', shape: 'arrowUp', text: 'breakout $' + a.level }]);
   }
+  etfChart.timeScale().fitContent();
+}
+
+let etfBtTrades = {};
+async function showTradeChart(sym, date) {
+  const t = etfBtTrades[sym + '|' + date];
+  if (!t) return;
+  const wrap = document.getElementById('etf-chart-wrap');
+  wrap.style.display = '';
+  document.getElementById('etf-chart-title').textContent = `${sym} — loading…`;
+  wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  let ohlc;
+  try {
+    const res = await fetch(`/etf-chart?sym=${encodeURIComponent(sym)}`);
+    const d = await res.json();
+    if (d.error || !d.ohlc) throw new Error('no data');
+    ohlc = d.ohlc;
+  } catch(e) { document.getElementById('etf-chart-title').textContent = sym + ' — chart unavailable'; return; }
+
+  const today = ohlc[ohlc.length-1][4];
+  const sinceEntry = ((today / t.entry - 1) * 100).toFixed(1);
+  document.getElementById('etf-chart-title').innerHTML =
+    `${sym} — bought ${t.date} @ $${t.entry} · today $${today} <span style="color:${today>=t.entry?'var(--green)':'var(--red)'}">(${sinceEntry>=0?'+':''}${sinceEntry}% since entry)</span>`;
+  document.getElementById('etf-chart-legend').innerHTML =
+    `<span style="color:var(--green)">▲ recommended buy</span> · <span style="color:var(--red)">▼ exit (${t.why})</span> · RS at entry ${t.rs>0?'+':''}${t.rs}% · trade result ${t.ret>=0?'+':''}${t.ret}%`;
+
+  const el = document.getElementById('etf-chart'); el.innerHTML = '';
+  etfChart = LightweightCharts.createChart(el, {
+    height: 340,
+    layout: { background:{color:'transparent'}, textColor:'#6b6b80', fontFamily:"'Space Mono'" },
+    grid: { vertLines:{color:'#ffffff08'}, horzLines:{color:'#ffffff08'} },
+    timeScale: { borderColor:'#ffffff18' }, rightPriceScale: { borderColor:'#ffffff18' },
+  });
+  const series = etfChart.addCandlestickSeries({
+    upColor:'#2dd4a0', downColor:'#f0526a', borderVisible:false,
+    wickUpColor:'#2dd4a0', wickDownColor:'#f0526a' });
+  series.setData(ohlc.map(([d,o,h,l,c]) => ({ time:d, open:o, high:h, low:l, close:c })));
+  if (t.level) series.createPriceLine({ price:t.level, color:'#f0526a', lineWidth:1, lineStyle:2, axisLabelVisible:true, title:'breakout '+t.level });
+  series.createPriceLine({ price: today, color:'#60a5fa', lineWidth:1, lineStyle:1, axisLabelVisible:true, title:'today '+today });
+  const markers = [{ time:t.date, position:'belowBar', color:'#2dd4a0', shape:'arrowUp', text:'BUY $'+t.entry }];
+  if (t.why !== 'open' && t.exit_date)
+    markers.push({ time:t.exit_date, position:'aboveBar', color:'#f0526a', shape:'arrowDown', text:'exit $'+t.exit });
+  series.setMarkers(markers.sort((a,b)=>a.time<b.time?-1:1));
   etfChart.timeScale().fitContent();
 }
 

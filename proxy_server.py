@@ -1129,7 +1129,8 @@ def run_etf_backtest(hold=40, stop_frac=0.05):
                 exit_stop = closes[i] < lvl*(1-stop_frac)
                 exit_time = (i - entry_i) >= hold
                 if exit_stop or exit_time or i == n-1:
-                    trades.append({'sym': sym, 'date': dates[entry_i],
+                    trades.append({'sym': sym, 'date': dates[entry_i], 'exit_date': dates[i],
+                                   'level': round(lvl,2),
                                    'entry': round(entry,2), 'exit': round(closes[i],2),
                                    'ret': round((closes[i]/entry-1)*100, 2),
                                    'days': i-entry_i,
@@ -1258,6 +1259,27 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(json.dumps({'error': err}).encode())
+            return
+
+        if parsed.path == '/etf-chart':
+            qs  = urllib.parse.parse_qs(parsed.query)
+            sym = (qs.get('sym', [''])[0] or '').upper()
+            if not sym:
+                self.send_error(400, 'sym required'); return
+            try:
+                rows = _yahoo_ohlc(sym)
+                ohlc = [[r[0], round(r[1],2), round(r[2],2), round(r[3],2), round(r[4],2)] for r in rows[-400:]]
+                payload = json.dumps({'sym': sym, 'ohlc': ohlc}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers(); self.wfile.write(payload)
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': str(e)}).encode())
             return
 
         if parsed.path == '/etf-backtest':
