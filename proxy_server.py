@@ -1083,11 +1083,12 @@ def run_etf_scan(fmp_key=None):
             'scanned': len(universe), 'source': 'curated'}
 
 
-def run_etf_backtest(atr_mult=ATR_MULT):
-    """1-year point-in-time backtest of the breakout BUY rule with an ATR trailing
+def run_etf_backtest(atr_mult=ATR_MULT, years=1):
+    """Point-in-time backtest of the breakout BUY rule with an ATR trailing
     stop (Chandelier exit): enter at the close of the day price breaks above a
     tested resistance level; trail a stop at (highest-high-since-entry − atr_mult×ATR)
-    that only ratchets up; exit when price closes below it. No look-ahead."""
+    that only ratchets up; exit when price closes below it. No look-ahead.
+    `years` = how far back to generate signals (1, 2 or 5)."""
     import numpy as np
 
     def cl(levels, tol=0.025):
@@ -1098,9 +1099,10 @@ def run_etf_backtest(atr_mult=ATR_MULT):
             else: out.append({'m': lv, 'vals': [lv]})
         return [(g['m'], len(g['vals'])) for g in out]
 
+    rng = f"{max(2, years+1)}y"               # extra year of warmup for pivots/RS
     # SPY for point-in-time relative strength (date → close)
     try:
-        spy_rows = _yahoo_ohlc('SPY'); spy_map = {r[0]: r[4] for r in spy_rows}
+        spy_rows = _yahoo_ohlc('SPY', rng); spy_map = {r[0]: r[4] for r in spy_rows}
     except Exception:
         spy_map = {}
 
@@ -1108,15 +1110,15 @@ def run_etf_backtest(atr_mult=ATR_MULT):
     trades = []
     for sym, exp in CURATED_ETFS.items():
         if exp is not None and exp >= 1.0: continue
-        try: rows = _yahoo_ohlc(sym)
+        try: rows = _yahoo_ohlc(sym, rng)
         except Exception: continue
-        if len(rows) < 280: continue
+        if len(rows) < 200: continue
         dates=[r[0] for r in rows]; highs=[r[2] for r in rows]; lows=[r[3] for r in rows]
         closes=[r[4] for r in rows]; vols=[r[5] for r in rows]
         n = len(closes)
         atr = _atr_series(highs, lows, closes)
         ph = [i for i in range(W, n-W) if highs[i] == max(highs[i-W:i+W+1])]
-        start = max(70, n-252)                 # signals over the last ~year
+        start = max(70, n - 252*years)         # signals over the last `years`
         in_pos = False; entry = lvl = 0.0; entry_i = 0; e_vol = False; e_rs = 0.0
         hh = trail = 0.0
         i = start
@@ -1177,7 +1179,7 @@ def run_etf_backtest(atr_mult=ATR_MULT):
     print(f"  [etf-bt] ALL {stats_all['trades']} trades win {stats_all['win_rate']}% avg {stats_all['avg_ret']}% PF {stats_all['profit_factor']}")
     print(f"  [etf-bt] HI  {stats_hi['trades']} trades win {stats_hi['win_rate']}% avg {stats_hi['avg_ret']}% PF {stats_hi['profit_factor']}")
     return {'stats': stats_all, 'stats_all': stats_all, 'stats_hi': stats_hi,
-            'trades': [t for t in trades if t['hi']][-80:]}
+            'years': years, 'trades': [t for t in trades if t['hi']][-120:]}
 
 
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
@@ -1281,8 +1283,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not sym:
                 self.send_error(400, 'sym required'); return
             try:
-                rows = _yahoo_ohlc(sym)
-                ohlc = [[r[0], round(r[1],2), round(r[2],2), round(r[3],2), round(r[4],2)] for r in rows[-400:]]
+                rows = _yahoo_ohlc(sym, '5y')     # cover multi-year backtest entries
+                ohlc = [[r[0], round(r[1],2), round(r[2],2), round(r[3],2), round(r[4],2)] for r in rows[-1300:]]
                 payload = json.dumps({'sym': sym, 'ohlc': ohlc}).encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
@@ -1297,9 +1299,12 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == '/etf-backtest':
+            qs    = urllib.parse.parse_qs(parsed.query)
+            years = int(qs.get('years', ['1'])[0])
+            if years not in (1, 2, 5): years = 1
             try:
-                print("\n[etf-bt] 1-year breakout backtest …")
-                result  = cached_ml("etf-bt", lambda: run_etf_backtest())
+                print(f"\n[etf-bt] {years}-year breakout backtest …")
+                result  = cached_ml(f"etf-bt:{years}", lambda: run_etf_backtest(years=years))
                 payload = json.dumps(result).encode()
                 print(f"[etf-bt] Done → {result['stats']['trades']} trades")
                 self.send_response(200)
