@@ -993,9 +993,31 @@ def _atr_series(highs, lows, closes, p=14):
         tr.append(max(highs[k]-lows[k], abs(highs[k]-closes[k-1]), abs(lows[k]-closes[k-1])))
     return [float(np.mean(tr[max(0,k-p+1):k+1])) for k in range(n)]
 
-ATR_MULT = 6.0       # trailing-stop width (× ATR) — exits via trailing stop only (no profit-taking; 5-yr optimization showed it's best)
+def _wmom(closes, i):
+    """IBD-style weighted 12-month momentum: 40% the most recent quarter,
+    20% each of the prior three quarters. Returns None if <252 bars of history."""
+    if i < 252: return None
+    q1 = closes[i]/closes[i-63]      - 1
+    q2 = closes[i-63]/closes[i-126]  - 1
+    q3 = closes[i-126]/closes[i-189] - 1
+    q4 = closes[i-189]/closes[i-252] - 1
+    return 0.4*q1 + 0.2*q2 + 0.2*q3 + 0.2*q4
 
-def run_etf_scan(fmp_key=None, universe=None):
+def _rank_pct(values):
+    """Cross-sectional RS rating: {key: momentum} -> {key: percentile 1..99}."""
+    import numpy as np
+    keys = [k for k, v in values.items() if v is not None]
+    if not keys: return {}
+    arr = np.array([values[k] for k in keys]); m = len(arr)
+    order = arr.argsort(); ranks = np.empty(m); ranks[order] = np.arange(m)
+    return {k: (int(round(ranks[idx]/(m-1)*98 + 1)) if m > 1 else 50)
+            for idx, k in enumerate(keys)}
+
+ATR_MULT      = 6.0  # trailing-stop width (× ATR) — exits via trailing stop only (no profit-taking; 5-yr optimization showed it's best)
+BREAKOUT_BUF  = 0.5  # breakout confirmation buffer (× ATR above the level) — volatility-scaled, beats a flat % (5-yr backtest)
+RS_RATING_MIN = 70   # stocks: high-quality requires RS rating ≥ this (IBD-style top-30% momentum; 5-yr backtest)
+
+def run_etf_scan(fmp_key=None, universe=None, is_stock=False):
     import numpy as np
     # Default universe = curated ETFs; callers can pass a stock universe instead.
     universe = dict(universe if universe is not None else CURATED_ETFS)
@@ -1020,10 +1042,11 @@ def run_etf_scan(fmp_key=None, universe=None):
     def rets(c):
         return {d: ((c[-1]/c[-1-d]-1)*100 if len(c) > d else 0.0) for d in (21, 63, 126)}
 
-    def analyze(sym, expense, spy_ret):
-        rows = _yahoo_ohlc(sym)
+    def analyze(sym, expense, spy_ret, rows=None, rs_rating=None):
+        if rows is None: rows = _yahoo_ohlc(sym)
         if len(rows) < 120: return None
         highs=[r[2] for r in rows]; lows=[r[3] for r in rows]; closes=[r[4] for r in rows]; vols=[r[5] for r in rows]
+        atr_s = _atr_series(highs, lows, closes)
         price = closes[-1]; avgvol = float(np.mean(vols[-30:]))
         if price < 10 or avgvol < 50000: return None      # user's liquidity/price filters
         rng6 = (max(closes[-126:]) - min(closes[-126:])) / price      # ~6-month swing size
@@ -1035,7 +1058,7 @@ def run_etf_scan(fmp_key=None, universe=None):
         for m, n in res:
             below = any(closes[j] < m*0.995 for j in range(max(0,len(closes)-40), len(closes)-3))
             cross = next((j for j in range(max(1,len(closes)-15), len(closes))
-                          if closes[j] > m*1.005 and closes[j-1] <= m*1.01), None)
+                          if closes[j] > m + BREAKOUT_BUF*atr_s[j] and closes[j-1] <= m + BREAKOUT_BUF*atr_s[j-1]), None)
             if below and price > m and cross is not None:
                 signal, lvl, touches, bo_idx = 'BREAKOUT', m, n, cross; break
         if not signal:
@@ -1065,19 +1088,19 @@ def run_etf_scan(fmp_key=None, universe=None):
         strength = max(0.0, price/lvl - 1) if signal == 'BREAKOUT' else 0.0
         clean    = min(touches, 5)
         prox     = max(0.0, 1 - (lvl - price)/(price*0.04)) if signal == 'APPROACHING' else 0.0
-        rs_pts   = max(-20.0, min(20.0, rs))          # relative strength, capped ±20
+        rs_pts   = ((rs_rating-50)/50*20) if rs_rating is not None else max(-20.0, min(20.0, rs))  # stocks: RS rating; ETFs: RS vs SPY
         score = round(rng6*80 + clean*6 + strength*150 + prox*50 + rs_pts*1.5
                       + (12 if vol_ok else 0) + (15 if retested else 0), 1)
         # BUY trigger = the breakout level; STOP = ATR-based trailing stop (6× ATR,
         # ratchets up as price rises). Initial stop shown here.
-        atr_now = _atr_series(highs, lows, closes)[-1]
+        atr_now = atr_s[-1]
         stop = round(lvl - ATR_MULT*atr_now, 2)
         atr_pct = round(ATR_MULT*atr_now/lvl*100, 1)
         return {
             'sym': sym, 'price': round(price, 2), 'avgvol': int(avgvol),
             'expense': expense, 'signal': signal, 'level': round(lvl, 2),
             'entry': round(lvl, 2), 'stop': stop, 'atr_pct': atr_pct,
-            'touches': touches, 'score': score, 'rs': rs,
+            'touches': touches, 'score': score, 'rs': rs, 'rs_rating': rs_rating,
             'vol_surge': vol_surge, 'vol_ok': bool(vol_ok), 'retested': bool(retested),
             'support':    [round(m, 2) for m, n in sup][:3],
             'resistance': [round(m, 2) for m, n in res][-3:],
@@ -1091,16 +1114,27 @@ def run_etf_scan(fmp_key=None, universe=None):
     except Exception:
         spy_ret = {21: 0.0, 63: 0.0, 126: 0.0}
 
-    breakouts, approaching = [], []
-    for i, (sym, exp) in enumerate(universe.items()):
+    # Fetch all price history once so stocks can be cross-sectionally ranked (RS rating)
+    cache = {}
+    for sym, exp in universe.items():
         if exp is not None and exp >= 1.0: continue       # net expense ratio < 1%
+        try: cache[sym] = _yahoo_ohlc(sym)
+        except Exception: pass
+        time.sleep(0.15)                                  # be gentle to Yahoo
+    rs_ratings = {}
+    if is_stock:                                          # IBD-style RS rating (stocks only)
+        moms = {s: _wmom([r[4] for r in rw], len(rw)-1) for s, rw in cache.items()}
+        rs_ratings = _rank_pct(moms)
+    breakouts, approaching = [], []
+    for sym, exp in universe.items():
+        rows = cache.get(sym)
+        if rows is None: continue
         try:
-            a = analyze(sym, exp, spy_ret)
+            a = analyze(sym, exp, spy_ret, rows=rows, rs_rating=rs_ratings.get(sym))
             if a:
                 (breakouts if a['signal'] == 'BREAKOUT' else approaching).append(a)
-        except Exception as e:
+        except Exception:
             pass
-        time.sleep(0.15)                                  # be gentle to Yahoo
     breakouts.sort(key=lambda x: -x['score'])
     approaching.sort(key=lambda x: -x['score'])
     print(f"  [etf] {len(breakouts)} breakouts, {len(approaching)} approaching")
@@ -1138,10 +1172,11 @@ def run_etf_single(sym):
         rs=round(0.25*(er[21]-spy_r[21])+0.5*(er[63]-spy_r[63])+0.25*(er[126]-spy_r[126]),1)
     except Exception:
         rs=0.0
+    atr_s = _atr_series(highs, lows, closes)
     signal, lvl, touches, bo = 'NONE', None, 0, None
     for m,n in res:
         below=any(closes[j]<m*0.995 for j in range(max(0,len(closes)-40),len(closes)-3))
-        cross=next((j for j in range(max(1,len(closes)-15),len(closes)) if closes[j]>m*1.005 and closes[j-1]<=m*1.01),None)
+        cross=next((j for j in range(max(1,len(closes)-15),len(closes)) if closes[j]>m+BREAKOUT_BUF*atr_s[j] and closes[j-1]<=m+BREAKOUT_BUF*atr_s[j-1]),None)
         if below and price>m and cross is not None: signal,lvl,touches,bo='BREAKOUT',m,n,cross; break
     if signal=='NONE':
         for m,n in res:
@@ -1151,7 +1186,7 @@ def run_etf_single(sym):
         if above: lvl,touches=min(above,key=lambda x:x[0])
         elif res: lvl,touches=res[-1]
         else: lvl,touches=round(price*1.05,2),0
-    atr=_atr_series(highs,lows,closes)[-1]
+    atr=atr_s[-1]
     vol_surge=None; vol_ok=False
     if bo is not None and bo>=20:
         b=float(np.mean(vols[bo-20:bo]));
@@ -1170,11 +1205,13 @@ def run_etf_single(sym):
     }
 
 
-def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None):
+def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None, is_stock=False):
     """Point-in-time backtest of the breakout BUY rule with an ATR trailing
     stop (Chandelier exit): enter at the close of the day price breaks above a
-    tested resistance level; trail a stop at (highest-high-since-entry − atr_mult×ATR)
-    that only ratchets up; exit when price closes below it. No look-ahead.
+    tested resistance level BY A VOLATILITY BUFFER (BREAKOUT_BUF×ATR); trail a
+    stop at (highest-high-since-entry − atr_mult×ATR) that only ratchets up; exit
+    when price closes below it. No look-ahead. Stocks also require an IBD-style
+    cross-sectional RS rating ≥ RS_RATING_MIN to count as 'high-quality'.
     `years` = how far back to generate signals (1, 2 or 5)."""
     import numpy as np
 
@@ -1195,18 +1232,17 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None):
 
     W = 8
     trades = []
-    for sym, exp in (universe if universe is not None else CURATED_ETFS).items():
-        if exp is not None and exp >= 1.0: continue
-        try: rows = _yahoo_ohlc(sym, rng)
-        except Exception: continue
-        if len(rows) < 200: continue
+
+    def run_one(sym, rows, rank_by_date):
+        if len(rows) < 200: return
         dates=[r[0] for r in rows]; highs=[r[2] for r in rows]; lows=[r[3] for r in rows]
         closes=[r[4] for r in rows]; vols=[r[5] for r in rows]
         n = len(closes)
         atr = _atr_series(highs, lows, closes)
         ph = [i for i in range(W, n-W) if highs[i] == max(highs[i-W:i+W+1])]
-        start = max(70, n - 252*years)         # signals over the last `years`
-        in_pos = False; entry = lvl = 0.0; entry_i = 0; e_vol = False; e_rs = 0.0; e_score = 0.0
+        start = max(252 if is_stock else 70, n - 252*years)   # signals over the last `years`
+        in_pos = False; entry = lvl = 0.0; entry_i = 0
+        e_vol = False; e_rs = 0.0; e_rating = None; e_score = 0.0
         hh = trail = 0.0
         i = start
         while i < n:
@@ -1216,7 +1252,7 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None):
                 for m, c in levels:
                     if m <= 0: continue
                     below = any(closes[j] < m*0.995 for j in range(max(0, i-40), i))
-                    if below and closes[i] > m*1.005 and closes[i-1] <= m*1.01:
+                    if below and closes[i] > m + BREAKOUT_BUF*atr[i] and closes[i-1] <= m + BREAKOUT_BUF*atr[i-1]:
                         in_pos, entry, lvl, entry_i = True, closes[i], m, i
                         hh = highs[i]; trail = hh - atr_mult*atr[i]    # initial ATR stop
                         base = float(np.mean(vols[i-20:i])) if i >= 20 else 0
@@ -1226,28 +1262,55 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None):
                             e_rs = (closes[i]/closes[i-63]-1)*100 - (spy_map[d_now]/spy_map[d_then]-1)*100
                         else:
                             e_rs = 0.0
+                        e_rating = rank_by_date.get(dates[i], {}).get(sym) if is_stock else None
+                        rs_pts = ((e_rating-50)/50*20) if e_rating is not None else max(-20.0, min(20.0, e_rs))
                         # same swing-quality score the scanner uses, point-in-time at entry
                         wlo = max(0, i-126)
                         rng6 = (max(closes[wlo:i+1]) - min(closes[wlo:i+1])) / closes[i]
                         strength = closes[i]/m - 1
-                        rs_pts = max(-20.0, min(20.0, e_rs))
                         e_score = round(rng6*80 + min(c,5)*6 + strength*150 + rs_pts*1.5 + (12 if e_vol else 0), 1)
                         break
             else:
                 hh = max(hh, highs[i])
                 trail = max(trail, hh - atr_mult*atr[i])               # ratchet the stop up only
                 if closes[i] < trail or i == n-1:
+                    good_mom = (e_rating is not None and e_rating >= RS_RATING_MIN) if is_stock else (e_rs > 0)
                     trades.append({'sym': sym, 'date': dates[entry_i], 'exit_date': dates[i],
                                    'level': round(lvl,2),
                                    'entry': round(entry,2), 'exit': round(closes[i],2),
                                    'ret': round((closes[i]/entry-1)*100, 2),
                                    'days': i-entry_i,
                                    'why': 'open' if i == n-1 and closes[i] >= trail else 'trail-stop',
-                                   'vol_ok': bool(e_vol), 'rs': round(e_rs,1), 'score': e_score,
-                                   'hi': bool(e_vol and e_rs > 0 and e_score >= 60)})   # vol-confirmed, beating SPY, score≥60
+                                   'vol_ok': bool(e_vol), 'rs': round(e_rs,1),
+                                   'rs_rating': e_rating, 'score': e_score,
+                                   'hi': bool(e_vol and good_mom and e_score >= 60)})
                     in_pos = False
             i += 1
-        time.sleep(0.1)
+
+    uni = universe if universe is not None else CURATED_ETFS
+    if is_stock:
+        # Pre-load all stocks once → build cross-sectional RS-rating ranks per date
+        data = {}
+        for sym, exp in uni.items():
+            try: data[sym] = _yahoo_ohlc(sym, rng)
+            except Exception: pass
+            time.sleep(0.1)
+        mom_by_date = {}
+        for sym, rows in data.items():
+            closes = [r[4] for r in rows]; dts = [r[0] for r in rows]
+            for i in range(252, len(closes)):
+                mm = _wmom(closes, i)
+                if mm is not None: mom_by_date.setdefault(dts[i], {})[sym] = mm
+        rank_by_date = {d: _rank_pct(mm) for d, mm in mom_by_date.items()}
+        for sym, rows in data.items():
+            run_one(sym, rows, rank_by_date)
+    else:
+        for sym, exp in uni.items():
+            if exp is not None and exp >= 1.0: continue
+            try: rows = _yahoo_ohlc(sym, rng)
+            except Exception: continue
+            run_one(sym, rows, {})
+            time.sleep(0.1)
 
     def agg(ts):
         rets = [t['ret'] for t in ts]
@@ -1353,7 +1416,7 @@ class Handler(SimpleHTTPRequestHandler):
                 tag = 'stock' if is_stock else 'etf'
                 print(f"\n[{tag}] Scan request …")
                 uni = STOCK_UNIVERSE if is_stock else None
-                result  = cached_ml(f"{tag}:scan", lambda: run_etf_scan(None, uni))
+                result  = cached_ml(f"{tag}:scan", lambda: run_etf_scan(None, uni, is_stock=is_stock))
                 payload = json.dumps(result).encode()
                 print(f"[{tag}] Done → {len(result['breakouts'])} breakouts")
                 self.send_response(200)
@@ -1421,7 +1484,7 @@ class Handler(SimpleHTTPRequestHandler):
                 tag = 'stock-bt' if is_stock else 'etf-bt'
                 print(f"\n[{tag}] {years}-year breakout backtest …")
                 uni = STOCK_UNIVERSE if is_stock else None
-                result  = cached_ml(f"{tag}:{years}", lambda: run_etf_backtest(years=years, universe=uni))
+                result  = cached_ml(f"{tag}:{years}", lambda: run_etf_backtest(years=years, universe=uni, is_stock=is_stock))
                 payload = json.dumps(result).encode()
                 print(f"[{tag}] Done → {result['stats']['trades']} trades")
                 self.send_response(200)

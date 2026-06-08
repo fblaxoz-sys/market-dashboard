@@ -1578,8 +1578,9 @@ function etfRow(a, chartFn) {
   const dist = a.signal === 'BREAKOUT'
     ? `+${((a.price/a.level - 1)*100).toFixed(1)}% above`
     : `${((a.level/a.price - 1)*100).toFixed(1)}% below`;
-  const rs = a.rs != null
-    ? `<span class="${a.rs>0?'c-green':'c-red'}">${a.rs>0?'+':''}${a.rs}%</span>` : '—';
+  const rs = a.rs_rating != null
+    ? `<span class="${a.rs_rating>=80?'c-green':(a.rs_rating<70?'c-muted':'')}" title="RS rating ${a.rs_rating}/99 — IBD-style momentum vs the universe (≥80 = elite leader); ${a.rs>0?'+':''}${a.rs}% vs SPY">RS ${a.rs_rating}</span>`
+    : (a.rs != null ? `<span class="${a.rs>0?'c-green':'c-red'}">${a.rs>0?'+':''}${a.rs}%</span>` : '—');
   // confirmation badges
   let sig = '';
   if (a.vol_ok)   sig += `<span class="wl-badge" style="background:#2dd4a022;color:var(--green);border-color:#2dd4a044" title="Breakout volume ${a.vol_surge}× the 20-day average">Vol ${a.vol_surge}×</span>`;
@@ -1609,7 +1610,7 @@ const ETF_COLS = [
 const ETF_SORTV = {
   sym:a=>a.sym, price:a=>a.price, entry:a=>(a.entry??a.level),
   dist:a=>a.signal==='BREAKOUT'?(a.price/a.level-1):-(a.level/a.price-1),
-  rs:a=>(a.rs??-999), touches:a=>a.touches, confirm:a=>(a.vol_ok?2:0)+(a.retested?1:0),
+  rs:a=>(a.rs_rating ?? a.rs ?? -999), touches:a=>a.touches, confirm:a=>(a.vol_ok?2:0)+(a.retested?1:0),
   avgvol:a=>a.avgvol, expense:a=>(a.expense??999), score:a=>a.score
 };
 let etfSort = {};   // tableId -> {k, d}   (d: 1 = ascending, -1 = descending)
@@ -1943,7 +1944,7 @@ async function runStockScan() {
 
 function renderStockTables() {
   const bo = stockData.breakouts, ap = stockData.approaching;
-  const hq = ap.filter(a => a.rs != null && a.rs > 0 && a.score >= 60);
+  const hq = ap.filter(a => a.rs_rating != null && a.rs_rating >= 70 && a.score >= 60);   // high-quality = IBD RS rating ≥70 + score≥60 (5-yr validated)
   renderOneETF('stock-hq-table',       hq, 'No high-quality stock setups right now');
   renderOneETF('stock-approach-table', ap, 'No stocks approaching resistance');
   renderOneETF('stock-breakout-table', bo, 'No stock breakouts');
@@ -2025,7 +2026,9 @@ function showStockChart(sym) {
   document.getElementById('stock-chart-wrap').style.display = '';
   document.getElementById('stock-chart-title').textContent =
     `${a.sym} — ${a.signal==='BREAKOUT'?'Breakout above':a.signal==='APPROACHING'?'Approaching':'Watching'} $${a.level}`;
-  const rsTxt = a.rs!=null?` · <span style="color:${a.rs>0?'var(--green)':'var(--red)'}">RS ${a.rs>0?'+':''}${a.rs}% vs SPY</span>`:'';
+  const rsTxt = a.rs_rating!=null
+    ? ` · <span style="color:${a.rs_rating>=80?'var(--green)':'var(--amber)'}">RS rating ${a.rs_rating}/99</span>`
+    : (a.rs!=null?` · <span style="color:${a.rs>0?'var(--green)':'var(--red)'}">RS ${a.rs>0?'+':''}${a.rs}% vs SPY</span>`:'');
   const volTxt = a.vol_ok?` · <span style="color:var(--green)">vol ${a.vol_surge}×&#10003;</span>`:'';
   document.getElementById('stock-chart-legend').innerHTML = `<span style="color:#ff2fb0">★ breakout line</span> · <span style="color:var(--green)">support</span>${rsTxt}${volTxt}`;
   const el = document.getElementById('stock-chart'); el.innerHTML = '';
