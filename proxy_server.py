@@ -1010,35 +1010,6 @@ QUAD_PLAYBOOK = {
         'etfs': ['TLT','IEF','AGG','BND','LQD','VCIT','VCSH','MUB','XLU','VPU','XLP','VDC','XLV','VHT','USMV','SPLV','QUAL','SCHD','VYM','VIG','HDV','DVY','SDY','NOBL','DGRO','SPHD','GLD','GLDM','IAU','SGOL']},
 }
 
-FX_PAIRS = ['EURUSD','GBPUSD','USDJPY','USDCHF','AUDUSD','USDCAD','NZDUSD',
-            'EURGBP','EURJPY','GBPJPY','EURAUD','EURCHF','EURCAD','AUDJPY',
-            'GBPAUD','GBPCAD','AUDNZD','AUDCAD','NZDJPY','CADJPY','CHFJPY','GBPCHF','EURNZD']
-
-def _fx_label(sym): return f"{sym[:3]}/{sym[3:]}"
-
-def _yahoo_fx_h4(sym, rng="60d"):
-    """Fetch 1h FX bars from Yahoo and resample to UTC-aligned H4 OHLC -> [t,o,h,l,c]."""
-    import urllib.request, json as _json
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}=X?range={rng}&interval=60m"
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        d = _json.load(r)
-    res = d['chart']['result'][0]; ts = res['timestamp']; q = res['indicators']['quote'][0]
-    bins = {}
-    for i in range(len(ts)):
-        c = q['close'][i]
-        if c is None: continue
-        o = q['open'][i]; h = q['high'][i]; l = q['low'][i]; t = ts[i]
-        b = (t // 14400) * 14400                    # 4-hour bucket (UTC-aligned)
-        if b not in bins:
-            bins[b] = [b, o, h, l, c]
-        else:
-            g = bins[b]
-            if h is not None: g[2] = max(g[2], h)
-            if l is not None: g[3] = min(g[3], l)
-            g[4] = c
-    return [bins[b] for b in sorted(bins)]
-
 def _yahoo_ohlc(sym, rng="2y"):
     import urllib.request, json as _json, datetime as _dt
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval=1d"
@@ -1441,65 +1412,6 @@ def run_quad(fred_key):
     }
 
 
-def run_fractal_scan(tp_pips=40, offset_pips=10):
-    """Bill Williams fractal breakout on H4, trading only WITH the 50-EMA trend.
-    Per pair: detect trend (≥75% of the last 15 H4 closes on one side of EMA-50),
-    take the most recent fractal in the trend direction, place a stop order
-    offset_pips beyond it, SL behind the swing, fixed TP. Sideways pairs skipped."""
-    def ema_series(vals, p):
-        k = 2/(p+1); e = vals[0]; out = [e]
-        for v in vals[1:]: e = v*k + e*(1-k); out.append(e)
-        return out
-    trades, sideways = [], []
-    for sym in FX_PAIRS:
-        try: h4 = _yahoo_fx_h4(sym)
-        except Exception: continue
-        if len(h4) < 60: continue
-        highs=[r[2] for r in h4]; lows=[r[3] for r in h4]; closes=[r[4] for r in h4]
-        es = ema_series(closes, 50); n = len(closes); price = closes[-1]
-        pip = 0.01 if 'JPY' in sym else 0.0001
-        look = 15
-        above = sum(1 for k in range(n-look, n) if closes[k] > es[k]); fa = above/look
-        if   fa >= 0.75 and price > es[-1]: trend = 'UP'
-        elif fa <= 0.25 and price < es[-1]: trend = 'DOWN'
-        else: sideways.append(_fx_label(sym)); continue
-        up = lambda i: highs[i]>highs[i-1] and highs[i]>highs[i-2] and highs[i]>highs[i+1] and highs[i]>highs[i+2]
-        dn = lambda i: lows[i]<lows[i-1] and lows[i]<lows[i-2] and lows[i]<lows[i+1] and lows[i]<lows[i+2]
-        rec = None
-        for i in range(n-3, 1, -1):
-            if trend == 'UP' and up(i):
-                entry = highs[i] + offset_pips*pip; sl = min(lows[i-2], lows[i-1], lows[i])
-                rec = ('BUY', i, highs[i], entry, sl, entry + tp_pips*pip); break
-            if trend == 'DOWN' and dn(i):
-                entry = lows[i] - offset_pips*pip; sl = max(highs[i-2], highs[i-1], highs[i])
-                rec = ('SELL', i, lows[i], entry, sl, entry - tp_pips*pip); break
-        if not rec:
-            sideways.append(_fx_label(sym)); continue
-        side, fi, fr, entry, sl, tp = rec
-        if side == 'BUY':
-            dist = (entry - price)/pip; slp = (entry - sl)/pip; armed = price < entry
-        else:
-            dist = (price - entry)/pip; slp = (sl - entry)/pip; armed = price > entry
-        dec = 3 if pip == 0.01 else 5
-        rnd = lambda x: round(x, dec)
-        b0 = max(0, n-120)
-        ohlc = [[h4[k][0], rnd(h4[k][1]), rnd(h4[k][2]), rnd(h4[k][3]), rnd(h4[k][4])] for k in range(b0, n)]
-        ema_out = [rnd(es[k]) for k in range(b0, n)]
-        trades.append({
-            'sym': sym, 'pair': _fx_label(sym), 'trend': trend, 'side': side,
-            'price': rnd(price), 'entry': rnd(entry), 'sl': rnd(sl), 'tp': rnd(tp), 'pip': pip,
-            'sl_pips': round(slp), 'tp_pips': tp_pips, 'rr': round(tp_pips/slp, 2) if slp > 0 else None,
-            'dist_pips': round(dist), 'armed': bool(armed), 'bars_ago': n-1-fi,
-            'fractal': {'time': h4[fi][0], 'price': rnd(fr)},
-            'ohlc': ohlc, 'ema': ema_out,
-        })
-        time.sleep(0.1)
-    trades.sort(key=lambda r: (not r['armed'], abs(r['dist_pips'])))
-    print(f"  [fx] {len(trades)} trades ({sum(1 for t in trades if t['armed'])} armed), {len(sideways)} sideways")
-    return {'trades': trades, 'sideways': sideways, 'scanned': len(FX_PAIRS),
-            'armed': sum(1 for t in trades if t['armed'])}
-
-
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
 
 class Handler(SimpleHTTPRequestHandler):
@@ -1565,26 +1477,6 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 err = traceback.format_exc()
                 print(f"[inflation] ERROR:\n{err}")
-                self.send_response(500)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps({'error': err}).encode())
-            return
-
-        if parsed.path == '/fx-fractals':
-            try:
-                print("\n[fx] Fractal scan …")
-                result  = cached_ml('fx:scan', run_fractal_scan)
-                payload = json.dumps(result).encode()
-                print(f"[fx] Done → {result['armed']} armed of {len(result['trades'])}")
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers(); self.wfile.write(payload)
-            except Exception:
-                err = traceback.format_exc()
-                print(f"[fx] ERROR:\n{err}")
                 self.send_response(500)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
