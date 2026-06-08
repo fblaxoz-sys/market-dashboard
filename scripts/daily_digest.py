@@ -107,26 +107,6 @@ def table(title, items):
             f'<table style="border-collapse:collapse;width:100%;font:13px system-ui;'
             f'border:1px solid #eee">{head}{rows_html(items)}</table>')
 
-def quad_banner():
-    if not FRED:
-        return ""
-    try:
-        q = fetch(f"/quad?fred_key={FRED}", timeout=200)
-        if not q.get('ok'):
-            return ""
-        g, i = q['growth'], q['inflation']
-        flip = (f' · ⚠ near flip → Quad {q["next_quad"]} ({q["next_reason"]})'
-                if q.get('near_transition') and q.get('next_quad') else '')
-        pb = q['playbook'][str(q['quad'])]
-        return (f'<div style="background:#eef3ff;border:1px solid #cdd9f5;border-radius:8px;'
-                f'padding:12px 14px;font:13px system-ui;margin-bottom:8px">'
-                f'<b style="font-size:15px">MACRO: Quad {q["quad"]} · {q["label"]}</b> — '
-                f'Growth {g["dir"]} ({g["value"]}%), Inflation {i["dir"]} ({i["value"]}%){flip}<br>'
-                f'<span style="color:#555">Favors: {", ".join(pb["sectors"])}</span></div>')
-    except Exception as e:
-        print(f"  quad fetch skipped: {e}")
-        return ""
-
 def main():
     print(f"Fetching scans from {URL} …")
     etf   = pick(fetch("/etf-scan"))
@@ -139,7 +119,9 @@ def main():
             f'<h1 style="font:700 20px system-ui;margin:0 0 4px">📈 Daily Swing Digest</h1>'
             f'<p style="color:#888;font:12px system-ui;margin:0 0 14px">{today} · '
             f'within ±{BAND:g}% of the breakout line, ranked by score</p>'
-            f'{quad_banner()}'
+            f'<p style="margin:0 0 16px"><a href="{URL}" style="display:inline-block;'
+            f'background:#5b8def;color:#fff;text-decoration:none;padding:10px 18px;'
+            f'border-radius:8px;font:600 14px system-ui">Open the dashboard →</a></p>'
             f'{table(f"Top {TOPN} ETFs", etf)}'
             f'{table(f"Top {TOPN} Stocks", stock)}'
             f'<p style="color:#aaa;font:11px system-ui;margin-top:18px">'
