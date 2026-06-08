@@ -179,6 +179,7 @@ td.r{text-align:right;}
   <div class="nav-brand">&#9889; Market Dashboard</div>
   <button class="tab-btn active" onclick="switchTab('etf')">&#128201; ETF Swings</button>
   <button class="tab-btn" onclick="switchTab('stock')">&#128200; Stock Swings</button>
+  <button class="tab-btn" onclick="switchTab('fx')">&#127919; FX Fractals</button>
   <button class="tab-btn" onclick="switchTab('positions')">&#128204; My Positions</button>
   <button class="tab-btn" onclick="switchTab('inflation')">&#127777; Inflation Predictor</button>
   <button class="tab-btn" onclick="switchTab('gdp')">&#128202; GDP Predictor</button>
@@ -322,6 +323,47 @@ td.r{text-align:right;}
 </div>
 
 <!-- ── TAB: MY POSITIONS ── -->
+<div class="tab-panel" id="tab-fx">
+<div class="wrap">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <h2 style="font-size:22px;font-weight:800;">FX Fractal Scanner</h2>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Bill Williams fractal breakouts on H4, traded only with the 50-EMA trend &mdash; 23 majors &amp; crosses · Yahoo data</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span id="fx-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <button class="btn btn-primary" id="fx-scan-btn" onclick="runFXScan()">
+        <span id="fx-scan-icon">&#128269;</span> Scan FX
+      </button>
+    </div>
+  </div>
+
+  <div class="progress-wrap" id="fx-prog">
+    <div class="progress-label" id="fx-prog-lbl">Scanning FX pairs…</div>
+    <div class="progress-track"><div class="progress-fill" id="fx-prog-fill" style="width:0%"></div></div>
+  </div>
+
+  <div class="config-bar" style="display:block;font-size:11px;color:var(--muted);line-height:1.7;">
+    <b style="color:var(--text)">The rules:</b> trade only <b>with</b> the 50-EMA trend on H4. Uptrend &rarr; Buy-Stop 10 pips above the latest <b>up</b>-fractal; downtrend &rarr; Sell-Stop 10 pips below the latest <b>down</b>-fractal. Stop-loss behind the swing, take-profit a fixed 40 pips. Sideways pairs are skipped. If an order hasn&rsquo;t triggered and a newer fractal forms, it shows the newer one. &#9888; Avoid major news / NFP days. Not financial advice.
+  </div>
+
+  <div id="fx-chart-wrap" style="display:none;margin:16px 0;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;">
+    <div style="font-weight:700;font-size:14px;margin-bottom:2px;" id="fx-chart-title"></div>
+    <div id="fx-chart-legend" style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:8px;"></div>
+    <div id="fx-chart" style="height:340px;"></div>
+  </div>
+
+  <div class="section-header">
+    <div class="section-title"><span class="dot dot-green"></span>Potential trades &mdash; armed orders, closest to trigger first</div>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">H4 · click a row for the chart</span>
+  </div>
+  <div class="table-wrap" id="fx-table"><div class="empty-state">Hit Scan FX &mdash; finds H4 fractal breakouts that are in a clean 50-EMA trend</div></div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>Sideways &mdash; skipped (no clear trend, don&rsquo;t trade)</div></div>
+  <div id="fx-sideways" class="empty-state" style="text-align:left;">&mdash;</div>
+</div>
+</div>
+
 <div class="tab-panel" id="tab-positions">
 <div class="wrap">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
@@ -551,7 +593,7 @@ let cpiChart = null;
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
 
 function switchTab(id) {
-  const ids = ['etf','stock','positions','inflation','gdp'];
+  const ids = ['etf','stock','fx','positions','inflation','gdp'];
   if (id === 'positions') setTimeout(renderPositions, 50);
   document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', ids[i] === id));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-'+id));
@@ -2102,6 +2144,82 @@ async function showStockTradeChart(sym, date) {
   if (t.why!=='open' && t.exit_date) markers.push({time:t.exit_date,position:'aboveBar',color:'#f0526a',shape:'arrowDown',text:'exit $'+t.exit});
   series.setMarkers(markers.sort((a,b)=>a.time<b.time?-1:1));
   stockChart.timeScale().fitContent();
+}
+
+// ════════════════════════════════════════════════════════
+// TAB — FX FRACTAL SCANNER (H4 Bill Williams fractals + 50-EMA trend)
+// ════════════════════════════════════════════════════════
+let fxData = { trades: [], sideways: [] };
+let fxChart = null;
+const fxFmt = (v, pip) => (v == null ? '—' : (+v).toFixed(pip === 0.01 ? 3 : 5));
+
+async function runFXScan() {
+  const btn = document.getElementById('fx-scan-btn'); btn.disabled = true;
+  document.getElementById('fx-scan-icon').innerHTML = '<span class="spinner"></span>';
+  const prog = document.getElementById('fx-prog'); prog.classList.add('visible');
+  document.getElementById('fx-prog-lbl').textContent = 'Scanning 23 FX pairs on H4… (~1 min first run)';
+  document.getElementById('fx-prog-fill').style.width = '45%';
+  try {
+    const d = await (await fetch('/fx-fractals')).json();
+    if (d.error) throw new Error(d.error);
+    fxData = d; document.getElementById('fx-prog-fill').style.width = '100%';
+    renderFXTrades();
+    document.getElementById('fx-updated').textContent =
+      `${d.scanned} pairs · ${d.armed} armed of ${d.trades.length} trending · ${d.sideways.length} sideways`;
+    if (d.trades.length) showFXChart(d.trades[0].sym);
+  } catch (e) {
+    document.getElementById('fx-table').innerHTML = `<div class="empty-state">Scan failed: ${String(e.message||e).slice(0,140)}</div>`;
+  }
+  prog.classList.remove('visible'); btn.disabled = false;
+  document.getElementById('fx-scan-icon').textContent = '🔍';
+}
+
+function renderFXTrades() {
+  const t = fxData.trades || [], sw = fxData.sideways || [];
+  document.getElementById('fx-sideways').innerHTML = sw.length
+    ? sw.map(p => `<span class="wl-badge" style="margin:2px 4px 2px 0;background:#f5a62315;color:var(--amber);border-color:#f5a62333">${p}</span>`).join('')
+    : 'None — every pair is trending right now.';
+  if (!t.length) { document.getElementById('fx-table').innerHTML = '<div class="empty-state">No fractal breakouts in a clean trend right now.</div>'; return; }
+  const head = '<thead><tr>'
+    + ['Pair','Trend','Order','Stop-loss','Take-profit','Risk','Status','Fractal']
+        .map((h,i)=>`<th class="${(i>=3&&i<=5)?'r':''}" style="white-space:nowrap">${h}</th>`).join('')
+    + '</tr></thead>';
+  const rows = t.map(x => {
+    const up = x.trend === 'UP';
+    const rrColor = (x.rr==null) ? 'var(--muted)' : (x.rr>=1 ? 'var(--green)' : 'var(--amber)');
+    return `<tr style="cursor:pointer" onclick="showFXChart('${x.sym}')">
+      <td class="ticker-cell">${x.pair}</td>
+      <td><span class="${up?'c-green':'c-red'}">${up?'▲ UP':'▼ DOWN'}</span></td>
+      <td><span class="${x.side==='BUY'?'c-green':'c-red'}" style="font-weight:700">${x.side} STOP</span><br><span class="c-muted" style="font-size:10px">@ ${fxFmt(x.entry,x.pip)}</span></td>
+      <td class="r c-red">${fxFmt(x.sl,x.pip)}</td>
+      <td class="r c-green">${fxFmt(x.tp,x.pip)}</td>
+      <td class="r">${x.sl_pips}p<br><span style="font-size:10px;color:${rrColor}">RR ${x.rr ?? '—'}</span></td>
+      <td>${x.armed
+        ? `<span class="c-green">● armed</span><br><span class="c-muted" style="font-size:10px">${x.dist_pips}p to trigger</span>`
+        : `<span class="c-muted">triggered</span><br><span class="c-muted" style="font-size:10px">${x.dist_pips}p past</span>`}</td>
+      <td class="c-muted">${x.bars_ago}×H4 ago</td></tr>`;
+  }).join('');
+  document.getElementById('fx-table').innerHTML = `<table>${head}<tbody>${rows}</tbody></table>`;
+}
+
+function showFXChart(sym) {
+  const x = (fxData.trades||[]).find(t => t.sym === sym); if (!x) return;
+  document.getElementById('fx-chart-wrap').style.display = '';
+  document.getElementById('fx-chart-title').textContent =
+    `${x.pair} — ${x.trend} · ${x.side} STOP @ ${fxFmt(x.entry,x.pip)}  (TP ${x.tp_pips}p · SL ${x.sl_pips}p · RR ${x.rr ?? '—'})`;
+  document.getElementById('fx-chart-legend').innerHTML =
+    `<span style="color:#f5a623">50 EMA</span> · <span style="color:#5b8def">entry</span> · <span style="color:var(--red)">SL</span> · <span style="color:var(--green)">TP</span> · ${x.armed?`armed, ${x.dist_pips}p to trigger`:'already triggered'} · fractal ${x.bars_ago}×H4 ago`;
+  const el = document.getElementById('fx-chart'); el.innerHTML = '';
+  fxChart = LightweightCharts.createChart(el, {height:340, layout:{background:{color:'transparent'},textColor:'#6b6b80',fontFamily:"'Space Mono'"}, grid:{vertLines:{color:'#ffffff08'},horzLines:{color:'#ffffff08'}}, timeScale:{borderColor:'#ffffff18',timeVisible:true}, rightPriceScale:{borderColor:'#ffffff18'}});
+  const s = fxChart.addCandlestickSeries({upColor:'#2dd4a0',downColor:'#f0526a',borderVisible:false,wickUpColor:'#2dd4a0',wickDownColor:'#f0526a'});
+  s.setData(x.ohlc.map(([tm,o,h,l,c])=>({time:tm,open:o,high:h,low:l,close:c})));
+  const le = fxChart.addLineSeries({color:'#f5a623',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+  le.setData(x.ohlc.map((r,idx)=>({time:r[0],value:x.ema[idx]})));
+  s.createPriceLine({price:x.entry,color:'#5b8def',lineWidth:2,lineStyle:0,axisLabelVisible:true,title:x.side+' '+fxFmt(x.entry,x.pip)});
+  s.createPriceLine({price:x.sl,color:'#f0526a',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'SL'});
+  s.createPriceLine({price:x.tp,color:'#2dd4a0',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'TP'});
+  s.setMarkers([{time:x.fractal.time,position:x.side==='BUY'?'aboveBar':'belowBar',color:'#f5a623',shape:x.side==='BUY'?'arrowDown':'arrowUp',text:'fractal'}]);
+  fxChart.timeScale().fitContent();
 }
 
 (function init(){
