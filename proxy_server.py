@@ -972,6 +972,44 @@ STOCK_UNIVERSE = {s: None for s in [
     'DKNG','RBLX','U','SNAP','PINS','SPOT','ZM','ROKU','DOCU','TTD','CVNA','AFRM','DASH','CELH','SMR','VST','CEG','GEV',
 ]}
 
+# Sector tag per stock (for the macro-Quad cross-reference)
+_SECTOR_GROUPS = {
+    'Technology':             'AAPL MSFT ORCL ADBE RBLX U ZM DOCU TTD UBER ANET CSCO IBM',
+    'Semiconductors':         'NVDA AVGO AMD MU INTC QCOM TXN LRCX AMAT KLAC ARM SMCI MRVL ON MPWR ASML TSM',
+    'Software':               'CRM NOW PANW CRWD SNOW NET DDOG ZS PLTR MDB SHOP TEAM WDAY ADSK INTU FTNT',
+    'Financials':             'JPM BAC WFC GS MS C BLK SCHW V MA AXP PYPL SQ COIN HOOD SOFI KKR AFRM',
+    'Healthcare':             'UNH JNJ LLY PFE MRK ABBV TMO ABT DHR ISRG AMGN GILD VRTX REGN BMY MDT BSX',
+    'Consumer Staples':       'WMT COST PG KO PEP MDLZ CELH',
+    'Consumer Discretionary': 'AMZN TSLA HD MCD NKE SBUX TGT LOW BKNG CMG LULU ROST TJX ABNB DKNG CVNA DASH F GM RIVN LCID DAL UAL CCL RCL',
+    'Industrials':            'CAT DE BA GE HON UPS RTX LMT GD NOC EMR ETN PH UNP FDX GEV',
+    'Energy':                 'XOM CVX COP SLB OXY EOG MPC PSX',
+    'Materials':              'FCX NEM LIN NUE',
+    'Communications':         'GOOGL META NFLX T VZ CMCSA TMUS WBD DIS SNAP PINS SPOT ROKU',
+    'Utilities':              'SMR VST CEG',
+}
+STOCK_SECTORS = {s: sec for sec, syms in _SECTOR_GROUPS.items() for s in syms.split()}
+
+# Hedgeye-style Quad playbook: which sectors / ETFs historically lead in each
+# Growth×Inflation rate-of-change regime.
+QUAD_PLAYBOOK = {
+    1: {'label': 'Goldilocks', 'growth': 'accelerating', 'inflation': 'decelerating',
+        'note': 'Growth ↑, Inflation ↓ — risk-on. Growth & momentum lead: tech, semis, software, discretionary.',
+        'sectors': ['Technology','Semiconductors','Software','Consumer Discretionary','Communications'],
+        'etfs': ['XLK','XLY','XLC','VGT','VCR','VOX','QQQ','QQQM','IGV','IGM','IYW','SMH','SOXX','XSD','PSI','SKYY','CLOU','WCLD','FDN','ARKK','ARKW','ARKF','ARKG','BOTZ','ROBO','FINX','BLOK','ESPO','HERO','FFTY','KWEB','CQQQ','MTUM','VUG','IWF','MGK','HACK','CIBR','BUG','IHAK','XRT']},
+    2: {'label': 'Reflation', 'growth': 'accelerating', 'inflation': 'accelerating',
+        'note': 'Growth ↑, Inflation ↑ — reflation. Cyclicals win: energy, materials, industrials, financials, semis, small caps.',
+        'sectors': ['Technology','Semiconductors','Software','Industrials','Materials','Financials','Energy','Consumer Discretionary'],
+        'etfs': ['XLE','XLI','XLB','XLF','XLK','VDE','VIS','VAW','VFH','IYF','KRE','KBE','KBWB','XOP','OIH','AMLP','XME','GDX','GDXJ','SIL','COPX','PAVE','XAR','ITA','JETS','IYT','SMH','SOXX','IWM','MDY','IJR','VB','EEM','IEMG','VWO','EWZ','ILF','FXI','MCHI','KWEB','LIT','URA','NLR','KARS','DRIV','IDRV','DBC','PDBC','DBA','CPER','USO','BNO']},
+    3: {'label': 'Stagflation', 'growth': 'decelerating', 'inflation': 'accelerating',
+        'note': 'Growth ↓, Inflation ↑ — stagflation. Real assets & defensives: energy, gold, commodities, utilities, staples.',
+        'sectors': ['Energy','Materials','Utilities','Healthcare','Consumer Staples'],
+        'etfs': ['XLE','XLU','XLP','XLV','XLB','VDE','VPU','VDC','VHT','VAW','VNQ','IYR','SCHH','REZ','REM','XOP','OIH','AMLP','GLD','GLDM','IAU','SGOL','SLV','SIVR','GDX','GDXJ','SIL','DBC','PDBC','DBA','CPER','WEAT','CORN','PPLT','PALL','URA','NLR','XME','COPX','TIP','USO','BNO','UNG']},
+    4: {'label': 'Deflation', 'growth': 'decelerating', 'inflation': 'decelerating',
+        'note': 'Growth ↓, Inflation ↓ — risk-off. Duration & defensives: long Treasuries, USD, utilities, staples, healthcare.',
+        'sectors': ['Utilities','Consumer Staples','Healthcare','Technology'],
+        'etfs': ['TLT','IEF','AGG','BND','LQD','VCIT','VCSH','MUB','XLU','VPU','XLP','VDC','XLV','VHT','USMV','SPLV','QUAL','SCHD','VYM','VIG','HDV','DVY','SDY','NOBL','DGRO','SPHD','GLD','GLDM','IAU','SGOL']},
+}
+
 def _yahoo_ohlc(sym, rng="2y"):
     import urllib.request, json as _json, datetime as _dt
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval=1d"
@@ -1101,6 +1139,7 @@ def run_etf_scan(fmp_key=None, universe=None, is_stock=False):
             'expense': expense, 'signal': signal, 'level': round(lvl, 2),
             'entry': round(lvl, 2), 'stop': stop, 'atr_pct': atr_pct,
             'touches': touches, 'score': score, 'rs': rs, 'rs_rating': rs_rating,
+            'sector': (STOCK_SECTORS.get(sym) if is_stock else None),
             'vol_surge': vol_surge, 'vol_ok': bool(vol_ok), 'retested': bool(retested),
             'support':    [round(m, 2) for m, n in sup][:3],
             'resistance': [round(m, 2) for m, n in res][-3:],
@@ -1338,6 +1377,41 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None, is_stock=False):
             'years': years, 'trades': [t for t in trades if t['hi']][-120:]}
 
 
+def run_quad(fred_key):
+    """Macro Quad from the existing nowcasts: classify by the RATE OF CHANGE
+    (accelerating vs decelerating) of GDP growth and CPI inflation. Flags when
+    an axis is within its forecast error band → 'near a quad transition'."""
+    gdp = cached_ml("gdp:12", lambda: run_gdp_nowcast(fred_key, 12))
+    inf = cached_ml("inf:24", lambda: run_inflation_nowcast(fred_key, 24))
+    g_now = gdp['nowcast']['value']; g_prev = gdp['nowcast']['last_actual']
+    i_now = inf['nowcast']['value']; i_prev = inf['nowcast']['last_actual']
+    g_d = round(g_now - g_prev, 2); i_d = round(i_now - i_prev, 2)
+    g_up = g_d > 0; i_up = i_d > 0
+    def q_of(gu, iu): return 1 if (gu and not iu) else 2 if (gu and iu) else 3 if (not gu and iu) else 4
+    quad = q_of(g_up, i_up)
+    g_band = float(gdp.get('metrics', {}).get('acc_band') or 0.5)
+    i_band = float((inf['nowcast'].get('high', i_now) - i_now) or inf.get('metrics', {}).get('acc_band') or 0.3)
+    g_near = abs(g_d) < g_band; i_near = abs(i_d) < i_band
+    cand = []
+    if g_near: cand.append((abs(g_d)/max(g_band, 1e-6), q_of(not g_up, i_up),
+                            f"growth {'rolling over' if g_up else 'troughing'}"))
+    if i_near: cand.append((abs(i_d)/max(i_band, 1e-6), q_of(g_up, not i_up),
+                            f"inflation {'rolling over' if i_up else 're-accelerating'}"))
+    cand.sort()
+    return {
+        'ok': True, 'quad': quad, 'label': QUAD_PLAYBOOK[quad]['label'],
+        'growth':    {'value': round(g_now, 2), 'last': round(g_prev, 2), 'delta': g_d,
+                      'dir': 'accelerating' if g_up else 'decelerating', 'near_flip': g_near},
+        'inflation': {'value': round(i_now, 2), 'last': round(i_prev, 2), 'delta': i_d,
+                      'dir': 'accelerating' if i_up else 'decelerating', 'near_flip': i_near},
+        'asof': {'gdp': gdp['nowcast'].get('quarter'), 'cpi': inf['nowcast'].get('month')},
+        'near_transition': bool(cand),
+        'next_quad':   cand[0][1] if cand else None,
+        'next_reason': cand[0][2] if cand else None,
+        'playbook': QUAD_PLAYBOOK,
+    }
+
+
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
 
 class Handler(SimpleHTTPRequestHandler):
@@ -1408,6 +1482,27 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(json.dumps({'error': err}).encode())
+            return
+
+        if parsed.path == '/quad':
+            qs = urllib.parse.parse_qs(parsed.query)
+            fred_key = qs.get('fred_key', [''])[0]
+            try:
+                if not fred_key: raise ValueError('fred_key required')
+                print("\n[quad] Macro quad request …")
+                result  = run_quad(fred_key)
+                payload = json.dumps(result).encode()
+                print(f"[quad] Done → Quad {result['quad']} ({result['label']})")
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers(); self.wfile.write(payload)
+            except Exception as e:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({'ok': False, 'error': str(e)}).encode())
             return
 
         if parsed.path in ('/etf-scan', '/stock-scan'):
