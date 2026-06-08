@@ -21,17 +21,19 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timezone
 
-URL  = os.environ.get('DASHBOARD_URL', '').rstrip('/')
-USER = os.environ.get('GMAIL_USER', '')
-PWD  = os.environ.get('GMAIL_APP_PASSWORD', '')
-TO   = os.environ.get('DIGEST_TO', USER)
-FRED = os.environ.get('FRED_KEY', '')
-BAND = float(os.environ.get('BAND', '2.5'))
-TOPN = int(os.environ.get('TOPN', '10'))
+# `or` (not the get-default) so empty strings from unset GH vars fall back too
+URL  = (os.environ.get('DASHBOARD_URL') or '').rstrip('/')
+USER = os.environ.get('GMAIL_USER') or ''
+PWD  = os.environ.get('GMAIL_APP_PASSWORD') or ''
+TO   = os.environ.get('DIGEST_TO') or USER
+FRED = os.environ.get('FRED_KEY') or ''
+BAND = float(os.environ.get('BAND') or '2.5')
+TOPN = int(os.environ.get('TOPN') or '10')
+DRY  = bool(os.environ.get('DRY_RUN'))
 
 if not URL:
     print("DASHBOARD_URL not set — nothing to do."); sys.exit(0)
-if not (USER and PWD):
+if not DRY and not (USER and PWD):
     print("GMAIL_USER / GMAIL_APP_PASSWORD not set — skipping send (configure secrets to enable)."); sys.exit(0)
 
 def fetch(path, timeout=200, tries=5):
@@ -150,6 +152,10 @@ def main():
     msg['To'] = TO
     msg.attach(MIMEText("Open in an HTML-capable client to see the tables.", 'plain'))
     msg.attach(MIMEText(html, 'html'))
+
+    if DRY:
+        print(f"DRY_RUN — built the email ({len(html)} chars), not sending.")
+        return
 
     print(f"Sending to {TO} via Gmail SMTP …")
     with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=ssl.create_default_context()) as s:
