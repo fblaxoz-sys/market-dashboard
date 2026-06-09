@@ -1608,6 +1608,28 @@ function renderBtTrades() {
       <td class="r c-muted">${t.days}</td><td class="c-muted">${t.why}</td></tr>`).join('')}</tbody></table>`;
 }
 
+// Format a revenue value (in $B) cleanly for at-a-glance reading
+function fmtRev(b) {
+  if (b == null) return '—';
+  if (b >= 100) return '$' + Math.round(b) + 'B';            // $120B
+  if (b >= 1)   return '$' + b.toFixed(1).replace(/\.0$/, '') + 'B';  // $15.2B / $14B
+  return '$' + Math.round(b * 1000) + 'M';                   // $450M for sub-billion
+}
+// Tiny inline SVG sparkline of the last few quarters' revenue
+function revSpark(vals, up) {
+  const w = 44, h = 15, n = vals.length;
+  const min = Math.min(...vals), max = Math.max(...vals), rng = (max - min) || 1;
+  const xy = vals.map((v, i) => [
+    n > 1 ? (i / (n - 1)) * (w - 4) + 2 : w / 2,
+    h - 2 - ((v - min) / rng) * (h - 4)
+  ]);
+  const pts = xy.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+  const last = xy[xy.length - 1];
+  const col = up ? 'var(--green)' : 'var(--red)';
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="vertical-align:middle;margin:0 4px" aria-hidden="true">`
+    + `<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>`
+    + `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="1.8" fill="${col}"/></svg>`;
+}
 function etfRow(a, chartFn) {
   chartFn = chartFn || 'showETFChart';
   const expStr = a.expense != null ? a.expense + '%' : '—';
@@ -1626,11 +1648,12 @@ function etfRow(a, chartFn) {
   let revCell = '<span class="c-muted">—</span>';
   if (a.rev && a.rev.quarters) {
     const rv = a.rev;
-    const arrow = rv.up ? '<span class="c-green">▲</span>' : '<span class="c-red">▼</span>';
-    const qs = rv.quarters.map(q=>q.b).join('→');
-    const chg = rv.change_pct==null ? '' : ` <span class="${rv.change_pct>=0?'c-green':'c-red'}">${rv.change_pct>=0?'+':''}${rv.change_pct}%</span>`;
+    const vals = rv.quarters.map(q=>q.b);
+    const latest = vals[vals.length-1];
+    const chg = rv.change_pct==null ? '' : `<span class="${rv.change_pct>=0?'c-green':'c-red'}" style="font-size:10px">${rv.change_pct>=0?'+':''}${rv.change_pct}%</span>`;
     const tip = `Last ${rv.n} quarters revenue ($B): ` + rv.quarters.map(q=>`${q.date} $${q.b}`).join(' · ') + (rv.yoy!=null?` · YoY ${rv.yoy>=0?'+':''}${rv.yoy}%`:'');
-    revCell = `<span title="${tip}">${arrow} <span style="font-size:10px">$${qs}B</span>${chg}</span><br>`
+    revCell = `<span title="${tip}" style="display:inline-flex;align-items:center;gap:2px;white-space:nowrap">`
+      + `<b style="font-size:12px">${fmtRev(latest)}</b>${revSpark(vals, rv.up)}${chg}</span><br>`
       + `<button title="See ${a.sym}'s beta & correlations" onclick="event.stopPropagation();gotoCorr('${a.sym}')" style="margin-top:2px;font-size:9px;padding:1px 6px;border-radius:5px;border:1px solid #5b8def55;background:#5b8def15;color:#5b8def;cursor:pointer;font-family:inherit;">corr →</button>`;
   }
   return `<tr style="cursor:pointer" onclick="${chartFn}('${a.sym}')">
