@@ -1622,14 +1622,16 @@ function etfRow(a, chartFn) {
   if (a.vol_ok)   sig += `<span class="wl-badge" style="background:#2dd4a022;color:var(--green);border-color:#2dd4a044" title="Breakout volume ${a.vol_surge}× the 20-day average">Vol ${a.vol_surge}×</span>`;
   if (a.retested) sig += `<span class="wl-badge" style="background:#f5a62322;color:var(--amber);border-color:#f5a62344" title="Broke out, pulled back to the level and held">Retest&#10003;</span>`;
   if (!sig) sig = '<span class="c-muted" style="font-size:10px">—</span>';
-  // revenue ↔ macro correlation (stocks only; ETFs have no revenue → —)
+  // last 4 quarters of revenue + up/down trend, with a button to the Correlations tab (stocks only)
   let revCell = '<span class="c-muted">—</span>';
-  if (a.rev_corr && a.rev_corr.top) {
-    const rc = a.rev_corr, c = rc.top.corr;
-    const yoyTxt = rc.yoy == null ? 'n/a' : (rc.yoy>=0?'+':'') + rc.yoy + '%';
-    const tip = `Revenue's strongest macro link over ${rc.n} quarters (⚠ only ${rc.n} points — low confidence, trends can correlate spuriously). Latest rev $${rc.latest_b}B, YoY ${yoyTxt}.  ` + rc.all.map(x=>`${x.name} ${x.corr>=0?'+':''}${x.corr}`).join(' · ');
-    const nm = rc.top.name.length>11 ? rc.top.name.slice(0,10)+'…' : rc.top.name;
-    revCell = `<span class="${c>=0?'c-green':'c-red'}" title="${tip}">${nm} ${c>=0?'+':''}${c}</span><br><span class="c-muted" style="font-size:9px">YoY ${yoyTxt}</span>`;
+  if (a.rev && a.rev.quarters) {
+    const rv = a.rev;
+    const arrow = rv.up ? '<span class="c-green">▲</span>' : '<span class="c-red">▼</span>';
+    const qs = rv.quarters.map(q=>q.b).join('→');
+    const chg = rv.change_pct==null ? '' : ` <span class="${rv.change_pct>=0?'c-green':'c-red'}">${rv.change_pct>=0?'+':''}${rv.change_pct}%</span>`;
+    const tip = `Last ${rv.n} quarters revenue ($B): ` + rv.quarters.map(q=>`${q.date} $${q.b}`).join(' · ') + (rv.yoy!=null?` · YoY ${rv.yoy>=0?'+':''}${rv.yoy}%`:'');
+    revCell = `<span title="${tip}">${arrow} <span style="font-size:10px">$${qs}B</span>${chg}</span><br>`
+      + `<button title="See ${a.sym}'s beta & correlations" onclick="event.stopPropagation();gotoCorr('${a.sym}')" style="margin-top:2px;font-size:9px;padding:1px 6px;border-radius:5px;border:1px solid #5b8def55;background:#5b8def15;color:#5b8def;cursor:pointer;font-family:inherit;">corr →</button>`;
   }
   return `<tr style="cursor:pointer" onclick="${chartFn}('${a.sym}')">
     <td class="ticker-cell">${a.sym}<button class="track-btn" title="Add ${a.sym} to My Positions at the current price" onclick="event.stopPropagation();trackFromScan('${a.sym}',this)">+ track</button></td>
@@ -1651,14 +1653,14 @@ function etfRow(a, chartFn) {
 const ETF_COLS = [
   ['sym','Ticker',''], ['price','Price','r'], ['entry','Buy / Stop','r'],
   ['dist','Position','r'], ['rs','RS','r'], ['touches','Tests','r'],
-  ['confirm','Confirm',''], ['avgvol','Avg Vol','r'], ['expense','Expense','r'], ['revcorr','Rev↔Macro','r'], ['score','Score','r']
+  ['confirm','Confirm',''], ['avgvol','Avg Vol','r'], ['expense','Expense','r'], ['rev','Revenue (4Q)','r'], ['score','Score','r']
 ];
 const ETF_SORTV = {
   sym:a=>a.sym, price:a=>a.price, entry:a=>(a.entry??a.level),
   dist:a=>a.signal==='BREAKOUT'?(a.price/a.level-1):-(a.level/a.price-1),
   rs:a=>(a.rs_rating ?? a.rs ?? -999), touches:a=>a.touches, confirm:a=>(a.vol_ok?2:0)+(a.retested?1:0),
   avgvol:a=>a.avgvol, expense:a=>(a.expense??999),
-  revcorr:a=>(a.rev_corr&&a.rev_corr.top?Math.abs(a.rev_corr.top.corr):-1), score:a=>a.score
+  rev:a=>(a.rev?(a.rev.change_pct??-999):-1000), score:a=>a.score
 };
 let etfSort = {};   // tableId -> {k, d}   (d: 1 = ascending, -1 = descending)
 function sortETF(id, k) {
@@ -2150,6 +2152,14 @@ async function showStockTradeChart(sym, date) {
 // TAB — FACTOR CORRELATIONS (6-month beta vs macro factors)
 // ════════════════════════════════════════════════════════
 let corrBarChart = null, corrOverlayChart = null;
+
+// Jump from a scan row to the Correlations tab and analyze that ticker
+function gotoCorr(sym) {
+  switchTab('corr');
+  const inp = document.getElementById('corr-sym');
+  if (inp) inp.value = sym;
+  if (typeof runFactorBeta === 'function') runFactorBeta();
+}
 
 async function runFactorBeta() {
   const sym = document.getElementById('corr-sym').value.trim().toUpperCase();

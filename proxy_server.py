@@ -1176,15 +1176,11 @@ def run_etf_scan(fmp_key=None, universe=None, is_stock=False):
             pass
     breakouts.sort(key=lambda x: -x['score'])
     approaching.sort(key=lambda x: -x['score'])
-    if is_stock:                       # revenue↔macro correlation (stocks only; ETFs have no revenue)
-        try:
-            facs = cached_ml('factor:data', _factor_closes, ttl=1800)
-            for a in breakouts + approaching:
-                try: a['rev_corr'] = _revenue_macro_corr(a['sym'], facs)
-                except Exception: a['rev_corr'] = None
-                time.sleep(0.03)
-        except Exception:
-            pass
+    if is_stock:                       # last 4 quarters of revenue + trend (stocks only)
+        for a in breakouts + approaching:
+            try: a['rev'] = _revenue_summary(a['sym'])
+            except Exception: a['rev'] = None
+            time.sleep(0.03)
     print(f"  [etf] {len(breakouts)} breakouts, {len(approaching)} approaching")
     return {'breakouts': breakouts, 'approaching': approaching,
             'scanned': len(universe), 'source': 'curated'}
@@ -1568,29 +1564,21 @@ def _close_on(closemap, date_str):
         if closemap.get(k): return closemap[k]
     return None
 
-def _revenue_macro_corr(sym, factors):
-    """Correlate the last ~5 quarters of revenue to each macro factor's level.
-    NOTE: only ~5 points → statistically weak; surfaced with a low-confidence flag."""
-    import numpy as np
+def _revenue_summary(sym):
+    """Last 4 quarters of revenue ($B) + whether the trend is up or down."""
     rev = cached_ml(f"rev:{sym}", lambda: _quarterly_revenue(sym), ttl=86400)
-    if len(rev) < 4:
+    if len(rev) < 2:
         return None
-    dates = [d for d, _ in rev]; rvals = [v for _, v in rev]
-    results = []
-    for name, _ in FACTORS:
-        cm = factors.get(name, {})
-        pairs = [(rvals[i], _close_on(cm, dates[i])) for i in range(len(dates))]
-        pairs = [(rv, fc) for rv, fc in pairs if fc is not None]
-        if len(pairs) < 4: continue
-        rv = np.array([p[0] for p in pairs]); fc = np.array([p[1] for p in pairs])
-        if rv.std() == 0 or fc.std() == 0: continue
-        results.append({'name': name, 'corr': round(float(np.corrcoef(rv, fc)[0, 1]), 2)})
-    if not results:
-        return None
-    results.sort(key=lambda x: -abs(x['corr']))
-    yoy = round((rvals[-1]/rvals[-5] - 1)*100, 1) if len(rvals) >= 5 and rvals[-5] else None
-    return {'top': results[0], 'all': results, 'yoy': yoy,
-            'latest_b': round(rvals[-1]/1e9, 2), 'n': len(rvals)}
+    last4 = rev[-4:]; vals = [v for _, v in last4]
+    yoy = round((rev[-1][1]/rev[-5][1] - 1)*100, 1) if len(rev) >= 5 and rev[-5][1] else None
+    return {
+        'quarters': [{'date': d[:7], 'b': round(v/1e9, 2)} for d, v in last4],
+        'up': bool(vals[-1] > vals[0]),
+        'rising': sum(1 for i in range(1, len(vals)) if vals[i] > vals[i-1]),
+        'n': len(last4), 'yoy': yoy,
+        'latest_b': round(vals[-1]/1e9, 2),
+        'change_pct': round((vals[-1]/vals[0] - 1)*100, 1) if vals[0] else None,
+    }
 
 def run_factor_beta(sym):
     """6-month correlation + beta of a stock's daily returns vs each macro factor."""
