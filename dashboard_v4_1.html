@@ -179,6 +179,7 @@ td.r{text-align:right;}
   <div class="nav-brand">&#9889; Market Dashboard</div>
   <button class="tab-btn active" onclick="switchTab('etf')">&#128201; ETF Swings</button>
   <button class="tab-btn" onclick="switchTab('stock')">&#128200; Stock Swings</button>
+  <button class="tab-btn" onclick="switchTab('orb')">&#9889; Day Trade</button>
   <button class="tab-btn" onclick="switchTab('positions')">&#128204; My Positions</button>
   <button class="tab-btn" onclick="switchTab('inflation')">&#127777; Inflation Predictor</button>
   <button class="tab-btn" onclick="switchTab('gdp')">&#128202; GDP Predictor</button>
@@ -322,6 +323,47 @@ td.r{text-align:right;}
 </div>
 
 <!-- ── TAB: MY POSITIONS ── -->
+<div class="tab-panel" id="tab-orb">
+<div class="wrap">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+    <div>
+      <h2 style="font-size:22px;font-weight:800;">Day Trade &mdash; Opening Range Breakout</h2>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">First 15 min sets the range · trade in-play movers (RVOL&ge;1.5 or gap&ge;2%) · 5-min · Yahoo data</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <span id="orb-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="orb-auto" onchange="toggleORBAuto()"> auto-refresh</label>
+      <button class="btn btn-primary" id="orb-scan-btn" onclick="runORBScan()">
+        <span id="orb-scan-icon">&#128269;</span> Scan
+      </button>
+    </div>
+  </div>
+
+  <div id="orb-market" style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:12px;"></div>
+
+  <div class="progress-wrap" id="orb-prog">
+    <div class="progress-label" id="orb-prog-lbl">Scanning movers for opening-range setups…</div>
+    <div class="progress-track"><div class="progress-fill" id="orb-prog-fill" style="width:0%"></div></div>
+  </div>
+
+  <div class="config-bar" style="display:block;font-size:11px;color:var(--muted);line-height:1.7;">
+    <b style="color:var(--text)">The play:</b> after 9:30 ET the first 15 minutes set the range. <b style="color:var(--green)">Buy</b> a break <b>above</b> the range high (stop = range low); <b style="color:var(--red)">short</b> a break <b>below</b> the range low (stop = range high). Only trade <b>in-play</b> names (high relative volume or a gap), and hold to the close or your stop. Backtested edge on movers: profit factor ~1.2&ndash;1.4 (~60-day sample) &mdash; modest but real. &#9888; Slippage on fast names eats into it. Not financial advice.
+  </div>
+
+  <div id="orb-chart-wrap" style="display:none;margin:16px 0;background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;">
+    <div style="font-weight:700;font-size:14px;margin-bottom:2px;" id="orb-chart-title"></div>
+    <div id="orb-chart-legend" style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:8px;"></div>
+    <div id="orb-chart" style="height:360px;"></div>
+  </div>
+
+  <div class="section-header">
+    <div class="section-title"><span class="dot dot-green"></span>In-play setups &mdash; movers with a tradable range</div>
+    <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">click a row for the 5-min chart</span>
+  </div>
+  <div class="table-wrap" id="orb-table"><div class="empty-state">Hit Scan &mdash; finds today&rsquo;s opening-range breakouts on in-play movers</div></div>
+</div>
+</div>
+
 <div class="tab-panel" id="tab-positions">
 <div class="wrap">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
@@ -551,8 +593,9 @@ let cpiChart = null;
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
 
 function switchTab(id) {
-  const ids = ['etf','stock','positions','inflation','gdp'];
+  const ids = ['etf','stock','orb','positions','inflation','gdp'];
   if (id === 'positions') setTimeout(renderPositions, 50);
+  if (id !== 'orb' && typeof stopORBAuto === 'function') stopORBAuto();
   document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', ids[i] === id));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-'+id));
 }
@@ -2103,6 +2146,91 @@ async function showStockTradeChart(sym, date) {
   series.setMarkers(markers.sort((a,b)=>a.time<b.time?-1:1));
   stockChart.timeScale().fitContent();
 }
+
+// ════════════════════════════════════════════════════════
+// TAB — DAY TRADE (Opening Range Breakout, 5-min, in-play movers)
+// ════════════════════════════════════════════════════════
+let orbData = { setups: [] };
+let orbChart = null, orbTimer = null, orbCurrentSym = null;
+const orbFmt = v => (v == null ? '—' : (+v).toFixed((+v) >= 1 ? 2 : 4));
+
+async function runORBScan(silent) {
+  const btn = document.getElementById('orb-scan-btn');
+  if (!silent) {
+    btn.disabled = true; document.getElementById('orb-scan-icon').innerHTML = '<span class="spinner"></span>';
+    const p = document.getElementById('orb-prog'); p.classList.add('visible');
+    document.getElementById('orb-prog-fill').style.width = '45%';
+  }
+  try {
+    const d = await (await fetch('/orb-scan')).json();
+    if (d.error) throw new Error(d.error);
+    orbData = d; renderORBTable();
+    const mc = d.market === 'open' ? 'var(--green)' : 'var(--muted)';
+    document.getElementById('orb-market').innerHTML =
+      `Session <b style="color:var(--text)">${d.session}</b> · market <b style="color:${mc}">${d.market}</b> · ${d.in_play} in-play of ${d.scanned}`;
+    document.getElementById('orb-updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+    if (silent) { if (orbCurrentSym) showORBChart(orbCurrentSym); }
+    else {
+      const ip = d.setups.filter(s => s.in_play);
+      const first = (ip[0] || d.setups[0] || {}).sym;
+      if (first) showORBChart(first);
+    }
+  } catch (e) {
+    if (!silent) document.getElementById('orb-table').innerHTML = `<div class="empty-state">Scan failed: ${String(e.message||e).slice(0,140)}</div>`;
+  }
+  if (!silent) { document.getElementById('orb-prog').classList.remove('visible'); btn.disabled = false; document.getElementById('orb-scan-icon').textContent = '🔍'; }
+}
+
+function renderORBTable() {
+  const s = orbData.setups || [];
+  if (!s.length) { document.getElementById('orb-table').innerHTML = '<div class="empty-state">No setups — the market may be closed or pre-open.</div>'; return; }
+  const cols = ['Ticker','Status','Price','Range L–H','Buy ↑ / stop','Short ↓ / stop','Risk','Gap','RVOL'];
+  const head = '<thead><tr>' + cols.map((h,i)=>`<th class="${(i>=4&&i<=6)?'r':''}" style="white-space:nowrap">${h}</th>`).join('') + '</tr></thead>';
+  const rows = s.map(x => {
+    const st = x.status==='broke up' ? '<span class="c-green">▲ broke up</span>'
+             : x.status==='broke down' ? '<span class="c-red">▼ broke down</span>'
+             : x.status==='armed' ? '<span class="c-amber">● armed</span>'
+             : `<span class="c-muted">${x.status}</span>`;
+    const ip = x.in_play ? '<span class="wl-badge" style="background:#2dd4a022;color:var(--green);border-color:#2dd4a044;margin-left:5px">in-play</span>' : '';
+    return `<tr style="cursor:pointer" onclick="showORBChart('${x.sym}')">
+      <td class="ticker-cell">${x.sym}${ip}</td>
+      <td>${st}</td>
+      <td class="r">$${orbFmt(x.price)}</td>
+      <td class="r c-muted" style="font-size:11px">${orbFmt(x.or_low)}–${orbFmt(x.or_high)}</td>
+      <td class="r"><span class="c-green">$${orbFmt(x.or_high)}</span><br><span style="font-size:10px;color:var(--red)">stop $${orbFmt(x.or_low)}</span></td>
+      <td class="r"><span class="c-red">$${orbFmt(x.or_low)}</span><br><span style="font-size:10px;color:var(--red)">stop $${orbFmt(x.or_high)}</span></td>
+      <td class="r c-muted">${x.risk_pct}%</td>
+      <td class="r ${x.gap>=0?'c-green':'c-red'}">${x.gap>=0?'+':''}${x.gap}%</td>
+      <td class="r ${(x.rvol||0)>=1.5?'c-green':'c-muted'}">${x.rvol ?? '—'}×</td></tr>`;
+  }).join('');
+  document.getElementById('orb-table').innerHTML = `<table>${head}<tbody>${rows}</tbody></table>`;
+}
+
+function showORBChart(sym) {
+  const x = (orbData.setups||[]).find(t => t.sym === sym); if (!x) return;
+  orbCurrentSym = sym;
+  document.getElementById('orb-chart-wrap').style.display = '';
+  document.getElementById('orb-chart-title').textContent =
+    `${x.sym} — ${x.status} · opening range ${orbFmt(x.or_low)}–${orbFmt(x.or_high)} (risk ${x.risk_pct}%)`;
+  document.getElementById('orb-chart-legend').innerHTML =
+    `<span style="color:var(--green)">buy ↑ $${orbFmt(x.or_high)}</span> · <span style="color:var(--red)">short ↓ / stop $${orbFmt(x.or_low)}</span> · <span style="color:#f5a623">VWAP</span> · gap ${x.gap>=0?'+':''}${x.gap}% · RVOL ${x.rvol ?? '—'}×`;
+  const el = document.getElementById('orb-chart'); el.innerHTML = '';
+  orbChart = LightweightCharts.createChart(el, {height:360, layout:{background:{color:'transparent'},textColor:'#6b6b80',fontFamily:"'Space Mono'"}, grid:{vertLines:{color:'#ffffff08'},horzLines:{color:'#ffffff08'}}, timeScale:{borderColor:'#ffffff18',timeVisible:true}, rightPriceScale:{borderColor:'#ffffff18'}});
+  const cs = orbChart.addCandlestickSeries({upColor:'#2dd4a0',downColor:'#f0526a',borderVisible:false,wickUpColor:'#2dd4a0',wickDownColor:'#f0526a'});
+  cs.setData(x.ohlc.map(([t,o,h,l,c])=>({time:t,open:o,high:h,low:l,close:c})));
+  const lv = orbChart.addLineSeries({color:'#f5a623',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+  lv.setData(x.ohlc.map((r,i)=>({time:r[0],value:x.vwap[i]})));
+  cs.createPriceLine({price:x.or_high,color:'#2dd4a0',lineWidth:2,lineStyle:0,axisLabelVisible:true,title:'buy ↑ '+orbFmt(x.or_high)});
+  cs.createPriceLine({price:x.or_low,color:'#f0526a',lineWidth:2,lineStyle:0,axisLabelVisible:true,title:'short ↓ '+orbFmt(x.or_low)});
+  orbChart.timeScale().fitContent();
+}
+
+function toggleORBAuto() {
+  const on = document.getElementById('orb-auto').checked;
+  if (on) { runORBScan(true); orbTimer = setInterval(() => runORBScan(true), 150000); }   // every 2.5 min
+  else stopORBAuto();
+}
+function stopORBAuto() { if (orbTimer) { clearInterval(orbTimer); orbTimer = null; } const c = document.getElementById('orb-auto'); if (c) c.checked = false; }
 
 (function init(){
   if (fredKey) {

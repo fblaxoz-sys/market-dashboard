@@ -14,15 +14,15 @@ _ML_LOCK  = threading.Lock()
 _ML_CACHE = {}          # key -> (timestamp, result_dict)
 _ML_TTL   = 6 * 3600    # serve cached result for 6 hours
 
-def cached_ml(key, fn):
+def cached_ml(key, fn, ttl=_ML_TTL):
     now = time.time()
     hit = _ML_CACHE.get(key)
-    if hit and now - hit[0] < _ML_TTL:
+    if hit and now - hit[0] < ttl:
         print(f"[cache] hit for {key}")
         return hit[1]
     with _ML_LOCK:                      # only one heavy job runs at a time
         hit = _ML_CACHE.get(key)        # re-check after acquiring lock
-        if hit and time.time() - hit[0] < _ML_TTL:
+        if hit and time.time() - hit[0] < ttl:
             return hit[1]
         result = fn()
         _ML_CACHE[key] = (time.time(), result)
@@ -1010,6 +1010,32 @@ QUAD_PLAYBOOK = {
         'etfs': ['TLT','IEF','AGG','BND','LQD','VCIT','VCSH','MUB','XLU','VPU','XLP','VDC','XLV','VHT','USMV','SPLV','QUAL','SCHD','VYM','VIG','HDV','DVY','SDY','NOBL','DGRO','SPHD','GLD','GLDM','IAU','SGOL']},
 }
 
+# Volatile, liquid "movers" — the universe where Opening-Range Breakout has an edge.
+ORB_UNIVERSE = ['NVDA','TSLA','AMD','AAPL','MSFT','AMZN','META','GOOGL','NFLX','AVGO',
+                'MU','INTC','QCOM','MRVL','ON','SMCI','PLTR','NET','CRWD','DDOG','SNOW',
+                'MDB','PANW','SHOP','UBER','ABNB','RBLX','U','DKNG','COIN','MSTR','MARA',
+                'RIOT','HOOD','SOFI','AFRM','PYPL','RIVN','LCID','NIO','GME','SOUN','IONQ',
+                'RGTI','BBAI','UPST','CVNA','SNAP','ROKU','PINS','CELH','SMR','VST','BABA','TSM']
+
+def _yahoo_5m_days(sym, rng="1mo"):
+    """Fetch 5-min bars and group into US regular-session days (09:30–16:00 ET).
+    Returns (list of (day_int, [(sod,o,h,l,c,v,epoch),...]) sorted, gmt_offset_seconds)."""
+    import urllib.request, json as _json
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval=5m&includePrePost=false"
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=25) as r:
+        d = _json.load(r)
+    res = d['chart']['result'][0]; meta = res.get('meta', {})
+    ts = res.get('timestamp') or []; q = res['indicators']['quote'][0]
+    gmt = meta.get('gmtoffset', 0); days = {}
+    for i in range(len(ts)):
+        o, h, l, c, v = q['open'][i], q['high'][i], q['low'][i], q['close'][i], q['volume'][i]
+        if None in (o, h, l, c): continue
+        loc = ts[i] + gmt; sod = loc % 86400; day = loc // 86400
+        if 34200 <= sod < 57600:
+            days.setdefault(day, []).append((sod, o, h, l, c, v or 0, ts[i]))
+    return [(day, sorted(days[day])) for day in sorted(days)], gmt
+
 def _yahoo_ohlc(sym, rng="2y"):
     import urllib.request, json as _json, datetime as _dt
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval=1d"
@@ -1516,6 +1542,65 @@ def send_daily_digest(dry=False):
     print(f"[digest] sent via SMTP to {to}"); return ok('smtp')
 
 
+def run_orb_scan(or_min=15):
+    """Opening-Range Breakout setups for today's movers. For each name: the first
+    `or_min` minutes' high/low define the range; long = break above (stop = range
+    low), short = break below (stop = range high); flag 'in play' (RVOL≥1.5 or
+    |gap|≥2%). 5-yr-of-evidence + our backtest: trade in-play names, hold to close."""
+    import datetime as _dt
+    or_end = 34200 + or_min*60; need = or_min // 5
+    setups = []; gmt0 = -14400; session_day = None
+    for sym in ORB_UNIVERSE:
+        try: sessions, gmt = _yahoo_5m_days(sym)
+        except Exception: continue
+        if len(sessions) < 3: continue
+        gmt0 = gmt
+        today, trows = sessions[-1]
+        prev_close = sessions[-2][1][-1][4]
+        or_bars = [r for r in trows if r[0] < or_end]
+        if not or_bars: continue
+        complete = len(or_bars) >= need
+        or_high = max(r[2] for r in or_bars); or_low = min(r[3] for r in or_bars)
+        if not or_high > or_low: continue
+        price = trows[-1][4]
+        gap = round((or_bars[0][1]/prev_close - 1)*100, 2) if prev_close else 0.0
+        ov = sum(r[5] for r in or_bars); pv = []
+        for d, rows in sessions[:-1][-10:]:
+            ob = [r for r in rows if r[0] < or_end]
+            if ob: pv.append(sum(x[5] for x in ob))
+        rvol = round(ov/(sum(pv)/len(pv)), 2) if pv and sum(pv) else None
+        in_play = (rvol is not None and rvol >= 1.5) or abs(gap) >= 2.0
+        post = [r for r in trows if r[0] >= or_end]
+        side = None; status = 'OR forming'
+        if complete:
+            status = 'armed'
+            for r in post:
+                if r[2] >= or_high: side = 'LONG'; status = 'broke up'; break
+                if r[3] <= or_low:  side = 'SHORT'; status = 'broke down'; break
+        risk = round(or_high - or_low, 2)
+        cpv = cv = 0.0; vwap = []
+        for r in trows:
+            tp = (r[2]+r[3]+r[4])/3; cpv += tp*r[5]; cv += r[5]
+            vwap.append(round(cpv/cv, 4) if cv else round(r[4], 4))
+        ohlc = [[r[6], round(r[1],4), round(r[2],4), round(r[3],4), round(r[4],4)] for r in trows]
+        session_day = today
+        setups.append({
+            'sym': sym, 'price': round(price, 4), 'or_high': round(or_high, 4), 'or_low': round(or_low, 4),
+            'gap': gap, 'rvol': rvol, 'in_play': bool(in_play), 'complete': bool(complete),
+            'status': status, 'side': side, 'risk': risk, 'risk_pct': round(risk/price*100, 2),
+            'dist_up': round((or_high-price)/price*100, 2), 'dist_dn': round((price-or_low)/price*100, 2),
+            'ohlc': ohlc, 'vwap': vwap,
+        })
+        time.sleep(0.05)
+    now_et = time.time() + gmt0; sod = int(now_et) % 86400
+    sd = _dt.datetime.utcfromtimestamp(session_day*86400).strftime('%a %b %-d') if session_day else ''
+    live = bool(session_day) and (session_day == int(now_et)//86400)
+    mkt = ('open' if (live and 34200 <= sod < 57600) else ('closed (after hours)' if live else 'pre-market / last session'))
+    setups.sort(key=lambda x: (not x['in_play'], x['status'] != 'armed', -(x['rvol'] or 0)))
+    return {'setups': setups, 'session': sd, 'market': mkt, 'live': live,
+            'in_play': sum(1 for s in setups if s['in_play']), 'scanned': len(ORB_UNIVERSE), 'or_min': or_min}
+
+
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
 
 class Handler(SimpleHTTPRequestHandler):
@@ -1613,6 +1698,25 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_response(500); self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
                 self.wfile.write(json.dumps({'ok': False, 'error': err}).encode())
+            return
+
+        if parsed.path == '/orb-scan':
+            try:
+                print("\n[orb] Opening-range scan …")
+                result  = cached_ml('orb:scan', run_orb_scan, ttl=120)   # 2-min cache (intraday)
+                payload = json.dumps(result).encode()
+                print(f"[orb] Done → {result['in_play']} in-play of {len(result['setups'])}")
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers(); self.wfile.write(payload)
+            except Exception:
+                err = traceback.format_exc(); print(f"[orb] ERROR:\n{err}")
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': err}).encode())
             return
 
         if parsed.path == '/quad':
