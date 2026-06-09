@@ -1622,6 +1622,15 @@ function etfRow(a, chartFn) {
   if (a.vol_ok)   sig += `<span class="wl-badge" style="background:#2dd4a022;color:var(--green);border-color:#2dd4a044" title="Breakout volume ${a.vol_surge}× the 20-day average">Vol ${a.vol_surge}×</span>`;
   if (a.retested) sig += `<span class="wl-badge" style="background:#f5a62322;color:var(--amber);border-color:#f5a62344" title="Broke out, pulled back to the level and held">Retest&#10003;</span>`;
   if (!sig) sig = '<span class="c-muted" style="font-size:10px">—</span>';
+  // revenue ↔ macro correlation (stocks only; ETFs have no revenue → —)
+  let revCell = '<span class="c-muted">—</span>';
+  if (a.rev_corr && a.rev_corr.top) {
+    const rc = a.rev_corr, c = rc.top.corr;
+    const yoyTxt = rc.yoy == null ? 'n/a' : (rc.yoy>=0?'+':'') + rc.yoy + '%';
+    const tip = `Revenue's strongest macro link over ${rc.n} quarters (⚠ only ${rc.n} points — low confidence, trends can correlate spuriously). Latest rev $${rc.latest_b}B, YoY ${yoyTxt}.  ` + rc.all.map(x=>`${x.name} ${x.corr>=0?'+':''}${x.corr}`).join(' · ');
+    const nm = rc.top.name.length>11 ? rc.top.name.slice(0,10)+'…' : rc.top.name;
+    revCell = `<span class="${c>=0?'c-green':'c-red'}" title="${tip}">${nm} ${c>=0?'+':''}${c}</span><br><span class="c-muted" style="font-size:9px">YoY ${yoyTxt}</span>`;
+  }
   return `<tr style="cursor:pointer" onclick="${chartFn}('${a.sym}')">
     <td class="ticker-cell">${a.sym}<button class="track-btn" title="Add ${a.sym} to My Positions at the current price" onclick="event.stopPropagation();trackFromScan('${a.sym}',this)">+ track</button></td>
     <td class="r">$${a.price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
@@ -1633,6 +1642,7 @@ function etfRow(a, chartFn) {
     <td>${sig}</td>
     <td class="r c-muted">${(a.avgvol/1e6).toFixed(1)}M</td>
     <td class="r c-muted">${expStr}</td>
+    <td class="r" style="font-size:11px">${revCell}</td>
     <td class="r"><div class="score-bar-wrap"><span style="min-width:36px;text-align:right">${a.score}</span></div></td>
   </tr>`;
 }
@@ -1641,13 +1651,14 @@ function etfRow(a, chartFn) {
 const ETF_COLS = [
   ['sym','Ticker',''], ['price','Price','r'], ['entry','Buy / Stop','r'],
   ['dist','Position','r'], ['rs','RS','r'], ['touches','Tests','r'],
-  ['confirm','Confirm',''], ['avgvol','Avg Vol','r'], ['expense','Expense','r'], ['score','Score','r']
+  ['confirm','Confirm',''], ['avgvol','Avg Vol','r'], ['expense','Expense','r'], ['revcorr','Rev↔Macro','r'], ['score','Score','r']
 ];
 const ETF_SORTV = {
   sym:a=>a.sym, price:a=>a.price, entry:a=>(a.entry??a.level),
   dist:a=>a.signal==='BREAKOUT'?(a.price/a.level-1):-(a.level/a.price-1),
   rs:a=>(a.rs_rating ?? a.rs ?? -999), touches:a=>a.touches, confirm:a=>(a.vol_ok?2:0)+(a.retested?1:0),
-  avgvol:a=>a.avgvol, expense:a=>(a.expense??999), score:a=>a.score
+  avgvol:a=>a.avgvol, expense:a=>(a.expense??999),
+  revcorr:a=>(a.rev_corr&&a.rev_corr.top?Math.abs(a.rev_corr.top.corr):-1), score:a=>a.score
 };
 let etfSort = {};   // tableId -> {k, d}   (d: 1 = ascending, -1 = descending)
 function sortETF(id, k) {
