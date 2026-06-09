@@ -71,9 +71,47 @@ def rs_cell(a):
         return f"{'+' if a['rs'] > 0 else ''}{a['rs']}% vs SPY"
     return "—"
 
-def rows_html(items):
+def fmt_rev_b(b):
+    """Revenue ($B) → clean at-a-glance string: $120B / $15.2B / $450M."""
+    if b is None:
+        return '—'
+    if b >= 100:
+        return f"${round(b)}B"
+    if b >= 1:
+        s = f"{b:.1f}"
+        return f"${s[:-2] if s.endswith('.0') else s}B"
+    return f"${round(b * 1000)}M"
+
+def spark(vals):
+    """Email-safe Unicode block sparkline (no SVG — Gmail strips that)."""
+    blocks = '▁▂▃▄▅▆▇█'
+    if not vals:
+        return ''
+    lo, hi = min(vals), max(vals)
+    rng = (hi - lo) or 1
+    return ''.join(blocks[min(7, int((v - lo) / rng * 7))] for v in vals)
+
+def rev_cell(a):
+    """Latest revenue + trend sparkline + change %, for the Stocks table."""
+    rv = a.get('rev')
+    if not rv or not rv.get('quarters'):
+        return '<span style="color:#bbb">—</span>'
+    vals = [q['b'] for q in rv['quarters']]
+    col = '#1a8f5f' if rv.get('up') else '#c0392b'
+    arrow = '▲' if rv.get('up') else '▼'
+    chg = rv.get('change_pct')
+    chg_html = ''
+    if chg is not None:
+        cc = '#1a8f5f' if chg >= 0 else '#c0392b'
+        chg_html = f' <span style="color:{cc};font-weight:600">{"+" if chg >= 0 else ""}{chg}%</span>'
+    return (f'<b style="font-size:14px">{fmt_rev_b(vals[-1])}</b> '
+            f'<span style="color:{col};letter-spacing:1px">{spark(vals)}</span> '
+            f'<span style="color:{col}">{arrow}</span>{chg_html}')
+
+def rows_html(items, show_rev=False):
+    ncols = 8 if show_rev else 7
     if not items:
-        return '<tr><td colspan="7" style="padding:10px;color:#888">No names within ±%.1f%% of a breakout today.</td></tr>' % BAND
+        return f'<tr><td colspan="{ncols}" style="padding:10px;color:#888">No names within ±{BAND:.1f}% of a breakout today.</td></tr>'
     out = []
     for a in items:
         d = a['_dist']
@@ -82,6 +120,7 @@ def rows_html(items):
                else '<span style="color:#b8860b;font-weight:600">◇ approaching</span>')
         dstr = f"{'+' if d >= 0 else ''}{d:.1f}%"
         sec = a.get('sector') or ''
+        rev_td = f'<td style="padding:7px 10px;white-space:nowrap">{rev_cell(a)}</td>' if show_rev else ''
         out.append(
             f'<tr style="border-bottom:1px solid #eee">'
             f'<td style="padding:7px 10px;font-weight:700">{a["sym"]}</td>'
@@ -90,11 +129,13 @@ def rows_html(items):
             f'<td style="padding:7px 10px;text-align:right">{dstr}</td>'
             f'<td style="padding:7px 10px">{tag}</td>'
             f'<td style="padding:7px 10px;text-align:right">{rs_cell(a)}</td>'
+            f'{rev_td}'
             f'<td style="padding:7px 10px;text-align:right;font-weight:700">{a.get("score")}</td>'
             f'</tr>')
     return "\n".join(out)
 
-def table(title, items):
+def table(title, items, show_rev=False):
+    rev_th = '<th style="padding:7px 10px">Revenue (4Q)</th>' if show_rev else ''
     head = ('<tr style="background:#f4f4f7;text-align:left">'
             '<th style="padding:7px 10px">Ticker</th>'
             '<th style="padding:7px 10px;text-align:right">Price</th>'
@@ -102,10 +143,11 @@ def table(title, items):
             '<th style="padding:7px 10px;text-align:right">± Line</th>'
             '<th style="padding:7px 10px">Status</th>'
             '<th style="padding:7px 10px;text-align:right">RS</th>'
+            f'{rev_th}'
             '<th style="padding:7px 10px;text-align:right">Score</th></tr>')
     return (f'<h2 style="font:600 16px system-ui;margin:22px 0 8px">{title}</h2>'
             f'<table style="border-collapse:collapse;width:100%;font:13px system-ui;'
-            f'border:1px solid #eee">{head}{rows_html(items)}</table>')
+            f'border:1px solid #eee">{head}{rows_html(items, show_rev)}</table>')
 
 def main():
     print(f"Fetching scans from {URL} …")
@@ -123,7 +165,7 @@ def main():
             f'background:#5b8def;color:#fff;text-decoration:none;padding:10px 18px;'
             f'border-radius:8px;font:600 14px system-ui">Open the dashboard →</a></p>'
             f'{table(f"Top {TOPN} ETFs", etf)}'
-            f'{table(f"Top {TOPN} Stocks", stock)}'
+            f'{table(f"Top {TOPN} Stocks", stock, show_rev=True)}'
             f'<p style="color:#aaa;font:11px system-ui;margin-top:18px">'
             f'Auto-generated from your market dashboard. ▲ = just broke out · ◇ = about to. '
             f'Not financial advice.</p></div>')

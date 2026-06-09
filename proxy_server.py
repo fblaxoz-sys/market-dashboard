@@ -1454,9 +1454,35 @@ def send_daily_digest(dry=False):
         if a.get('rs_rating') is not None: return f"RS {a['rs_rating']}"
         if a.get('rs') is not None: return f"{'+' if a['rs']>0 else ''}{a['rs']}% vs SPY"
         return "—"
-    def row(a):
+    def fmt_rev_b(b):
+        if b is None: return '—'
+        if b >= 100: return f"${round(b)}B"
+        if b >= 1:
+            s = f"{b:.1f}"
+            return f"${s[:-2] if s.endswith('.0') else s}B"
+        return f"${round(b * 1000)}M"
+    def spark(vals):                       # email-safe Unicode sparkline (no SVG)
+        blocks = '▁▂▃▄▅▆▇█'
+        if not vals: return ''
+        lo, hi = min(vals), max(vals); rng = (hi - lo) or 1
+        return ''.join(blocks[min(7, int((v - lo) / rng * 7))] for v in vals)
+    def rev_cell(a):
+        rv = a.get('rev')
+        if not rv or not rv.get('quarters'): return '<span style="color:#bbb">—</span>'
+        vals = [q['b'] for q in rv['quarters']]
+        col = '#1a8f5f' if rv.get('up') else '#c0392b'
+        arrow = '▲' if rv.get('up') else '▼'
+        chg = rv.get('change_pct'); chg_html = ''
+        if chg is not None:
+            cc = '#1a8f5f' if chg >= 0 else '#c0392b'
+            chg_html = f' <span style="color:{cc};font-weight:600">{"+" if chg >= 0 else ""}{chg}%</span>'
+        return (f'<b style="font-size:14px">{fmt_rev_b(vals[-1])}</b> '
+                f'<span style="color:{col};letter-spacing:1px">{spark(vals)}</span> '
+                f'<span style="color:{col}">{arrow}</span>{chg_html}')
+    def row(a, show_rev=False):
         broke = a.get('signal') == 'BREAKOUT'
         tag = '▲ broke out' if broke else '◇ approaching'
+        rev_td = f'<td style="padding:7px 10px;white-space:nowrap">{rev_cell(a)}</td>' if show_rev else ''
         return (f'<tr style="border-bottom:1px solid #eee">'
                 f'<td style="padding:7px 10px;font-weight:700">{a["sym"]}</td>'
                 f'<td style="padding:7px 10px;text-align:right">${a.get("price")}</td>'
@@ -1464,14 +1490,17 @@ def send_daily_digest(dry=False):
                 f'<td style="padding:7px 10px;text-align:right">{a["_dist"]:+}%</td>'
                 f'<td style="padding:7px 10px">{tag}</td>'
                 f'<td style="padding:7px 10px;text-align:right">{rs_cell(a)}</td>'
+                f'{rev_td}'
                 f'<td style="padding:7px 10px;text-align:right;font-weight:700">{a.get("score")}</td></tr>')
-    def table(title, items):
+    def table(title, items, show_rev=False):
+        rev_th = '<th style="padding:7px 10px">Revenue (4Q)</th>' if show_rev else ''
         head = ('<tr style="background:#f4f4f7;text-align:left">'
                 '<th style="padding:7px 10px">Ticker</th><th style="padding:7px 10px;text-align:right">Price</th>'
                 '<th style="padding:7px 10px;text-align:right">Breakout</th><th style="padding:7px 10px;text-align:right">± Line</th>'
                 '<th style="padding:7px 10px">Status</th><th style="padding:7px 10px;text-align:right">RS</th>'
+                f'{rev_th}'
                 '<th style="padding:7px 10px;text-align:right">Score</th></tr>')
-        body = ''.join(row(a) for a in items) or f'<tr><td colspan="7" style="padding:10px;color:#888">Nothing within ±{band:g}% today.</td></tr>'
+        body = ''.join(row(a, show_rev) for a in items) or f'<tr><td colspan="{8 if show_rev else 7}" style="padding:10px;color:#888">Nothing within ±{band:g}% today.</td></tr>'
         return (f'<h2 style="font:600 16px system-ui;margin:22px 0 8px">{title}</h2>'
                 f'<table style="border-collapse:collapse;width:100%;font:13px system-ui;border:1px solid #eee">{head}{body}</table>')
 
@@ -1481,7 +1510,7 @@ def send_daily_digest(dry=False):
     html = (f'<div style="max-width:680px;margin:0 auto">'
             f'<h1 style="font:700 20px system-ui;margin:0 0 4px">📈 Daily Swing Digest</h1>'
             f'<p style="color:#888;font:12px system-ui;margin:0 0 14px">{today} · within ±{band:g}% of the breakout line, ranked by score</p>'
-            f'{link}{table(f"Top {topn} ETFs", e_pick)}{table(f"Top {topn} Stocks", s_pick)}'
+            f'{link}{table(f"Top {topn} ETFs", e_pick)}{table(f"Top {topn} Stocks", s_pick, show_rev=True)}'
             f'<p style="color:#aaa;font:11px system-ui;margin-top:18px">Auto-generated from your market dashboard. '
             f'▲ = just broke out · ◇ = about to. Not financial advice.</p></div>')
 
