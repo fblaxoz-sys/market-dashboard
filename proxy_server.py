@@ -10,7 +10,7 @@ import urllib.request, urllib.parse, json, os, traceback, time, threading
 
 # Serialize heavy ML jobs (one at a time → avoids OOM on 512MB free tier) and
 # cache results so repeat clicks are instant instead of recomputing for minutes.
-_ML_LOCK  = threading.Lock()
+_ML_LOCK  = threading.RLock()   # reentrant: allows nested cached_ml (e.g. factor-beta)
 _ML_CACHE = {}          # key -> (timestamp, result_dict)
 _ML_TTL   = 6 * 3600    # serve cached result for 6 hours
 
@@ -1012,7 +1012,7 @@ QUAD_PLAYBOOK = {
 
 def _yahoo_ohlc(sym, rng="2y"):
     import urllib.request, json as _json, datetime as _dt
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval=1d"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym.replace('^','%5E')}?range={rng}&interval=1d"
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     with urllib.request.urlopen(req, timeout=20) as r:
         d = _json.load(r)
@@ -1516,6 +1516,65 @@ def send_daily_digest(dry=False):
     print(f"[digest] sent via SMTP to {to}"); return ok('smtp')
 
 
+# Macro factors a stock can be correlated to (name, Yahoo symbol)
+FACTORS = [('S&P 500','SPY'), ('Nasdaq 100','QQQ'), ('Russell 2000','IWM'),
+           ('US Dollar','UUP'), ('Gold','GLD'), ('Silver','SLV'), ('Crude Oil','USO'),
+           ('Long Treasuries','TLT'), ('Bitcoin','BTC-USD'), ('Volatility (VIX)','^VIX'),
+           ('Semiconductors','SMH'), ('High-Yield Bonds','HYG')]
+
+def _factor_closes():
+    """{factor name: {date: close}} for all macro factors (1y daily). Cached."""
+    out = {}
+    for name, sym in FACTORS:
+        try:
+            rows = _yahoo_ohlc(sym, '1y')
+            out[name] = {r[0]: r[4] for r in rows}
+        except Exception:
+            out[name] = {}
+        time.sleep(0.1)
+    return out
+
+def run_factor_beta(sym):
+    """6-month correlation + beta of a stock's daily returns vs each macro factor."""
+    import numpy as np
+    rows = _yahoo_ohlc(sym, '1y')
+    if len(rows) < 40:
+        return {'error': f'Not enough price history for {sym}'}
+    closes = {r[0]: r[4] for r in rows}
+    sdates = [r[0] for r in rows][-127:]            # ~6 months of trading days
+    factors = cached_ml('factor:data', _factor_closes, ttl=1800)
+    results = []
+    for name, fsym in FACTORS:
+        fmap = factors.get(name, {})
+        common = [d for d in sdates if d in fmap and fmap[d] and d in closes and closes[d]]
+        if len(common) < 30:
+            continue
+        sr, fr = [], []
+        for i in range(1, len(common)):
+            d0, d1 = common[i-1], common[i]
+            sr.append(closes[d1]/closes[d0] - 1); fr.append(fmap[d1]/fmap[d0] - 1)
+        sr = np.array(sr); fr = np.array(fr)
+        if len(sr) < 20 or sr.std() == 0 or fr.std() == 0:
+            continue
+        corr = float(np.corrcoef(sr, fr)[0, 1])
+        beta = float(np.cov(sr, fr, ddof=0)[0, 1] / np.var(fr))
+        results.append({'name': name, 'symbol': fsym, 'corr': round(corr, 2),
+                        'beta': round(beta, 2), 'r2': round(corr*corr, 2), 'n': len(sr)})
+    results.sort(key=lambda x: -abs(x['corr']))
+    # normalized overlay (start = 100) for the stock + S&P / Dollar / Gold
+    def norm(closemap):
+        out = []; base = None
+        for d in sdates:
+            v = closemap.get(d)
+            if v and base is None: base = v
+            out.append(round(v/base*100, 2) if (v and base) else None)
+        return out
+    overlay = {'dates': sdates, 'series': {sym.upper(): norm(closes)}}
+    for nm in ('S&P 500', 'US Dollar', 'Gold'):
+        overlay['series'][nm] = norm(factors.get(nm, {}))
+    return {'sym': sym.upper(), 'days': len(sdates), 'factors': results, 'overlay': overlay}
+
+
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
 
 class Handler(SimpleHTTPRequestHandler):
@@ -1613,6 +1672,27 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_response(500); self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
                 self.wfile.write(json.dumps({'ok': False, 'error': err}).encode())
+            return
+
+        if parsed.path == '/factor-beta':
+            qs = urllib.parse.parse_qs(parsed.query)
+            sym = (qs.get('sym', [''])[0] or '').upper().strip()
+            if not sym:
+                self.send_error(400, 'sym required'); return
+            try:
+                print(f"\n[factor] {sym} …")
+                result  = cached_ml(f"factor:{sym}", lambda: run_factor_beta(sym), ttl=1800)
+                payload = json.dumps(result).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers(); self.wfile.write(payload)
+            except Exception as e:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': str(e)}).encode())
             return
 
         if parsed.path == '/quad':
