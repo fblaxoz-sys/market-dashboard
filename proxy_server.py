@@ -1412,6 +1412,86 @@ def run_quad(fred_key):
     }
 
 
+def send_daily_digest(dry=False):
+    """Build & email the top ETFs/stocks within ±DIGEST_BAND% of their breakout
+    line, ranked by score. Creds from env (set on Render). dry=True skips the send."""
+    import smtplib, ssl
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from datetime import datetime, timezone
+    user = os.environ.get('GMAIL_USER') or ''
+    pwd  = os.environ.get('GMAIL_APP_PASSWORD') or ''
+    to   = os.environ.get('DIGEST_TO') or user
+    base = (os.environ.get('DASHBOARD_URL') or os.environ.get('RENDER_EXTERNAL_URL') or '').rstrip('/')
+    band = float(os.environ.get('DIGEST_BAND') or '2.5')
+    topn = int(os.environ.get('DIGEST_TOPN') or '10')
+    if not dry and not (user and pwd):
+        return {'ok': False, 'error': 'GMAIL_USER / GMAIL_APP_PASSWORD env vars not set on the server'}
+
+    etf   = cached_ml('etf:scan',   lambda: run_etf_scan(None, None))
+    stock = cached_ml('stock:scan', lambda: run_etf_scan(None, STOCK_UNIVERSE, is_stock=True))
+    def pick(scan):
+        rows = (scan.get('breakouts') or []) + (scan.get('approaching') or [])
+        out = []
+        for a in rows:
+            lvl, px = a.get('level'), a.get('price')
+            if not lvl or not px: continue
+            d = (px/lvl - 1) * 100
+            if abs(d) <= band: out.append(dict(a, _dist=round(d, 1)))
+        out.sort(key=lambda x: -(x.get('score') or 0))
+        return out[:topn]
+    e_pick, s_pick = pick(etf), pick(stock)
+
+    def rs_cell(a):
+        if a.get('rs_rating') is not None: return f"RS {a['rs_rating']}"
+        if a.get('rs') is not None: return f"{'+' if a['rs']>0 else ''}{a['rs']}% vs SPY"
+        return "—"
+    def row(a):
+        broke = a.get('signal') == 'BREAKOUT'
+        tag = '▲ broke out' if broke else '◇ approaching'
+        return (f'<tr style="border-bottom:1px solid #eee">'
+                f'<td style="padding:7px 10px;font-weight:700">{a["sym"]}</td>'
+                f'<td style="padding:7px 10px;text-align:right">${a.get("price")}</td>'
+                f'<td style="padding:7px 10px;text-align:right">${a.get("level")}</td>'
+                f'<td style="padding:7px 10px;text-align:right">{a["_dist"]:+}%</td>'
+                f'<td style="padding:7px 10px">{tag}</td>'
+                f'<td style="padding:7px 10px;text-align:right">{rs_cell(a)}</td>'
+                f'<td style="padding:7px 10px;text-align:right;font-weight:700">{a.get("score")}</td></tr>')
+    def table(title, items):
+        head = ('<tr style="background:#f4f4f7;text-align:left">'
+                '<th style="padding:7px 10px">Ticker</th><th style="padding:7px 10px;text-align:right">Price</th>'
+                '<th style="padding:7px 10px;text-align:right">Breakout</th><th style="padding:7px 10px;text-align:right">± Line</th>'
+                '<th style="padding:7px 10px">Status</th><th style="padding:7px 10px;text-align:right">RS</th>'
+                '<th style="padding:7px 10px;text-align:right">Score</th></tr>')
+        body = ''.join(row(a) for a in items) or f'<tr><td colspan="7" style="padding:10px;color:#888">Nothing within ±{band:g}% today.</td></tr>'
+        return (f'<h2 style="font:600 16px system-ui;margin:22px 0 8px">{title}</h2>'
+                f'<table style="border-collapse:collapse;width:100%;font:13px system-ui;border:1px solid #eee">{head}{body}</table>')
+
+    today = datetime.now(timezone.utc).strftime('%a %b %d, %Y')
+    link = (f'<p style="margin:0 0 16px"><a href="{base}" style="display:inline-block;background:#5b8def;'
+            f'color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font:600 14px system-ui">Open the dashboard →</a></p>') if base else ''
+    html = (f'<div style="max-width:680px;margin:0 auto">'
+            f'<h1 style="font:700 20px system-ui;margin:0 0 4px">📈 Daily Swing Digest</h1>'
+            f'<p style="color:#888;font:12px system-ui;margin:0 0 14px">{today} · within ±{band:g}% of the breakout line, ranked by score</p>'
+            f'{link}{table(f"Top {topn} ETFs", e_pick)}{table(f"Top {topn} Stocks", s_pick)}'
+            f'<p style="color:#aaa;font:11px system-ui;margin-top:18px">Auto-generated from your market dashboard. '
+            f'▲ = just broke out · ◇ = about to. Not financial advice.</p></div>')
+
+    if dry:
+        return {'ok': True, 'dry': True, 'etf': [a['sym'] for a in e_pick],
+                'stock': [a['sym'] for a in s_pick], 'html_len': len(html), 'to': to}
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = f"📈 Daily Swing Digest — {today}"
+    msg['From'] = user; msg['To'] = to
+    msg.attach(MIMEText("Open in an HTML-capable client to see the tables.", 'plain'))
+    msg.attach(MIMEText(html, 'html'))
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=ssl.create_default_context()) as s:
+        s.login(user, pwd)
+        s.sendmail(user, [t.strip() for t in to.split(',')], msg.as_string())
+    print(f"[digest] sent to {to}: ETF {[a['sym'] for a in e_pick]} | Stock {[a['sym'] for a in s_pick]}")
+    return {'ok': True, 'to': to, 'etf': [a['sym'] for a in e_pick], 'stock': [a['sym'] for a in s_pick]}
+
+
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
 
 class Handler(SimpleHTTPRequestHandler):
@@ -1482,6 +1562,33 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(json.dumps({'error': err}).encode())
+            return
+
+        if parsed.path == '/send-digest':
+            qs = urllib.parse.parse_qs(parsed.query)
+            token = qs.get('token', [''])[0]
+            want  = os.environ.get('DIGEST_TOKEN') or ''
+            if not want or token != want:
+                self.send_response(403); self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
+                self.wfile.write(json.dumps({'ok': False, 'error': 'bad or missing token'}).encode()); return
+            sync = ('sync' in qs) or ('dry' in qs)
+            dry  = 'dry' in qs
+            try:
+                if sync:
+                    result = send_daily_digest(dry=dry)
+                    code = 200 if result.get('ok') else 500
+                else:
+                    threading.Thread(target=lambda: send_daily_digest(), daemon=True).start()
+                    result, code = {'ok': True, 'status': 'digest started'}, 200
+                self.send_response(code); self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
+                self.wfile.write(json.dumps(result).encode())
+            except Exception:
+                err = traceback.format_exc(); print(f"[digest] ERROR:\n{err}")
+                self.send_response(500); self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
+                self.wfile.write(json.dumps({'ok': False, 'error': err}).encode())
             return
 
         if parsed.path == '/quad':
