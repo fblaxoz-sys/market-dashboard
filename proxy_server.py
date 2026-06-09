@@ -1556,6 +1556,9 @@ FACTORS = [('S&P 500','SPY'), ('Nasdaq 100','QQQ'), ('Russell 2000','IWM'),
            ('Long Treasuries','TLT'), ('Bitcoin','BTC-USD'), ('Volatility (VIX)','^VIX'),
            ('Semiconductors','SMH'), ('High-Yield Bonds','HYG')]
 
+# Look-back windows for the Correlations tab, in approx. trading days.
+CORR_WINDOWS = [('15d', '15D', 15), ('1m', '1M', 21), ('3m', '3M', 63), ('6m', '6M', 127)]
+
 def _factor_closes():
     """{factor name: {date: close}} for all macro factors (2y daily). Cached."""
     out = {}
@@ -1610,33 +1613,50 @@ def _revenue_summary(sym):
     }
 
 def run_factor_beta(sym):
-    """6-month correlation + beta of a stock's daily returns vs each macro factor."""
+    """Correlation + beta of a stock's daily returns vs each macro factor, across
+    multiple look-back windows (15D / 1M / 3M / 6M) in a single response."""
     import numpy as np
     rows = _yahoo_ohlc(sym, '1y')
     if len(rows) < 40:
         return {'error': f'Not enough price history for {sym}'}
     closes = {r[0]: r[4] for r in rows}
-    sdates = [r[0] for r in rows][-127:]            # ~6 months of trading days
+    sdates = [r[0] for r in rows][-127:]            # up to ~6 months of trading days
     factors = cached_ml('factor:data', _factor_closes, ttl=1800)
+
+    def stats(sr, fr):
+        sr = np.array(sr); fr = np.array(fr)
+        if len(sr) < 8 or sr.std() == 0 or fr.std() == 0:
+            return None
+        corr = float(np.corrcoef(sr, fr)[0, 1])
+        beta = float(np.cov(sr, fr, ddof=0)[0, 1] / np.var(fr))
+        return {'corr': round(corr, 2), 'beta': round(beta, 2),
+                'r2': round(corr*corr, 2), 'n': int(len(sr))}
+
     results = []
     for name, fsym in FACTORS:
         fmap = factors.get(name, {})
         common = [d for d in sdates if d in fmap and fmap[d] and d in closes and closes[d]]
-        if len(common) < 30:
+        if len(common) < 16:                        # need ~15 days for the shortest window
             continue
         sr, fr = [], []
         for i in range(1, len(common)):
             d0, d1 = common[i-1], common[i]
             sr.append(closes[d1]/closes[d0] - 1); fr.append(fmap[d1]/fmap[d0] - 1)
-        sr = np.array(sr); fr = np.array(fr)
-        if len(sr) < 20 or sr.std() == 0 or fr.std() == 0:
+        w = {}
+        for key, _lbl, ndays in CORR_WINDOWS:
+            k = min(ndays - 1, len(sr))             # last (ndays-1) daily returns
+            w[key] = stats(sr[-k:], fr[-k:]) if k >= 8 else None
+        if not any(w.values()):
             continue
-        corr = float(np.corrcoef(sr, fr)[0, 1])
-        beta = float(np.cov(sr, fr, ddof=0)[0, 1] / np.var(fr))
-        results.append({'name': name, 'symbol': fsym, 'corr': round(corr, 2),
-                        'beta': round(beta, 2), 'r2': round(corr*corr, 2), 'n': len(sr)})
-    results.sort(key=lambda x: -abs(x['corr']))
-    # normalized overlay (start = 100) for the stock + S&P / Dollar / Gold
+        results.append({'name': name, 'symbol': fsym, 'w': w})
+    # rank by the strongest available correlation (prefer the longest window)
+    def _abscorr(x):
+        for key in ('6m', '3m', '1m', '15d'):
+            if x['w'].get(key): return abs(x['w'][key]['corr'])
+        return 0
+    results.sort(key=lambda x: -_abscorr(x))
+
+    # normalized overlay (start = 100) for the stock + S&P / Dollar / Gold (full 6M; client slices per window)
     def norm(closemap):
         out = []; base = None
         for d in sdates:
@@ -1647,7 +1667,8 @@ def run_factor_beta(sym):
     overlay = {'dates': sdates, 'series': {sym.upper(): norm(closes)}}
     for nm in ('S&P 500', 'US Dollar', 'Gold'):
         overlay['series'][nm] = norm(factors.get(nm, {}))
-    return {'sym': sym.upper(), 'days': len(sdates), 'factors': results, 'overlay': overlay}
+    windows = [{'key': k, 'label': lbl, 'days': n} for k, lbl, n in CORR_WINDOWS]
+    return {'sym': sym.upper(), 'windows': windows, 'factors': results, 'overlay': overlay}
 
 
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
