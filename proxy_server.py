@@ -1419,14 +1419,17 @@ def send_daily_digest(dry=False):
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     from datetime import datetime, timezone
-    user = os.environ.get('GMAIL_USER') or ''
-    pwd  = os.environ.get('GMAIL_APP_PASSWORD') or ''
-    to   = os.environ.get('DIGEST_TO') or user
+    user   = os.environ.get('GMAIL_USER') or ''
+    pwd    = os.environ.get('GMAIL_APP_PASSWORD') or ''
+    sg_key = os.environ.get('SENDGRID_API_KEY') or ''
+    bv_key = os.environ.get('BREVO_API_KEY') or ''
+    to     = os.environ.get('DIGEST_TO') or user
+    frm    = os.environ.get('DIGEST_FROM') or user
     base = (os.environ.get('DASHBOARD_URL') or os.environ.get('RENDER_EXTERNAL_URL') or '').rstrip('/')
     band = float(os.environ.get('DIGEST_BAND') or '2.5')
     topn = int(os.environ.get('DIGEST_TOPN') or '10')
-    if not dry and not (user and pwd):
-        return {'ok': False, 'error': 'GMAIL_USER / GMAIL_APP_PASSWORD env vars not set on the server'}
+    if not dry and not (sg_key or bv_key or (user and pwd)):
+        return {'ok': False, 'error': 'No email method set. On Render add SENDGRID_API_KEY or BREVO_API_KEY (HTTPS — SMTP is blocked on Render).'}
 
     etf   = cached_ml('etf:scan',   lambda: run_etf_scan(None, None))
     stock = cached_ml('stock:scan', lambda: run_etf_scan(None, STOCK_UNIVERSE, is_stock=True))
@@ -1480,16 +1483,37 @@ def send_daily_digest(dry=False):
     if dry:
         return {'ok': True, 'dry': True, 'etf': [a['sym'] for a in e_pick],
                 'stock': [a['sym'] for a in s_pick], 'html_len': len(html), 'to': to}
+    recips = [t.strip() for t in to.split(',') if t.strip()]
+    subject = f"📈 Daily Swing Digest — {today}"
+    ok = lambda via: {'ok': True, 'via': via, 'to': to,
+                      'etf': [a['sym'] for a in e_pick], 'stock': [a['sym'] for a in s_pick]}
+
+    if sg_key:                       # SendGrid HTTP API (port 443 — works on Render)
+        payload = json.dumps({'personalizations': [{'to': [{'email': e} for e in recips]}],
+                              'from': {'email': frm}, 'subject': subject,
+                              'content': [{'type': 'text/html', 'value': html}]}).encode()
+        req = urllib.request.Request('https://api.sendgrid.com/v3/mail/send', data=payload,
+                headers={'Authorization': f'Bearer {sg_key}', 'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=30) as r: r.read()
+        print(f"[digest] sent via SendGrid to {recips}"); return ok('sendgrid')
+
+    if bv_key:                       # Brevo HTTP API (port 443 — works on Render)
+        payload = json.dumps({'sender': {'email': frm}, 'to': [{'email': e} for e in recips],
+                              'subject': subject, 'htmlContent': html}).encode()
+        req = urllib.request.Request('https://api.brevo.com/v3/smtp/email', data=payload,
+                headers={'api-key': bv_key, 'Content-Type': 'application/json', 'accept': 'application/json'})
+        with urllib.request.urlopen(req, timeout=30) as r: r.read()
+        print(f"[digest] sent via Brevo to {recips}"); return ok('brevo')
+
+    # Gmail SMTP fallback — works locally / on GitHub, but Render blocks outbound SMTP
     msg = MIMEMultipart('alternative')
-    msg['Subject'] = f"📈 Daily Swing Digest — {today}"
-    msg['From'] = user; msg['To'] = to
+    msg['Subject'] = subject; msg['From'] = user; msg['To'] = to
     msg.attach(MIMEText("Open in an HTML-capable client to see the tables.", 'plain'))
     msg.attach(MIMEText(html, 'html'))
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=ssl.create_default_context()) as s:
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465, context=ssl.create_default_context(), timeout=20) as s:
         s.login(user, pwd)
-        s.sendmail(user, [t.strip() for t in to.split(',')], msg.as_string())
-    print(f"[digest] sent to {to}: ETF {[a['sym'] for a in e_pick]} | Stock {[a['sym'] for a in s_pick]}")
-    return {'ok': True, 'to': to, 'etf': [a['sym'] for a in e_pick], 'stock': [a['sym'] for a in s_pick]}
+        s.sendmail(user, recips, msg.as_string())
+    print(f"[digest] sent via SMTP to {to}"); return ok('smtp')
 
 
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
