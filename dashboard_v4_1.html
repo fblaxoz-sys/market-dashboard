@@ -1617,7 +1617,7 @@ function fmtRev(b) {
 }
 // Tiny inline SVG sparkline of the last few quarters' revenue
 function revSpark(vals, up) {
-  const w = 44, h = 15, n = vals.length;
+  const w = 60, h = 20, n = vals.length;
   const min = Math.min(...vals), max = Math.max(...vals), rng = (max - min) || 1;
   const xy = vals.map((v, i) => [
     n > 1 ? (i / (n - 1)) * (w - 4) + 2 : w / 2,
@@ -1626,9 +1626,9 @@ function revSpark(vals, up) {
   const pts = xy.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
   const last = xy[xy.length - 1];
   const col = up ? 'var(--green)' : 'var(--red)';
-  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="vertical-align:middle;margin:0 4px" aria-hidden="true">`
-    + `<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>`
-    + `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="1.8" fill="${col}"/></svg>`;
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="vertical-align:middle" aria-hidden="true">`
+    + `<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`
+    + `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.4" fill="${col}"/></svg>`;
 }
 function etfRow(a, chartFn) {
   chartFn = chartFn || 'showETFChart';
@@ -1650,11 +1650,11 @@ function etfRow(a, chartFn) {
     const rv = a.rev;
     const vals = rv.quarters.map(q=>q.b);
     const latest = vals[vals.length-1];
-    const chg = rv.change_pct==null ? '' : `<span class="${rv.change_pct>=0?'c-green':'c-red'}" style="font-size:10px">${rv.change_pct>=0?'+':''}${rv.change_pct}%</span>`;
+    const chg = rv.change_pct==null ? '' : `<span class="${rv.change_pct>=0?'c-green':'c-red'}" style="font-size:13px;font-weight:700">${rv.change_pct>=0?'+':''}${rv.change_pct}%</span>`;
     const tip = `Last ${rv.n} quarters revenue ($B): ` + rv.quarters.map(q=>`${q.date} $${q.b}`).join(' · ') + (rv.yoy!=null?` · YoY ${rv.yoy>=0?'+':''}${rv.yoy}%`:'');
-    revCell = `<span title="${tip}" style="display:inline-flex;align-items:center;gap:2px;white-space:nowrap">`
-      + `<b style="font-size:12px">${fmtRev(latest)}</b>${revSpark(vals, rv.up)}${chg}</span><br>`
-      + `<button title="See ${a.sym}'s beta & correlations" onclick="event.stopPropagation();gotoCorr('${a.sym}')" style="margin-top:2px;font-size:9px;padding:1px 6px;border-radius:5px;border:1px solid #5b8def55;background:#5b8def15;color:#5b8def;cursor:pointer;font-family:inherit;">corr →</button>`;
+    revCell = `<span title="${tip}" style="display:inline-flex;align-items:center;gap:10px;white-space:nowrap">`
+      + `<b style="font-size:16px;font-weight:800">${fmtRev(latest)}</b>${revSpark(vals, rv.up)}${chg}</span>`
+      + `<div style="margin-top:7px"><button title="See ${a.sym}'s beta & correlations" onclick="event.stopPropagation();gotoCorr('${a.sym}')" style="font-size:10px;padding:2px 8px;border-radius:5px;border:1px solid #5b8def55;background:#5b8def15;color:#5b8def;cursor:pointer;font-family:inherit;">corr →</button></div>`;
   }
   return `<tr style="cursor:pointer" onclick="${chartFn}('${a.sym}')">
     <td class="ticker-cell">${a.sym}<button class="track-btn" title="Add ${a.sym} to My Positions at the current price" onclick="event.stopPropagation();trackFromScan('${a.sym}',this)">+ track</button></td>
