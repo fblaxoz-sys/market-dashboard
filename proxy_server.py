@@ -6,7 +6,37 @@ Local dev server for Market Dashboard.
   Everything else                             — static files from Downloads/
 """
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-import urllib.request, urllib.parse, json, os, traceback, time, threading
+import urllib.request, urllib.parse, json, os, traceback, time, threading, collections
+
+# ── Per-IP rate limiting on the expensive endpoints ───────────────────────────
+# The compute-heavy routes are unauthenticated, so a burst of hits (or a bot
+# varying ?sym=) could hammer the free instance and get our IP throttled by
+# Yahoo/FRED. Cap heavy requests per client IP per window (env-overridable).
+_RATE_LOCK  = threading.Lock()
+_RATE_HITS  = collections.defaultdict(list)        # client-ip -> [recent request times]
+RATE_LIMIT  = int(os.environ.get('RATE_LIMIT')  or '30')   # heavy requests …
+RATE_WINDOW = int(os.environ.get('RATE_WINDOW') or '60')   # … per this many seconds
+RATE_PATHS  = {'/etf-scan', '/stock-scan', '/factor-beta', '/inflation-nowcast',
+               '/gdp-nowcast', '/etf-backtest', '/stock-backtest'}
+
+def _client_ip(handler):
+    # Render puts the real client IP first in X-Forwarded-For; fall back to socket.
+    xff = handler.headers.get('X-Forwarded-For', '')
+    return xff.split(',')[0].strip() if xff else (
+        handler.client_address[0] if handler.client_address else '?')
+
+def _rate_ok(ip):
+    now = time.time(); cutoff = now - RATE_WINDOW
+    with _RATE_LOCK:
+        hits = _RATE_HITS[ip]
+        hits[:] = [t for t in hits if t > cutoff]   # drop expired
+        if len(hits) >= RATE_LIMIT:
+            return False
+        hits.append(now)
+        if len(_RATE_HITS) > 2000:                   # bound memory: evict idle IPs
+            for k in [k for k, v in _RATE_HITS.items() if not v or v[-1] < cutoff]:
+                del _RATE_HITS[k]
+        return True
 
 # Serialize heavy ML jobs (one at a time → avoids OOM on 512MB free tier) and
 # cache results so repeat clicks are instant instead of recomputing for minutes.
@@ -1698,6 +1728,16 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
+            return
+
+        # Throttle the expensive endpoints per client IP.
+        if parsed.path in RATE_PATHS and not _rate_ok(_client_ip(self)):
+            self.send_response(429)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Retry-After', str(RATE_WINDOW))
+            self.end_headers()
+            self.wfile.write(b'{"error":"Rate limited - too many requests, please slow down."}')
             return
 
         if parsed.path == '/fred-proxy':

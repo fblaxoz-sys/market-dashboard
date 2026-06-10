@@ -582,11 +582,53 @@ let fredData = {};
 let cpiChart = null;
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
 
+// ── Instant repeat visits: cache results in localStorage + deep-linkable tabs ──
+function lsSet(key, data) {
+  try { localStorage.setItem('mdz:' + key, JSON.stringify({ t: Date.now(), data })); } catch (e) {}
+}
+function lsGet(key) {
+  try { const r = JSON.parse(localStorage.getItem('mdz:' + key) || 'null'); return (r && r.data !== undefined) ? r : null; } catch (e) { return null; }
+}
+function agoStr(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? m + 'm ago' : Math.round(m / 60) + 'h ago';
+}
+// Re-render a cached ETF/Stock scan instantly when its tab opens (skips the 1-3 min rescan).
+function hydrateScan(tab) {
+  const has = d => d && ((d.breakouts && d.breakouts.length) || (d.approaching && d.approaching.length));
+  if (tab === 'etf' && !has(etfData)) {
+    const c = lsGet('etf'); if (!c) return;
+    etfData = c.data; renderETFTables();
+    const u = document.getElementById('etf-updated');
+    if (u) u.textContent = `Cached scan from ${agoStr(c.t)} · click Scan ETFs for fresh data`;
+  } else if (tab === 'stock' && !has(stockData)) {
+    const c = lsGet('stock'); if (!c) return;
+    stockData = c.data; renderStockTables();
+    const u = document.getElementById('stock-updated');
+    if (u) u.textContent = `Cached scan from ${agoStr(c.t)} · click Scan Stocks for fresh data`;
+  }
+}
+// Open the tab (and ticker) named in the URL hash, e.g. #stock or #corr/AAPL.
+function applyHashRoute() {
+  const raw = (location.hash || '').replace(/^#/, '');
+  if (!raw) return false;
+  const [tab, arg] = raw.split('/');
+  if (!['etf','stock','corr','positions','inflation','gdp'].includes(tab)) return false;
+  switchTab(tab);
+  if (tab === 'corr' && arg) {
+    const inp = document.getElementById('corr-sym');
+    if (inp) { inp.value = decodeURIComponent(arg).toUpperCase(); if (typeof runFactorBeta === 'function') runFactorBeta(); }
+  }
+  return true;
+}
+
 function switchTab(id) {
   const ids = ['etf','stock','corr','positions','inflation','gdp'];
   if (id === 'positions') setTimeout(renderPositions, 50);
   document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', ids[i] === id));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-'+id));
+  hydrateScan(id);
+  try { history.replaceState(null, '', '#' + id); } catch (e) {}
 }
 
 function showBadge(id, ok) {
@@ -1558,7 +1600,7 @@ async function runETFScan() {
     const d = await fetchJSON('/etf-scan', {onWake: () =>
       document.getElementById('etf-prog-lbl').textContent = 'Server waking up (free tier) — hang tight…'});
     if (d.error) throw new Error(d.error);
-    etfData = d;
+    etfData = d; lsSet('etf', d);
     document.getElementById('etf-prog-fill').style.width = '100%';
     renderETFTables();
     document.getElementById('etf-updated').textContent =
@@ -2053,7 +2095,7 @@ async function runStockScan() {
     const d = await fetchJSON('/stock-scan', {onWake: () =>
       document.getElementById('stock-prog-lbl').textContent = 'Server waking up (free tier) — hang tight…'});
     if (d.error) throw new Error(d.error);
-    stockData = d; document.getElementById('stock-prog-fill').style.width = '100%';
+    stockData = d; lsSet('stock', d); document.getElementById('stock-prog-fill').style.width = '100%';
     renderStockTables();
     document.getElementById('stock-updated').textContent =
       `Scanned ${d.scanned} stocks · ${d.approaching.length} approaching, ${d.breakouts.length} broke out`;
@@ -2216,6 +2258,7 @@ async function runFactorBeta() {
     if (d.error) throw new Error(d.error);
     if (!d.factors || !d.factors.length) throw new Error('no overlapping data');
     renderFactorBeta(d);
+    try { history.replaceState(null, '', '#corr/' + encodeURIComponent(sym)); } catch (e) {}
   } catch (e) {
     empty.textContent = `Couldn't analyze ${sym}: ${String(e.message||e).slice(0,120)}`;
     empty.style.display = '';
@@ -2328,6 +2371,11 @@ function renderCorrOverlay(days) {
     document.getElementById('gdp-fred-key').value=fredKey; showBadge('gdp-fred-badge',true);
   }
   const pd = document.getElementById('pos-date'); if (pd) pd.value = new Date().toISOString().slice(0,10);
+  // Deep-link route from the URL hash (#stock, #corr/AAPL…); otherwise show any cached ETF scan.
+  if (!applyHashRoute()) hydrateScan('etf');
+  // Also respond to later hash changes (pasted links, back/forward). switchTab uses
+  // replaceState (no hashchange event), so this can't loop.
+  window.addEventListener('hashchange', applyHashRoute);
 })();
 </script>
 </body>
