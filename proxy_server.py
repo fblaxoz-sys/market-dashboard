@@ -1690,6 +1690,16 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
+        # Cheap liveness probe for the keep-alive ping (avoids spinning up a scan
+        # or serving the 126KB page just to keep the free instance warm).
+        if parsed.path == '/healthz':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+            return
+
         if parsed.path == '/fred-proxy':
             qs  = urllib.parse.parse_qs(parsed.query)
             url = qs.get('url', [''])[0]
@@ -1757,7 +1767,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == '/send-digest':
-            qs = urllib.parse.parse_qs(parsed.query)
+            # keep_blank_values so bare flags (&dry, &force) register — otherwise
+            # parse_qs silently drops them and a "dry run" would actually send.
+            qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
             token = qs.get('token', [''])[0]
             want  = os.environ.get('DIGEST_TOKEN') or ''
             if not want or token != want:

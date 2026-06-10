@@ -1523,6 +1523,28 @@ function saveFmpKey() {
   showBadge('fmp-badge', true);
 }
 
+// Fetch JSON with a timeout + one automatic retry, plus a "server waking up"
+// hint (onWake) for Render free-tier cold starts. Prevents the UI from hanging
+// forever on a stalled request and recovers from a dropped cold-start connection.
+async function fetchJSON(url, { timeout = 180000, tries = 2, onWake } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), timeout);
+    const wake = onWake ? setTimeout(onWake, 6000) : null;
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      return await res.json();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < tries) await new Promise(r => setTimeout(r, 2000));
+    } finally {
+      clearTimeout(to); if (wake) clearTimeout(wake);
+    }
+  }
+  throw lastErr || new Error('request failed');
+}
+
 async function runETFScan() {
   const btn = document.getElementById('etf-scan-btn');
   btn.disabled = true;
@@ -1533,8 +1555,8 @@ async function runETFScan() {
   document.getElementById('etf-prog-fill').style.width = '40%';
 
   try {
-    const res = await fetch('/etf-scan');
-    const d   = await res.json();
+    const d = await fetchJSON('/etf-scan', {onWake: () =>
+      document.getElementById('etf-prog-lbl').textContent = 'Server waking up (free tier) — hang tight…'});
     if (d.error) throw new Error(d.error);
     etfData = d;
     document.getElementById('etf-prog-fill').style.width = '100%';
@@ -2028,7 +2050,8 @@ async function runStockScan() {
   document.getElementById('stock-prog-lbl').textContent = 'Scanning stocks for breakouts… (~1-2 min first run)';
   document.getElementById('stock-prog-fill').style.width = '40%';
   try {
-    const d = await (await fetch('/stock-scan')).json();
+    const d = await fetchJSON('/stock-scan', {onWake: () =>
+      document.getElementById('stock-prog-lbl').textContent = 'Server waking up (free tier) — hang tight…'});
     if (d.error) throw new Error(d.error);
     stockData = d; document.getElementById('stock-prog-fill').style.width = '100%';
     renderStockTables();
@@ -2188,7 +2211,8 @@ async function runFactorBeta() {
   document.getElementById('corr-result').style.display = 'none';
   empty.style.display = ''; empty.textContent = `Analyzing ${sym}… (first lookup ~10s)`;
   try {
-    const d = await (await fetch('/factor-beta?sym=' + encodeURIComponent(sym))).json();
+    const d = await fetchJSON('/factor-beta?sym=' + encodeURIComponent(sym), {timeout: 60000,
+      onWake: () => { empty.textContent = `Analyzing ${sym}… server waking up, hang tight…`; }});
     if (d.error) throw new Error(d.error);
     if (!d.factors || !d.factors.length) throw new Error('no overlapping data');
     renderFactorBeta(d);
