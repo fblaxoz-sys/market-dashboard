@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: '20'
       - name: Python syntax check
-        run: python -m py_compile proxy_server.py scripts/daily_digest.py feature_discovery.py
+        run: python -m py_compile proxy_server.py scripts/daily_digest.py
       - name: Digest unit tests
         run: python tests/test_digest.py
       - name: Frontend guardrails (syntax + feature presence + month math)
