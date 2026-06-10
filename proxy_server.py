@@ -1417,9 +1417,14 @@ def run_quad(fred_key):
     }
 
 
-def send_daily_digest(dry=False):
+_DIGEST_LOCK = threading.Lock()
+_last_digest_sent = None    # ISO date of the last real send — prevents double-sends
+
+def send_daily_digest(dry=False, force=False):
     """Build & email the top ETFs/stocks within ±DIGEST_BAND% of their breakout
-    line, ranked by score. Creds from env (set on Render). dry=True skips the send."""
+    line, ranked by score. Creds from env (set on Render). dry=True skips the send.
+    Idempotent: at most one real send per calendar day unless force=True."""
+    global _last_digest_sent
     import smtplib, ssl
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
@@ -1435,6 +1440,14 @@ def send_daily_digest(dry=False):
     topn = int(os.environ.get('DIGEST_TOPN') or '10')
     if not dry and not (sg_key or bv_key or (user and pwd)):
         return {'ok': False, 'error': 'No email method set. On Render add SENDGRID_API_KEY or BREVO_API_KEY (HTTPS — SMTP is blocked on Render).'}
+
+    import datetime as _dt
+    if not dry and not force:          # idempotent: claim today before the slow scan so retries skip
+        _today = _dt.date.today().isoformat()
+        with _DIGEST_LOCK:
+            if _last_digest_sent == _today:
+                return {'ok': True, 'skipped': True, 'note': 'already sent today', 'to': to}
+            _last_digest_sent = _today
 
     etf   = cached_ml('etf:scan',   lambda: run_etf_scan(None, None))
     stock = cached_ml('stock:scan', lambda: run_etf_scan(None, STOCK_UNIVERSE, is_stock=True))
@@ -1751,15 +1764,13 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_response(403); self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
                 self.wfile.write(json.dumps({'ok': False, 'error': 'bad or missing token'}).encode()); return
-            sync = ('sync' in qs) or ('dry' in qs)
-            dry  = 'dry' in qs
+            dry   = 'dry' in qs
+            force = 'force' in qs        # bypass the once-a-day idempotency (manual re-send)
             try:
-                if sync:
-                    result = send_daily_digest(dry=dry)
-                    code = 200 if result.get('ok') else 500
-                else:
-                    threading.Thread(target=lambda: send_daily_digest(), daemon=True).start()
-                    result, code = {'ok': True, 'status': 'digest started'}, 200
+                # Run synchronously so the send completes inside the request — Render won't
+                # kill an in-flight handler, even if the cron client times out on cold-start.
+                result = send_daily_digest(dry=dry, force=force)
+                code = 200 if result.get('ok') else 500
                 self.send_response(code); self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
                 self.wfile.write(json.dumps(result).encode())
