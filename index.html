@@ -327,7 +327,7 @@ td.r{text-align:right;}
 <div class="wrap">
   <div style="margin-bottom:18px;">
     <h2 style="font-size:22px;font-weight:800;">Factor Correlations</h2>
-    <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Type a ticker &mdash; see its 6-month beta &amp; correlation to the S&amp;P, Nasdaq, Dollar, Gold, Oil, Bonds, Bitcoin, VIX &amp; more · Yahoo data</p>
+    <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Type a ticker &mdash; see its beta &amp; correlation across 15-day, 1-, 3- &amp; 6-month windows to the S&amp;P, Nasdaq, Dollar, Gold, Oil, Bonds, Bitcoin, VIX &amp; more · Yahoo data</p>
   </div>
 
   <div class="config-bar">
@@ -339,14 +339,15 @@ td.r{text-align:right;}
   <div id="corr-headline" style="font-size:13px;color:#c8c8d4;line-height:1.6;margin:6px 2px 14px;"></div>
 
   <div id="corr-result" style="display:none;">
-    <div class="section-header"><div class="section-title"><span class="dot dot-blue"></span>Correlation to each factor &mdash; last 6 months</div>
+    <div id="corr-win-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin:2px 2px 16px;"></div>
+    <div class="section-header"><div class="section-title"><span class="dot dot-blue"></span>Correlation to each factor &mdash; <span id="corr-win-lbl">6M</span> window</div>
       <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">+1 = moves together · &minus;1 = opposite</span></div>
     <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;height:360px;"><canvas id="corr-bar"></canvas></div>
 
-    <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>Beta &amp; correlation table</div></div>
+    <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>Correlation across all windows &mdash; 15D · 1M · 3M · 6M</div></div>
     <div class="table-wrap" id="corr-table"></div>
 
-    <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>6-month overlay &mdash; normalized to 100</div></div>
+    <div class="section-header"><div class="section-title"><span class="dot dot-green"></span><span id="corr-ov-lbl">6M</span> overlay &mdash; normalized to 100</div></div>
     <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;height:300px;"><canvas id="corr-overlay"></canvas></div>
   </div>
   <div id="corr-empty" class="empty-state">Type a ticker and hit Analyze to see what it moves with.</div>
@@ -747,6 +748,15 @@ function predictCPI(overrideFredData, offsetMonths=0) {
   return +pred.toFixed(2);
 }
 
+// Add n calendar months to a 'YYYY-MM(-DD)' date string, returning 'YYYY-MM'.
+// Pure integer math on year/month — avoids the UTC-vs-local Date pitfalls that
+// were shifting (and skipping) forecast months in negative-UTC timezones.
+function addMonthsYM(dateStr, n) {
+  const [y, m] = dateStr.slice(0, 7).split('-').map(Number);
+  const idx = y * 12 + (m - 1) + n;
+  return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, '0')}`;
+}
+
 function buildPredictions() {
   const cpi = fredData['CPIAUCSL'];
   if (!cpi) return [];
@@ -757,11 +767,9 @@ function buildPredictions() {
   }));
   const predCur = predictCPI(null, 0);
   const predNxt = predictCPI(null, 1);
-  const last = new Date(cpi[cpi.length-1].date);
-  const d1 = new Date(last); d1.setMonth(d1.getMonth()+1);
-  const d2 = new Date(last); d2.setMonth(d2.getMonth()+2);
-  history.push({date:d1.toISOString().slice(0,7), actual:null, predicted:predCur});
-  history.push({date:d2.toISOString().slice(0,7), actual:null, predicted:predNxt});
+  const lastDate = cpi[cpi.length-1].date;
+  history.push({date: addMonthsYM(lastDate, 1), actual:null, predicted:predCur});
+  history.push({date: addMonthsYM(lastDate, 2), actual:null, predicted:predNxt});
   return history;
 }
 
@@ -1071,11 +1079,9 @@ function buildGDPPredictions() {
   }));
   const predCur = predictGDP(null, 0);
   const predNxt = predictGDP(null, 1);
-  const last = new Date(gdp[gdp.length-1].date);
-  const d1 = new Date(last); d1.setMonth(d1.getMonth()+3);
-  const d2 = new Date(last); d2.setMonth(d2.getMonth()+6);
-  history.push({date: d1.toISOString().slice(0,7), actual: null, predicted: predCur});
-  history.push({date: d2.toISOString().slice(0,7), actual: null, predicted: predNxt});
+  const lastDate = gdp[gdp.length-1].date;
+  history.push({date: addMonthsYM(lastDate, 3), actual: null, predicted: predCur});
+  history.push({date: addMonthsYM(lastDate, 6), actual: null, predicted: predNxt});
   return history;
 }
 
@@ -2164,7 +2170,7 @@ async function showStockTradeChart(sym, date) {
 // ════════════════════════════════════════════════════════
 // TAB — FACTOR CORRELATIONS (6-month beta vs macro factors)
 // ════════════════════════════════════════════════════════
-let corrBarChart = null, corrOverlayChart = null;
+let corrBarChart = null, corrOverlayChart = null, corrData = null, corrWin = '6m';
 
 // Jump from a scan row to the Correlations tab and analyze that ticker
 function gotoCorr(sym) {
@@ -2196,46 +2202,99 @@ async function runFactorBeta() {
 function renderFactorBeta(d) {
   document.getElementById('corr-empty').style.display = 'none';
   document.getElementById('corr-result').style.display = '';
-  const f = d.factors;
-  // plain-English headline
-  const pos = f.filter(x=>x.corr>0).sort((a,b)=>b.corr-a.corr)[0];
-  const neg = f.filter(x=>x.corr<0).sort((a,b)=>a.corr-b.corr)[0];
-  const spy = f.find(x=>x.symbol==='SPY');
-  let hl = `<b>${d.sym}</b> · last 6 months (${d.days} trading days): `;
-  if (spy) hl += `market beta <b>${spy.beta}</b> vs the S&P 500. `;
-  if (pos) hl += `Moves most <b style="color:var(--green)">with ${pos.name}</b> (r ${pos.corr}). `;
-  if (neg) hl += `Most <b style="color:var(--red)">inverse to ${neg.name}</b> (r ${neg.corr}).`;
+  corrData = d;
+  // default to the longest window (6M)
+  corrWin = (d.windows && d.windows.length) ? d.windows[d.windows.length - 1].key : '6m';
+  // window selector buttons — 15D / 1M / 3M / 6M
+  document.getElementById('corr-win-btns').innerHTML = (d.windows || []).map(w =>
+    `<button class="btn corr-win-btn" data-k="${w.key}" onclick="setCorrWin('${w.key}')" style="padding:4px 14px;font-size:12px;">${w.label}</button>`).join('');
+  renderCorrView();
+}
+
+function setCorrWin(k) { corrWin = k; renderCorrView(); }
+
+// Factors that have data for the active window, sorted by |correlation|
+function corrWinFactors() {
+  return corrData.factors
+    .map(x => ({ name: x.name, symbol: x.symbol, ...(x.w[corrWin] || {}) }))
+    .filter(x => x.corr != null)
+    .sort((a, b) => Math.abs(b.corr) - Math.abs(a.corr));
+}
+
+function renderCorrView() {
+  const d = corrData;
+  const meta = (d.windows || []).find(w => w.key === corrWin) || { label: '6M', days: 127 };
+  document.querySelectorAll('.corr-win-btn').forEach(b => b.classList.toggle('btn-primary', b.dataset.k === corrWin));
+  document.getElementById('corr-win-lbl').textContent = meta.label;
+  document.getElementById('corr-ov-lbl').textContent = meta.label;
+
+  // plain-English headline for the active window
+  const fw = corrWinFactors();
+  const byCorr = [...fw].sort((a, b) => b.corr - a.corr);
+  const posF = byCorr[0], negF = byCorr[byCorr.length - 1];
+  const spy = fw.find(x => x.symbol === 'SPY');
+  let hl = `<b>${d.sym}</b> · ${meta.label} window (${meta.days} trading days): `;
+  if (spy && spy.beta != null) hl += `market beta <b>${spy.beta}</b> vs the S&P 500. `;
+  if (posF && posF.corr > 0) hl += `Moves most <b style="color:var(--green)">with ${posF.name}</b> (r +${posF.corr}). `;
+  if (negF && negF.corr < 0) hl += `Most <b style="color:var(--red)">inverse to ${negF.name}</b> (r ${negF.corr}).`;
   document.getElementById('corr-headline').innerHTML = hl;
-  // correlation bar chart
-  const labels = f.map(x=>x.name), data = f.map(x=>x.corr), colors = f.map(x=>x.corr>=0?'#2dd4a0':'#f0526a');
+
+  // correlation bar chart for the active window
+  const labels = fw.map(x => x.name), data = fw.map(x => x.corr), colors = fw.map(x => x.corr >= 0 ? '#2dd4a0' : '#f0526a');
   if (corrBarChart) corrBarChart.destroy();
   corrBarChart = new Chart(document.getElementById('corr-bar'), {
-    type:'bar',
-    data:{labels, datasets:[{data, backgroundColor:colors, borderRadius:3}]},
-    options:{indexAxis:'y', maintainAspectRatio:false, responsive:true,
-      plugins:{legend:{display:false}, tooltip:{callbacks:{label:c=>'correlation '+c.raw}}},
-      scales:{x:{min:-1,max:1,grid:{color:'#ffffff12'},ticks:{color:'#6b6b80'}},
-              y:{grid:{display:false},ticks:{color:'#c8c8d4',font:{size:11}}}}}
+    type: 'bar',
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderRadius: 3 }] },
+    options: { indexAxis: 'y', maintainAspectRatio: false, responsive: true,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => 'correlation ' + c.raw } } },
+      scales: { x: { min: -1, max: 1, grid: { color: '#ffffff12' }, ticks: { color: '#6b6b80' } },
+                y: { grid: { display: false }, ticks: { color: '#c8c8d4', font: { size: 11 } } } } }
   });
-  // table
-  const head = '<thead><tr><th>Factor</th><th class="r">Correlation</th><th class="r">Beta</th><th class="r">R²</th></tr></thead>';
-  const rows = f.map(x=>`<tr>
-    <td class="ticker-cell" style="font-weight:600">${x.name} <span class="c-muted" style="font-size:10px">${x.symbol}</span></td>
-    <td class="r ${x.corr>=0?'c-green':'c-red'}">${x.corr>=0?'+':''}${x.corr}</td>
-    <td class="r">${x.beta>=0?'+':''}${x.beta}</td>
-    <td class="r c-muted">${x.r2}</td></tr>`).join('');
+
+  renderCorrTable(meta);
+  renderCorrOverlay(meta.days);
+}
+
+// Table: one correlation column per window + beta / R² for the active window
+function renderCorrTable(meta) {
+  const d = corrData, wins = d.windows || [];
+  const head = '<thead><tr><th>Factor</th>'
+    + wins.map(w => `<th class="r" style="${w.key === corrWin ? 'color:#5b8def' : ''}">${w.label}</th>`).join('')
+    + `<th class="r">β <span class="c-muted" style="font-size:9px">${meta.label}</span></th>`
+    + '<th class="r">R²</th></tr></thead>';
+  const order = corrWinFactors().map(x => x.symbol);
+  const bySym = {}; d.factors.forEach(x => bySym[x.symbol] = x);
+  const rows = order.map(sy => {
+    const x = bySym[sy];
+    const cells = wins.map(w => {
+      const c = (x.w[w.key] || {}).corr;
+      if (c == null) return '<td class="r c-muted">—</td>';
+      const emph = w.key === corrWin ? 'font-weight:700' : 'opacity:.7';
+      return `<td class="r ${c >= 0 ? 'c-green' : 'c-red'}" style="${emph}">${c >= 0 ? '+' : ''}${c}</td>`;
+    }).join('');
+    const act = x.w[corrWin] || {};
+    const beta = act.beta == null ? '—' : `${act.beta >= 0 ? '+' : ''}${act.beta}`;
+    const r2 = act.r2 == null ? '—' : act.r2;
+    return `<tr><td class="ticker-cell" style="font-weight:600">${x.name} <span class="c-muted" style="font-size:10px">${x.symbol}</span></td>${cells}<td class="r">${beta}</td><td class="r c-muted">${r2}</td></tr>`;
+  }).join('');
   document.getElementById('corr-table').innerHTML = `<table>${head}<tbody>${rows}</tbody></table>`;
-  // normalized overlay
-  const ov = d.overlay, palette = {[d.sym]:'#5b8def','S&P 500':'#8a8a9a','US Dollar':'#2dd4a0','Gold':'#f5a623'};
-  const datasets = Object.keys(ov.series).map(k=>({label:k, data:ov.series[k], borderColor:palette[k]||'#888',
-    borderWidth:k===d.sym?2.5:1.3, pointRadius:0, tension:0.1, spanGaps:true}));
+}
+
+// Normalized-to-100 overlay, sliced and re-based to the active window
+function renderCorrOverlay(days) {
+  const ov = corrData.overlay;
+  const n = ov.dates.length, start = Math.max(0, n - days);
+  const dates = ov.dates.slice(start);
+  const renorm = arr => { let base = null; return arr.slice(start).map(v => { if (v == null) return null; if (base == null) base = v; return Math.round(v / base * 10000) / 100; }); };
+  const palette = { [corrData.sym]: '#5b8def', 'S&P 500': '#8a8a9a', 'US Dollar': '#2dd4a0', 'Gold': '#f5a623' };
+  const datasets = Object.keys(ov.series).map(k => ({ label: k, data: renorm(ov.series[k]), borderColor: palette[k] || '#888',
+    borderWidth: k === corrData.sym ? 2.5 : 1.3, pointRadius: 0, tension: 0.1, spanGaps: true }));
   if (corrOverlayChart) corrOverlayChart.destroy();
   corrOverlayChart = new Chart(document.getElementById('corr-overlay'), {
-    type:'line',
-    data:{labels:ov.dates, datasets},
-    options:{maintainAspectRatio:false, responsive:true, interaction:{intersect:false,mode:'index'},
-      plugins:{legend:{labels:{color:'#c8c8d4',boxWidth:12,font:{size:11}}}},
-      scales:{x:{ticks:{color:'#6b6b80',maxTicksLimit:6}},y:{grid:{color:'#ffffff12'},ticks:{color:'#6b6b80'}}}}
+    type: 'line', data: { labels: dates, datasets },
+    options: { maintainAspectRatio: false, responsive: true, interaction: { intersect: false, mode: 'index' },
+      plugins: { legend: { labels: { color: '#c8c8d4', boxWidth: 12, font: { size: 11 } } } },
+      scales: { x: { ticks: { color: '#6b6b80', maxTicksLimit: 6 } }, y: { grid: { color: '#ffffff12' }, ticks: { color: '#6b6b80' } } } }
   });
 }
 
