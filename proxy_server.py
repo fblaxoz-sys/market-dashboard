@@ -654,6 +654,17 @@ def run_inflation_nowcast(fred_key, bt_months=24):
     if 'CPIAUCSL' not in raw:
         raise ValueError("Could not load CPI")
 
+    # FRED occasionally publishes a missing month (a '.' value — e.g. CPI 2025-10).
+    # That gap makes the index non-continuous, so target = cpi.shift(-1) (a
+    # *positional* shift) silently jumps 2 calendar months around the hole and
+    # mislabels every prediction past it on the chart. Interpolate the CPI level
+    # onto a continuous monthly grid and recompute YoY so every shift is 1 month.
+    if cpi_level is not None:
+        cpi_level = (cpi_level
+                     .reindex(pd.date_range(cpi_level.index.min(), cpi_level.index.max(), freq='MS'))
+                     .interpolate(method='linear', limit_direction='both'))
+        raw['CPIAUCSL'] = (cpi_level / cpi_level.shift(12) - 1) * 100
+
     # ── Feature matrix (monthly) ──────────────────────────────────────────
     df = pd.DataFrame({'cpi': raw['CPIAUCSL']}).dropna()
     df['cpi_lag'] = df['cpi'].shift(1)
