@@ -506,26 +506,6 @@ td.r{text-align:right;}
     </div>
   </div>
 
-  <!-- Secondary: simple weighted model -->
-  <div class="pred-hero" style="margin-top:-8px;">
-    <div class="pred-card pred-current" style="padding:14px 20px;">
-      <div class="pred-label" style="font-size:9px;">SIMPLE MODEL &mdash; Current month</div>
-      <div style="display:flex;align-items:baseline;gap:10px;">
-        <div class="stat-value" id="pred-cur-val" style="color:var(--accent2);font-size:20px;">&#8212;</div>
-        <div class="stat-sub" id="pred-cur-sub" style="font-size:10px;">Load data to see prediction</div>
-      </div>
-      <div id="pred-cur-dir"></div>
-    </div>
-    <div class="pred-card pred-next" style="padding:14px 20px;">
-      <div class="pred-label" style="font-size:9px;">SIMPLE MODEL &mdash; Next month</div>
-      <div style="display:flex;align-items:baseline;gap:10px;">
-        <div class="stat-value" id="pred-nxt-val" style="color:var(--amber);font-size:20px;">&#8212;</div>
-        <div class="stat-sub" id="pred-nxt-sub" style="font-size:10px;"></div>
-      </div>
-      <div id="pred-nxt-dir"></div>
-    </div>
-  </div>
-
   <!-- Inflation ML Nowcast — hidden until model runs -->
   <div id="inf-ml-section" style="display:none;margin-bottom:24px;">
     <div class="section-header">
@@ -558,20 +538,8 @@ td.r{text-align:right;}
   <div class="section-header"><div class="section-title"><span class="dot dot-blue"></span>Leading Indicators</div></div>
   <div class="drivers-grid" id="drivers-grid"><div class="empty-state" style="grid-column:1/-1;padding:32px;">Hit Refresh to load FRED data</div></div>
 
-  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>CPI Trend + Predictions</div></div>
+  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>CPI Trend + ML Forecast</div></div>
   <div class="chart-wrap"><canvas id="cpi-chart"></canvas></div>
-
-  <div class="section-header"><div class="section-title"><span class="dot dot-purple"></span>Backtest &mdash; Model Accuracy</div></div>
-  <div class="bt-controls">
-    <label>Months to backtest:</label>
-    <select id="bt-months" onchange="runBacktest()">
-      <option value="12">12 months</option>
-      <option value="24" selected>24 months</option>
-      <option value="36">36 months</option>
-    </select>
-    <div class="accuracy-pills" id="acc-pills"></div>
-  </div>
-  <div class="table-wrap" id="bt-table"><div class="empty-state">Load data first, then backtest runs automatically</div></div>
 </div>
 </div>
 
@@ -725,11 +693,7 @@ async function loadInflation() {
 
   showBadge('fred-badge', true);
   renderDrivers();
-  const preds = buildPredictions();
-  const btRows = computeBacktest(parseInt(document.getElementById('bt-months').value) || 24);
-  renderPredHero(preds);
-  renderCPIChart(preds, btRows);
-  runBacktest();
+  renderCPIChart();
 
   document.getElementById('inf-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
   btn.disabled = false;
@@ -753,43 +717,6 @@ function getMoM(seriesId) {
   return +((d[d.length-1].value / d[d.length-2].value - 1)*100).toFixed(2);
 }
 
-function predictCPI(overrideFredData, offsetMonths=0) {
-  const src = overrideFredData || fredData;
-  const cpi = src['CPIAUCSL'];
-  if (!cpi || cpi.length < 14) return null;
-
-  const cpiNow = cpi[cpi.length-1].value;
-  const cpi12  = cpi[cpi.length-13].value;
-  const baseYoY = (cpiNow/cpi12 - 1)*100;
-
-  // Average signal over last 3 months to prevent single volatile readings
-  // (e.g. weekly gas prices, PPI revisions) from swinging the prediction
-  let signal=0, totalW=0;
-  FRED_SERIES.filter(s=>s.weight!==0).forEach(s=>{
-    const d = src[s.id];
-    if (!d || d.length < 15) return;
-    const yoys = [];
-    for (let lag=0; lag<3; lag++) {
-      const i = d.length - 1 - lag;
-      if (i < 12) break;
-      const y = s.fmt==='pct'
-        ? (d[i].value - d[i-12].value)
-        : (d[i].value / d[i-12].value - 1)*100;
-      yoys.push(y);
-    }
-    if (!yoys.length) return;
-    const avgYoY = yoys.reduce((a,b)=>a+b,0) / yoys.length;
-    signal += avgYoY * s.weight;
-    totalW += Math.abs(s.weight);
-  });
-  if (totalW > 0) signal /= totalW;
-
-  // Blend: weight base CPI trend more heavily (0.7) for stability
-  const blended = baseYoY*0.7 + signal*0.3;
-  const pred = blended + (2.5-blended)*0.06*(offsetMonths+1);
-  return +pred.toFixed(2);
-}
-
 // Add n calendar months to a 'YYYY-MM(-DD)' date string, returning 'YYYY-MM'.
 // Pure integer math on year/month — avoids the UTC-vs-local Date pitfalls that
 // were shifting (and skipping) forecast months in negative-UTC timezones.
@@ -797,48 +724,6 @@ function addMonthsYM(dateStr, n) {
   const [y, m] = dateStr.slice(0, 7).split('-').map(Number);
   const idx = y * 12 + (m - 1) + n;
   return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, '0')}`;
-}
-
-function buildPredictions() {
-  const cpi = fredData['CPIAUCSL'];
-  if (!cpi) return [];
-  const history = cpi.slice(-24).map((o,i,arr) => ({
-    date: o.date,
-    actual: i>=12 ? +((o.value/arr[i-12].value-1)*100).toFixed(2) : null,
-    predicted: null
-  }));
-  const predCur = predictCPI(null, 0);
-  const predNxt = predictCPI(null, 1);
-  const lastDate = cpi[cpi.length-1].date;
-  history.push({date: addMonthsYM(lastDate, 1), actual:null, predicted:predCur});
-  history.push({date: addMonthsYM(lastDate, 2), actual:null, predicted:predNxt});
-  return history;
-}
-
-function renderPredHero(preds) {
-  const predPts   = preds.filter(p=>p.predicted!=null);
-  const actualPts = preds.filter(p=>p.actual!=null);
-  if (predPts.length < 2) return;
-  const cur  = predPts[0].predicted;
-  const nxt  = predPts[1].predicted;
-  const prev = actualPts.length ? actualPts[actualPts.length-1].actual : null;
-
-  document.getElementById('pred-cur-val').textContent = cur + '%';
-  document.getElementById('pred-nxt-val').textContent = nxt + '%';
-  document.getElementById('pred-cur-sub').textContent = prev!=null
-    ? `Previous: ${prev}% | Change: ${(cur-prev).toFixed(2)}pp` : 'Based on leading indicators';
-  document.getElementById('pred-nxt-sub').textContent = `From current predicted: ${(nxt-cur).toFixed(2)}pp`;
-
-  const dirHtml = (val, base) => {
-    if (base==null) return '';
-    const diff = val-base;
-    if (Math.abs(diff)<0.05) return `<span class="pred-dir dir-flat">&#8594; Flat</span>`;
-    return diff>0
-      ? `<span class="pred-dir dir-up">&#9650; Rising +${diff.toFixed(2)}pp</span>`
-      : `<span class="pred-dir dir-down">&#9660; Falling ${diff.toFixed(2)}pp</span>`;
-  };
-  document.getElementById('pred-cur-dir').innerHTML = dirHtml(cur, prev);
-  document.getElementById('pred-nxt-dir').innerHTML = dirHtml(nxt, cur);
 }
 
 function renderDrivers() {
@@ -866,31 +751,30 @@ function renderDrivers() {
     }).join('');
 }
 
-function renderCPIChart(preds, btRows=[]) {
+function renderCPIChart() {
+  const cpi = fredData['CPIAUCSL'];
+  if (!cpi || !cpi.length) return;
   const ctx = document.getElementById('cpi-chart').getContext('2d');
   if (cpiChart) cpiChart.destroy();
 
-  // Build a date→predicted lookup from backtest rows
-  const btMap = {};
-  btRows.forEach(r => { btMap[r.date.slice(0,7)] = r.predicted; });
-
-  // Align past predictions to chart labels (null where no backtest data)
-  const pastPred = preds.map(p => btMap[p.date.slice(0,7)] ?? null);
+  // Last 24 months of actual CPI YoY, then 2 empty future months so the ML
+  // forecast overlay (added in runInflationML) has labels to land on.
+  const hist = cpi.slice(-24).map((o,i,arr) => ({
+    date: o.date.slice(0,7),
+    actual: i>=12 ? +((o.value/arr[i-12].value-1)*100).toFixed(2) : null
+  }));
+  const lastDate = cpi[cpi.length-1].date;
+  hist.push({date: addMonthsYM(lastDate, 1), actual:null});
+  hist.push({date: addMonthsYM(lastDate, 2), actual:null});
 
   cpiChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: preds.map(p=>p.date.slice(0,7)),
+      labels: hist.map(p=>p.date),
       datasets: [
-        {label:'Actual CPI YoY %', data:preds.map(p=>p.actual),
+        {label:'Actual CPI YoY %', data:hist.map(p=>p.actual),
           borderColor:'#a594f9', backgroundColor:'#a594f910', tension:0.4,
           pointRadius:3, pointBackgroundColor:'#a594f9', spanGaps:false},
-        {label:'Past Model Predictions', data:pastPred,
-          borderColor:'#60a5fa', backgroundColor:'#60a5fa12', tension:0.4,
-          borderDash:[4,4], pointRadius:3, pointBackgroundColor:'#60a5fa', spanGaps:false},
-        {label:'Forward Prediction', data:preds.map(p=>p.predicted),
-          borderColor:'#f5a623', backgroundColor:'#f5a62318', tension:0.4,
-          borderDash:[6,3], pointRadius:5, pointBackgroundColor:'#f5a623', spanGaps:false},
       ]
     },
     options:{
@@ -908,61 +792,6 @@ function renderCPIChart(preds, btRows=[]) {
       }
     }
   });
-}
-
-function computeBacktest(months) {
-  const cpi = fredData['CPIAUCSL'];
-  if (!cpi || cpi.length < 26) return [];
-  const rows = [];
-  for (let i=Math.max(13, cpi.length-months); i<cpi.length-1; i++) {
-    const snap = { CPIAUCSL: cpi.slice(0,i+1) };
-    const cutDate = cpi[i].date;
-    FRED_SERIES.filter(s=>s.id!=='CPIAUCSL').forEach(s=>{
-      const d = fredData[s.id];
-      if (d) snap[s.id] = d.filter(o=>o.date<=cutDate);
-    });
-    const pred      = predictCPI(snap, 0);
-    const actualNow = i>=12 ? +((cpi[i].value/cpi[i-12].value-1)*100).toFixed(2) : null;
-    const actualNxt = i+1<cpi.length && i+1>=13 ? +((cpi[i+1].value/cpi[i+1-12].value-1)*100).toFixed(2) : null;
-    if (pred==null || actualNow==null || actualNxt==null) continue;
-    const err     = +(pred - actualNxt).toFixed(2);
-    const dirOk   = ((actualNxt-actualNow)>=0 && (pred-actualNow)>=0) || ((actualNxt-actualNow)<0 && (pred-actualNow)<0);
-    rows.push({date:cpi[i+1].date, actual:actualNxt, predicted:pred, err, absErr:Math.abs(err), dirOk});
-  }
-  return rows;
-}
-
-function runBacktest() {
-  const months = parseInt(document.getElementById('bt-months').value) || 24;
-  const rows = computeBacktest(months);
-
-  if (!rows.length) return;
-
-  // Sync chart with new backtest range
-  if (cpiChart) {
-    const preds = buildPredictions();
-    renderCPIChart(preds, rows);
-  }
-  const mae      = +(rows.reduce((a,b)=>a+b.absErr,0)/rows.length).toFixed(2);
-  const dirAcc   = +((rows.filter(r=>r.dirOk).length/rows.length)*100).toFixed(0);
-  const within50 = +((rows.filter(r=>r.absErr<=0.5).length/rows.length)*100).toFixed(0);
-
-  document.getElementById('acc-pills').innerHTML = `
-    <span class="pill pill-green">MAE: &plusmn;${mae}pp</span>
-    <span class="pill pill-blue">Direction: ${dirAcc}% correct</span>
-    <span class="pill pill-amber">Within &plusmn;0.5pp: ${within50}%</span>`;
-
-  document.getElementById('bt-table').innerHTML = `<table>
-    <thead><tr><th>Month</th><th class="r">Actual CPI YoY</th><th class="r">Predicted</th><th class="r">Error</th><th>Direction</th></tr></thead>
-    <tbody>${[...rows].reverse().map((r,i)=>`
-      <tr style="animation-delay:${i*15}ms">
-        <td>${r.date.slice(0,7)}</td>
-        <td class="r">${r.actual}%</td>
-        <td class="r c-amber">${r.predicted}%</td>
-        <td class="r ${Math.abs(r.err)<=0.3?'c-green':Math.abs(r.err)<=0.7?'c-amber':'c-red'}">${r.err>=0?'+':''}${r.err}pp</td>
-        <td class="${r.dirOk?'bt-ok':'bt-err'}">${r.dirOk?'&#10003; Correct':'&#10007; Wrong'}</td>
-      </tr>`).join('')}
-    </tbody></table>`;
 }
 
 // ════════════════════════════════════════════════════════
