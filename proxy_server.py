@@ -577,9 +577,13 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
 
 # ── INFLATION NOWCAST MODEL ───────────────────────────────────────────────────
 
-def run_inflation_nowcast(fred_key, bt_months=24):
+def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
     """Monthly CPI-YoY ML nowcast — same 8-model ensemble + 25-yr walk-forward
-    as the GDP model, but at monthly frequency."""
+    as the GDP model, but at monthly frequency.
+
+    target_id selects what we forecast: 'CPIAUCSL' = headline CPI (default),
+    'CPILFESL' = core CPI (ex food & energy). The non-target CPI series stays in
+    the feature set as a driver, so headline informs core and vice-versa."""
     import warnings; warnings.filterwarnings("ignore")
     import numpy as np
     import pandas as pd
@@ -645,14 +649,14 @@ def run_inflation_nowcast(fred_key, bt_months=24):
             s = fetch(sid, freq)
             if s is not None and len(s) > 24:
                 raw[sid] = transform(s, t)
-                if sid == 'CPIAUCSL':
+                if sid == target_id:
                     cpi_level = s.resample('MS').last()   # keep level for MoM features
         except Exception as e:
             print(f"    skip {sid}: {e}")
         time.sleep(1.0)
 
-    if 'CPIAUCSL' not in raw:
-        raise ValueError("Could not load CPI")
+    if target_id not in raw:
+        raise ValueError(f"Could not load target {target_id}")
 
     # FRED occasionally publishes a missing month (a '.' value — e.g. CPI 2025-10).
     # That gap makes the index non-continuous, so target = cpi.shift(-1) (a
@@ -663,14 +667,14 @@ def run_inflation_nowcast(fred_key, bt_months=24):
         cpi_level = (cpi_level
                      .reindex(pd.date_range(cpi_level.index.min(), cpi_level.index.max(), freq='MS'))
                      .interpolate(method='linear', limit_direction='both'))
-        raw['CPIAUCSL'] = (cpi_level / cpi_level.shift(12) - 1) * 100
+        raw[target_id] = (cpi_level / cpi_level.shift(12) - 1) * 100
 
     # ── Feature matrix (monthly) ──────────────────────────────────────────
-    df = pd.DataFrame({'cpi': raw['CPIAUCSL']}).dropna()
+    df = pd.DataFrame({'cpi': raw[target_id]}).dropna()
     df['cpi_lag'] = df['cpi'].shift(1)
     df['cpi_mom'] = df['cpi'] - df['cpi_lag']
     for sid in SERIES:
-        if sid != 'CPIAUCSL' and sid in raw:
+        if sid != target_id and sid in raw:
             df[sid.lower()] = raw[sid]
     # ── Momentum features (month-over-month inflation) ────────────────────
     # Lets the model react to hot/cold streaks instead of anchoring on YoY.
@@ -909,6 +913,41 @@ def run_inflation_nowcast(fred_key, bt_months=24):
                           'low': round(pred - band, 2), 'high': round(pred + band, 2)})
         prev_c, cur_c = cur_c, pred
 
+    # ── Driver attribution — *why* the forecast lands where it does ────────
+    # Linear members give a signed, comparable pull per feature: coef × the
+    # standardized latest value = how many pp that driver adds/subtracts vs
+    # its typical level. Weighted across the eligible linear members; if none
+    # are eligible, a plain Ridge is fit just for the explanation.
+    DRIVER_LABELS = {
+        'cpi': 'Recent CPI', 'cpi_lag': 'Prior-month CPI', 'cpi_mom': 'CPI momentum',
+        'cpilfesl': 'Core CPI', 'cpiaucsl': 'Headline CPI',
+        'ppiaco': 'Producer prices (PPI)', 'mich': 'Inflation expectations (survey)',
+        't5yie': '5Y breakeven (market)', 'ces0500000003': 'Wages',
+        'pallfnfindexm': 'Global commodities', 'mcoilwtico': 'Oil (WTI)',
+        'm2sl': 'Money supply (M2)', 'unrate': 'Unemployment',
+        'fedfunds': 'Fed funds rate', 'medcpim158sfrbcle': 'Median CPI (Cleveland)',
+        'corestickm159sfrbatl': 'Sticky-price CPI', 'pcetrim12m159sfrbdal': 'Trimmed-mean PCE',
+        'mom_1': '1-mo inflation pace', 'mom_3': '3-mo inflation pace',
+        'mom_6': '6-mo inflation pace', 'mom_accel': 'Inflation acceleration',
+    }
+    r0 = base.copy()
+    r0[ci] = float(df['cpi'].iloc[-1]); r0[li] = float(df['cpi'].iloc[-2])
+    r0[mi] = r0[ci] - r0[li]
+    xz = scf.transform([r0])[0]
+    contrib = np.zeros(len(feat_cols)); wsum = 0.0
+    for n, (kind, est) in fitted.items():
+        if kind == 'lin' and mem_wt.get(n, 0) > 0 and hasattr(est, 'coef_'):
+            contrib += mem_wt[n] * (np.asarray(est.coef_, float) * xz); wsum += mem_wt[n]
+    if wsum > 0:
+        contrib /= wsum
+    else:                                   # no linear member eligible → explain w/ Ridge
+        contrib = np.asarray(Ridge(alpha=1.0).fit(scf.transform(X_all), y_all).coef_, float) * xz
+    drivers = [{'name': DRIVER_LABELS.get(c, c.upper()), 'pull': round(float(contrib[i]), 2)}
+               for i, c in enumerate(feat_cols) if c != 'covid']
+    drivers = [d for d in drivers if abs(d['pull']) >= 0.03]
+    drivers.sort(key=lambda d: -abs(d['pull']))
+    drivers = drivers[:8]
+
     nowcast_val = forecasts[0]['value']
     nc_date     = last_date + pd.DateOffset(months=1)
     last_cpi    = float(df['cpi'].iloc[-1])
@@ -925,6 +964,9 @@ def run_inflation_nowcast(fred_key, bt_months=24):
                     'low': round(nowcast_val - band, 2), 'high': round(nowcast_val + band, 2)},
         'forecasts': forecasts,                 # multi-month forward path
         'last_actual_month': last_date.strftime('%Y-%m'),
+        'target': target_id,                    # CPIAUCSL=headline, CPILFESL=core
+        'series': 'core' if target_id == 'CPILFESL' else 'headline',
+        'drivers': drivers,                     # signed pp pull of each indicator
         'history': history,
         'bt_rows': bt_rows,
         'metrics': {
@@ -1428,7 +1470,7 @@ def run_quad(fred_key):
     (accelerating vs decelerating) of GDP growth and CPI inflation. Flags when
     an axis is within its forecast error band → 'near a quad transition'."""
     gdp = cached_ml("gdp:12", lambda: run_gdp_nowcast(fred_key, 12))
-    inf = cached_ml("inf:24", lambda: run_inflation_nowcast(fred_key, 24))
+    inf = cached_ml("inf:CPIAUCSL:24", lambda: run_inflation_nowcast(fred_key, 24))
     g_now = gdp['nowcast']['value']; g_prev = gdp['nowcast']['last_actual']
     i_now = inf['nowcast']['value']; i_prev = inf['nowcast']['last_actual']
     g_d = round(g_now - g_prev, 2); i_d = round(i_now - i_prev, 2)
@@ -1796,11 +1838,14 @@ class Handler(SimpleHTTPRequestHandler):
             qs       = urllib.parse.parse_qs(parsed.query)
             fred_key = qs.get('fred_key', [''])[0]
             months   = int(qs.get('months', ['24'])[0])
+            series   = (qs.get('series', ['headline'])[0]).lower()
+            tgt      = 'CPILFESL' if series == 'core' else 'CPIAUCSL'
             if not fred_key:
                 self.send_error(400, 'fred_key required'); return
             try:
-                print(f"\n[inflation] Request ({months} months backtest) …")
-                result  = cached_ml(f"inf:{months}", lambda: run_inflation_nowcast(fred_key, months))
+                print(f"\n[inflation] Request ({series}, {months} months backtest) …")
+                result  = cached_ml(f"inf:{tgt}:{months}",
+                                    lambda: run_inflation_nowcast(fred_key, months, target_id=tgt))
                 payload = json.dumps(result).encode()
                 print(f"[inflation] Done → {result['nowcast']['value']}%")
                 self.send_response(200)

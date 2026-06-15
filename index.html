@@ -152,6 +152,16 @@ td.r{text-align:right;}
 .dir-up{background:var(--red-dim);color:var(--red);}
 .dir-down{background:var(--green-dim);color:var(--green);}
 .dir-flat{background:var(--amber-dim);color:var(--amber);}
+.seg-toggle{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+.seg-toggle button{background:transparent;border:none;color:var(--muted);font-family:var(--mono);font-size:11px;letter-spacing:.5px;padding:7px 14px;cursor:pointer;transition:.15s;}
+.seg-toggle button+button{border-left:1px solid var(--border);}
+.seg-toggle button.active{background:var(--amber-dim);color:var(--amber);font-weight:700;}
+.seg-toggle button:hover:not(.active){color:var(--text);}
+.contrib-row{display:flex;align-items:center;gap:8px;margin-bottom:7px;font-family:var(--mono);font-size:11px;}
+.contrib-name{width:130px;flex-shrink:0;color:var(--text);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.contrib-bar{flex:1;height:14px;display:flex;align-items:center;position:relative;}
+.contrib-fill{height:14px;border-radius:3px;min-width:2px;}
+.contrib-val{width:48px;flex-shrink:0;color:var(--muted);}
 .drivers-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:24px;}
 .driver-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;}
 .driver-name{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.5px;margin-bottom:6px;}
@@ -469,6 +479,10 @@ td.r{text-align:right;}
     </div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span id="inf-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <div class="seg-toggle" id="inf-series-toggle" title="Headline = all items · Core = ex food &amp; energy (what the Fed targets)">
+        <button class="active" data-series="headline" onclick="setInflationSeries('headline')">Headline</button>
+        <button data-series="core" onclick="setInflationSeries('core')">Core</button>
+      </div>
       <button class="btn" id="inf-ml-btn" onclick="runInflationML()">
         <span id="inf-ml-icon">&#9881;</span> ML Nowcast
       </button>
@@ -496,16 +510,34 @@ td.r{text-align:right;}
   <!-- PRIMARY prediction: ML ensemble (86% within ±0.55pp, 25-yr validated) -->
   <div class="pred-hero">
     <div class="pred-card" style="border-top:3px solid var(--amber);">
-      <div class="pred-label">CPI YoY forecast &mdash; <strong style="color:var(--amber)" id="inf-main-m1">next month</strong> <span style="color:var(--green);font-size:9px;">ML</span></div>
+      <div class="pred-label"><span class="inf-cpi-label">CPI</span> YoY forecast &mdash; <strong style="color:var(--amber)" id="inf-main-m1">next month</strong> <span style="color:var(--green);font-size:9px;">ML</span></div>
       <div class="pred-value" id="inf-main-v1" style="color:var(--amber);">&#8212;</div>
       <div class="pred-sub" id="inf-main-s1">Loading ML forecast…</div>
       <div id="inf-main-d1"></div>
     </div>
     <div class="pred-card" style="border-top:3px solid var(--amber);">
-      <div class="pred-label">CPI YoY forecast &mdash; <strong style="color:var(--amber)" id="inf-main-m2">following month</strong> <span style="color:var(--green);font-size:9px;">ML</span></div>
+      <div class="pred-label"><span class="inf-cpi-label">CPI</span> YoY &mdash; <strong style="color:var(--amber)" id="inf-main-m2">following month</strong> <span style="color:var(--green);font-size:9px;">ML</span></div>
       <div class="pred-value" id="inf-main-v2" style="color:var(--amber);">&#8212;</div>
       <div class="pred-sub" id="inf-main-s2"></div>
       <div id="inf-main-d2"></div>
+    </div>
+  </div>
+
+  <!-- What's driving the forecast — signed pp pull of each indicator (from ML) -->
+  <div id="inf-drivers-panel" style="display:none;margin:6px 0 22px;">
+    <div class="section-header">
+      <div class="section-title"><span class="dot dot-green"></span>What's driving <span id="inf-drivers-series">headline</span> inflation right now</div>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">how far each driver pushes the forecast vs typical conditions (pp)</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;">
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--red);letter-spacing:1px;margin-bottom:10px;">&#9650; PUSHING INFLATION UP</div>
+        <div id="inf-drivers-up"></div>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--green);letter-spacing:1px;margin-bottom:10px;">&#9660; PULLING INFLATION DOWN</div>
+        <div id="inf-drivers-down"></div>
+      </div>
     </div>
   </div>
 
@@ -517,7 +549,7 @@ td.r{text-align:right;}
     </div>
     <div class="pred-hero" style="margin-bottom:12px;">
       <div class="pred-card" style="border-top:3px solid var(--amber);">
-        <div class="pred-label">ML CPI YoY Nowcast — <span id="inf-ml-month">—</span></div>
+        <div class="pred-label">ML <span class="inf-cpi-label">CPI</span> YoY Nowcast — <span id="inf-ml-month">—</span></div>
         <div class="pred-value" id="inf-ml-val" style="color:var(--amber);">&#8212;</div>
         <div class="pred-sub" id="inf-ml-sub">Running model…</div>
         <div id="inf-ml-dir"></div>
@@ -548,6 +580,7 @@ td.r{text-align:right;}
 let fredKey  = localStorage.getItem('fred_key')  || '';
 let fredData = {};
 let cpiChart = null;
+let inflationSeries = 'headline';   // 'headline' (CPI) | 'core' (CPI ex food & energy)
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Instant repeat visits: cache results in localStorage + deep-linkable tabs ──
@@ -1022,10 +1055,16 @@ async function runInflationML() {
 
   const months = document.getElementById('bt-months') ? document.getElementById('bt-months').value : 24;
   try {
-    const res = await fetch(`/inflation-nowcast?fred_key=${encodeURIComponent(fredKey)}&months=${months}`);
+    const res = await fetch(`/inflation-nowcast?fred_key=${encodeURIComponent(fredKey)}&months=${months}&series=${inflationSeries}`);
     const d = await res.json();
     if (d.error) throw new Error(d.error);
     const m = d.metrics;
+    // Series-aware labels (Headline CPI vs Core CPI) + driver attribution panel
+    const isCore = d.series === 'core';
+    const sName  = isCore ? 'Core CPI' : 'CPI';
+    const sLabel = isCore ? 'Core' : 'Headline';
+    document.querySelectorAll('.inf-cpi-label').forEach(el => el.textContent = sName);
+    renderInfDrivers(d.drivers || [], sLabel);
 
     document.getElementById('inf-ml-month').textContent = d.nowcast.month;
     document.getElementById('inf-ml-val').innerHTML =
@@ -1110,20 +1149,31 @@ async function runInflationML() {
         </tr>`).join('')}
       </tbody></table>`;
 
-    // Overlay the 25-yr ML fit (history) + a prominent Forecast marker (future month)
+    // Overlay the 25-yr ML fit (history) + a prominent Forecast marker, series-aware.
     if (cpiChart) {
       const labels  = cpiChart.data.labels;
-      const actuals = cpiChart.data.datasets[0].data;     // 'Actual CPI YoY %'
-      const histMap = {}; (d.history || []).forEach(h => { histMap[h.date] = h.predicted; });
-      const fcMap   = {}; (d.forecasts || []).forEach(f => { fcMap[f.month] = f.value; });
+      const histMap = {}, fcMap = {}, actMap = {};
+      (d.history || []).forEach(h => { histMap[h.date] = h.predicted; if (h.actual != null) actMap[h.date] = h.actual; });
+      (d.forecasts || []).forEach(f => { fcMap[f.month] = f.value; });
+      // anchor the forecast bridge to the SELECTED series' last actual
+      const baseActuals = isCore ? labels.map(l => (l in actMap) ? actMap[l] : null)
+                                 : cpiChart.data.datasets[0].data;   // 'Actual CPI YoY %'
       let lastActualIdx = -1;
-      actuals.forEach((v, i) => { if (v != null) lastActualIdx = i; });
+      baseActuals.forEach((v, i) => { if (v != null) lastActualIdx = i; });
       const histLine = labels.map(l => (l in histMap) ? histMap[l] : null);
-      // forecast series: bridge from the last actual point, then the future value(s)
-      const fcLine = labels.map((l, i) => (l in fcMap) ? fcMap[l] : (i === lastActualIdx ? actuals[i] : null));
-      cpiChart.data.datasets = cpiChart.data.datasets.filter(ds => !['ML Model (25-yr)', 'Forecast'].includes(ds.label));
+      const fcLine   = labels.map((l, i) => (l in fcMap) ? fcMap[l] : (i === lastActualIdx ? baseActuals[i] : null));
+      // clear prior overlays so toggling doesn't stack lines
+      cpiChart.data.datasets = cpiChart.data.datasets.filter(
+        ds => !/ ML model$|^Forecast$|^ML Model \(25-yr\)$|^Core CPI actual$/.test(ds.label));
+      if (isCore) {   // base chart's actual line is headline — add Core's own actual
+        cpiChart.data.datasets.push({
+          label:'Core CPI actual', data: labels.map(l => (l in actMap) ? actMap[l] : null),
+          borderColor:'#e879f9', backgroundColor:'#e879f910', tension:0.4,
+          pointRadius:2, pointBackgroundColor:'#e879f9', spanGaps:false,
+        });
+      }
       cpiChart.data.datasets.push({
-        label:'ML Model (25-yr)', data: histLine,
+        label:`${sLabel} ML model`, data: histLine,
         borderColor:'#2dd4a0', backgroundColor:'#2dd4a015', tension:0.4,
         borderWidth:2, pointRadius:2, pointBackgroundColor:'#2dd4a0', spanGaps:false,
       });
@@ -1144,6 +1194,38 @@ async function runInflationML() {
   }
   btn.disabled = false;
   document.getElementById('inf-ml-icon').textContent = '⚙';
+}
+
+// Switch the whole inflation tab between Headline CPI and Core CPI, then re-run.
+function setInflationSeries(s) {
+  if (s === inflationSeries && document.getElementById('inf-ml-section').style.display !== 'none') return;
+  inflationSeries = s;
+  document.querySelectorAll('#inf-series-toggle button').forEach(b =>
+    b.classList.toggle('active', b.dataset.series === s));
+  if (fredKey) runInflationML();          // refetch the selected series
+}
+
+// "What's driving it" — split the signed pp pulls into up / down columns.
+function renderInfDrivers(drivers, sLabel) {
+  const panel = document.getElementById('inf-drivers-panel');
+  document.getElementById('inf-drivers-series').textContent = (sLabel || 'Headline').toLowerCase();
+  if (!drivers || !drivers.length) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  const maxAbs = Math.max(...drivers.map(d => Math.abs(d.pull)), 0.01);
+  const up   = drivers.filter(d => d.pull > 0);
+  const down = drivers.filter(d => d.pull < 0);
+  const row = (d, color) => {
+    const w = Math.round(Math.abs(d.pull) / maxAbs * 100);
+    return `<div class="contrib-row" title="${d.name}: ${d.pull>0?'+':''}${d.pull}pp vs typical">
+      <div class="contrib-name">${d.name}</div>
+      <div class="contrib-bar"><div class="contrib-fill" style="width:${w}%;background:${color}"></div></div>
+      <div class="contrib-val" style="color:${color}">${d.pull>0?'+':''}${d.pull}</div>
+    </div>`;
+  };
+  document.getElementById('inf-drivers-up').innerHTML =
+    up.length ? up.map(d => row(d, 'var(--red)')).join('') : '<div style="color:var(--muted);font-size:11px;">—</div>';
+  document.getElementById('inf-drivers-down').innerHTML =
+    down.length ? down.map(d => row(d, 'var(--green)')).join('') : '<div style="color:var(--muted);font-size:11px;">—</div>';
 }
 
 let mlHistory    = [];
