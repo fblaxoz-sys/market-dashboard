@@ -1816,9 +1816,20 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_response(403); self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
                 self.wfile.write(json.dumps({'ok': False, 'error': 'bad or missing token'}).encode()); return
-            dry   = 'dry' in qs
-            force = 'force' in qs        # bypass the once-a-day idempotency (manual re-send)
+            dry    = 'dry' in qs
+            force  = 'force' in qs       # bypass the once-a-day idempotency (manual re-send)
+            nowait = 'nowait' in qs      # ack instantly + send in background (for external cron)
             try:
+                if nowait:
+                    # Fire-and-forget: a cold start + scan takes minutes, so return at once
+                    # and let the daemon thread finish the send. Idempotency still guards it,
+                    # so the cron's timeout/retry can't double-send. Keeps cron logs green.
+                    threading.Thread(target=send_daily_digest,
+                                     kwargs={'dry': dry, 'force': force}, daemon=True).start()
+                    self.send_response(202); self.send_header('Content-Type', 'application/json')
+                    self.send_header('Access-Control-Allow-Origin', '*'); self.end_headers()
+                    self.wfile.write(json.dumps({'ok': True, 'status': 'queued'}).encode())
+                    return
                 # Run synchronously so the send completes inside the request — Render won't
                 # kill an in-flight handler, even if the cron client times out on cold-start.
                 result = send_daily_digest(dry=dry, force=force)
