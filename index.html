@@ -523,6 +523,27 @@ td.r{text-align:right;}
     </div>
   </div>
 
+  <!-- Scenario range — the model's 85% band as downside / base / upside -->
+  <div id="inf-scenarios" style="display:none;margin:-4px 0 22px;">
+    <div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:8px;">
+      <span class="inf-cpi-label">CPI</span> SCENARIO RANGE &mdash; <span id="inf-scen-month">&#8212;</span> &middot; 85% confidence band
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <div class="pred-card" style="flex:1;min-width:140px;padding:12px 16px;border-top:3px solid var(--green);">
+        <div class="pred-label" style="font-size:9px;">DOWNSIDE &middot; cooler</div>
+        <div class="stat-value" id="inf-scen-low" style="color:var(--green);font-size:22px;">&#8212;</div>
+      </div>
+      <div class="pred-card" style="flex:1;min-width:140px;padding:12px 16px;border-top:3px solid var(--amber);">
+        <div class="pred-label" style="font-size:9px;">BASE CASE</div>
+        <div class="stat-value" id="inf-scen-base" style="color:var(--amber);font-size:22px;">&#8212;</div>
+      </div>
+      <div class="pred-card" style="flex:1;min-width:140px;padding:12px 16px;border-top:3px solid var(--red);">
+        <div class="pred-label" style="font-size:9px;">UPSIDE &middot; hotter</div>
+        <div class="stat-value" id="inf-scen-high" style="color:var(--red);font-size:22px;">&#8212;</div>
+      </div>
+    </div>
+  </div>
+
   <!-- What's driving the forecast — signed pp pull of each indicator (from ML) -->
   <div id="inf-drivers-panel" style="display:none;margin:6px 0 22px;">
     <div class="section-header">
@@ -1090,6 +1111,12 @@ async function runInflationML() {
       document.getElementById('inf-main-s1').innerHTML =
         `${m.accuracy}% land within ±${m.acc_band}pp · range = 85% confidence band`;
       document.getElementById('inf-main-d1').innerHTML = dirHtml(fc[0].value, d.nowcast.last_actual);
+      // Scenario range — surface the 85% band as downside / base / upside
+      document.getElementById('inf-scenarios').style.display = '';
+      document.getElementById('inf-scen-month').textContent = fc[0].month;
+      document.getElementById('inf-scen-low').textContent  = lo + '%';
+      document.getElementById('inf-scen-base').textContent = fc[0].value + '%';
+      document.getElementById('inf-scen-high').textContent = hi + '%';
     }
     // Card 2: most recent ACTUAL CPI (reference, not a forecast)
     document.getElementById('inf-main-m2').textContent = (d.last_actual_month || '—') + ' (actual)';
