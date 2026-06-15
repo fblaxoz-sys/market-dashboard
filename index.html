@@ -406,6 +406,9 @@ td.r{text-align:right;}
     </div>
   </div>
 
+  <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Real GDP YoY Trend + ML Predictions</div></div>
+  <div class="chart-wrap"><canvas id="gdp-chart"></canvas></div>
+
   <div class="config-bar">
     <label>FRED API KEY</label>
     <input id="gdp-fred-key" type="password" placeholder="Paste FRED API key" />
@@ -452,9 +455,6 @@ td.r{text-align:right;}
   <div class="section-header"><div class="section-title"><span class="dot dot-blue"></span>Leading Indicators</div></div>
   <div class="drivers-grid" id="gdp-drivers-grid"><div class="empty-state" style="grid-column:1/-1;padding:32px;">Hit Refresh to load FRED data</div></div>
 
-  <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Real GDP YoY Trend + ML Predictions</div></div>
-  <div class="chart-wrap"><canvas id="gdp-chart"></canvas></div>
-
   <input type="hidden" id="gdp-bt-quarters" value="12">
 </div>
 </div>
@@ -477,6 +477,9 @@ td.r{text-align:right;}
       </button>
     </div>
   </div>
+
+  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>CPI Trend + ML Forecast</div></div>
+  <div class="chart-wrap"><canvas id="cpi-chart"></canvas></div>
 
   <div class="config-bar">
     <label>FRED API KEY</label>
@@ -537,9 +540,6 @@ td.r{text-align:right;}
 
   <div class="section-header"><div class="section-title"><span class="dot dot-blue"></span>Leading Indicators</div></div>
   <div class="drivers-grid" id="drivers-grid"><div class="empty-state" style="grid-column:1/-1;padding:32px;">Hit Refresh to load FRED data</div></div>
-
-  <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>CPI Trend + ML Forecast</div></div>
-  <div class="chart-wrap"><canvas id="cpi-chart"></canvas></div>
 </div>
 </div>
 
@@ -1110,17 +1110,28 @@ async function runInflationML() {
         </tr>`).join('')}
       </tbody></table>`;
 
-    // Overlay the 25-yr ML model line onto the CPI trend chart
+    // Overlay the 25-yr ML fit (history) + a prominent Forecast marker (future month)
     if (cpiChart) {
-      const mlMap = {};
-      (d.history || []).forEach(h => { mlMap[h.date] = h.predicted; });
-      (d.forecasts || []).forEach(f => { mlMap[f.month] = f.value; });
-      const mlLine = cpiChart.data.labels.map(l => l in mlMap ? mlMap[l] : null);
-      cpiChart.data.datasets = cpiChart.data.datasets.filter(ds => ds.label !== 'ML Model (25-yr)');
+      const labels  = cpiChart.data.labels;
+      const actuals = cpiChart.data.datasets[0].data;     // 'Actual CPI YoY %'
+      const histMap = {}; (d.history || []).forEach(h => { histMap[h.date] = h.predicted; });
+      const fcMap   = {}; (d.forecasts || []).forEach(f => { fcMap[f.month] = f.value; });
+      let lastActualIdx = -1;
+      actuals.forEach((v, i) => { if (v != null) lastActualIdx = i; });
+      const histLine = labels.map(l => (l in histMap) ? histMap[l] : null);
+      // forecast series: bridge from the last actual point, then the future value(s)
+      const fcLine = labels.map((l, i) => (l in fcMap) ? fcMap[l] : (i === lastActualIdx ? actuals[i] : null));
+      cpiChart.data.datasets = cpiChart.data.datasets.filter(ds => !['ML Model (25-yr)', 'Forecast'].includes(ds.label));
       cpiChart.data.datasets.push({
-        label:'ML Model (25-yr)', data: mlLine,
+        label:'ML Model (25-yr)', data: histLine,
         borderColor:'#2dd4a0', backgroundColor:'#2dd4a015', tension:0.4,
-        borderWidth:3, pointRadius:3, pointBackgroundColor:'#2dd4a0', spanGaps:false,
+        borderWidth:2, pointRadius:2, pointBackgroundColor:'#2dd4a0', spanGaps:false,
+      });
+      cpiChart.data.datasets.push({
+        label:'Forecast', data: fcLine,
+        borderColor:'#f5a623', backgroundColor:'#f5a62300', borderDash:[6,4], tension:0.3,
+        borderWidth:2.5, pointRadius:6, pointStyle:'rectRot', pointBackgroundColor:'#f5a623',
+        pointBorderColor:'#fff', pointBorderWidth:1.5, spanGaps:true,
       });
       cpiChart.update();
     }
@@ -1128,7 +1139,7 @@ async function runInflationML() {
   } catch(e) {
     document.getElementById('inf-ml-val').textContent = 'Error';
     document.getElementById('inf-ml-sub').textContent = e.message.slice(0,120);
-    document.getElementById('inf-main-s1').textContent = 'ML unavailable — showing simple model below';
+    document.getElementById('inf-main-s1').textContent = 'ML forecast unavailable — hit Refresh to retry';
     console.error(e);
   }
   btn.disabled = false;
@@ -1294,13 +1305,24 @@ function renderGDPChart(preds, btRows=[], mlData=[]) {
   ];
 
   if (mlData.length) {
-    // 25-year ML model — solid, prominent (the only prediction)
+    // 25-year ML fit over history (orange line); future positions left null
+    const mlHist = resolvedMlPred.map((v, i) => preds[i].actual != null ? v : null);
     datasets.push({
-      label:'25-yr ML Model',
-      data: resolvedMlPred,
+      label:'25-yr ML Model', data: mlHist,
       borderColor:'#f5a623', backgroundColor:'#f5a62315', tension:0.4,
-      borderWidth:3, pointRadius:4, pointBackgroundColor:'#f5a623',
-      pointBorderColor:'#fff', pointBorderWidth:1.5, spanGaps:false,
+      borderWidth:2, pointRadius:3, pointBackgroundColor:'#f5a623', spanGaps:false,
+    });
+    // prominent Forecast marker(s) for the future quarter(s), bridged from the last actual
+    let lastActualIdx = -1;
+    preds.forEach((p, i) => { if (p.actual != null) lastActualIdx = i; });
+    const fcLine = preds.map((p, i) =>
+      (i > lastActualIdx && resolvedMlPred[i] != null) ? resolvedMlPred[i]
+      : (i === lastActualIdx ? p.actual : null));
+    datasets.push({
+      label:'Forecast', data: fcLine,
+      borderColor:'#f5a623', backgroundColor:'#f5a62300', borderDash:[6,4], tension:0.3,
+      borderWidth:2.5, pointRadius:6, pointStyle:'rectRot', pointBackgroundColor:'#f5a623',
+      pointBorderColor:'#fff', pointBorderWidth:1.5, spanGaps:true,
     });
   }
 
