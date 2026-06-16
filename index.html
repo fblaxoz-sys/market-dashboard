@@ -388,8 +388,8 @@ td.r{text-align:right;}
     <span style="flex:1"></span>
     <label title="Used as the period for the S&amp;P 500 comparison">STARTED</label>
     <input id="pf-start" type="date" style="flex:0 0 150px;min-width:130px" onchange="setPortfolioStart(this.value)" />
-    <label title="Cash held in the portfolio. Dividends paid since the start date are added here.">CASH %</label>
-    <input id="pf-cash" type="number" step="0.1" style="flex:0 0 80px;min-width:64px" placeholder="0" onchange="setPortfolioCash(this.value)" />
+    <label title="Auto: 100% − the sum of your holding weights. Dividends since the start date also accrue here.">CASH %</label>
+    <input id="pf-cash" type="number" readonly title="Auto: whatever's left after your holding weights" style="flex:0 0 80px;min-width:64px;opacity:.7;cursor:not-allowed" placeholder="0" />
   </div>
 
   <!-- Overall gain + S&P comparison -->
@@ -1932,7 +1932,7 @@ function deletePortfolio(){
   portfolios.splice(pfActive,1); pfActive = Math.max(0, pfActive-1); savePortfolios(); renderPortfolio();
 }
 function setPortfolioStart(v){ curPf().start = v; savePortfolios(); renderPortfolio(); }
-function setPortfolioCash(v){ curPf().cash = parseFloat(v) || 0; savePortfolios(); renderPortfolio(); }
+// Cash is derived (100% − sum of holding weights), not entered — see renderPortfolio.
 function addHolding(){
   const sym = document.getElementById('pf-sym').value.trim().toUpperCase();
   const weight = parseFloat(document.getElementById('pf-weight').value);
@@ -2032,15 +2032,17 @@ function renderPfSelect() {
   const sel = document.getElementById('pf-select');
   sel.innerHTML = portfolios.map((p,i)=>`<option value="${i}"${i===pfActive?' selected':''}>${p.name}</option>`).join('');
   document.getElementById('pf-start').value = curPf().start || '';
-  document.getElementById('pf-cash').value = curPf().cash || 0;
+  document.getElementById('pf-cash').value =
+    Math.max(0, 100 - curPf().holdings.reduce((a,h)=>a+(h.weight||0),0)).toFixed(2);
 }
 
 async function renderPortfolio() {
   renderPfSelect();
   const pf = curPf(), tb = document.getElementById('pf-table');
-  const cashW = +pf.cash || 0;
+  const weightSum = pf.holdings.reduce((a,h)=>a+(h.weight||0),0);
+  const cashW = Math.max(0, 100 - weightSum);   // cash = whatever's left after holdings
   document.getElementById('pf-spy-since').textContent = pf.start || 'start';
-  if (!pf.holdings.length && !cashW) {
+  if (!pf.holdings.length) {
     tb.innerHTML = '<div class="empty-state">Add stocks above with their weight % and your buy price.</div>';
     document.getElementById('pf-summary').style.display = 'none';
     return;
@@ -2072,7 +2074,7 @@ async function renderPortfolio() {
   const divCash = rows.reduce((a,r)=>a+(r.divFrac||0),0);         // total dividends → cash
   const cashFactor = cashW + divCash;
   const totFactor = stockFactor + cashFactor;
-  const totW = pf.holdings.reduce((a,h)=>a+(h.weight||0),0) + cashW;   // initial weights incl. cash
+  const totW = weightSum + cashW;   // = 100 unless weights exceed 100%
   const overall = totW ? (totFactor/totW - 1) : null;            // total return, incl. dividends-to-cash
   const valid = rows.filter(r=>r.cur!=null).length;
   const spyRet = (spyNow!=null && spyThen) ? (spyNow/spyThen - 1) : null;
