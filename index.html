@@ -409,7 +409,9 @@ td.r{text-align:right;}
   <!-- Portfolio vs S&P 500 performance chart -->
   <div id="pf-chart-wrap" style="display:none;margin-top:18px;">
     <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Portfolio vs S&amp;P 500</div>
-      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">growth of $100 · each holding enters on its buy date · cash held flat</span></div>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">growth of $100 · rebased to the start of the selected window</span></div>
+    <div id="pf-period-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;"></div>
+    <div id="pf-period-stat" style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:10px;"></div>
     <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;height:320px;"><canvas id="pf-chart"></canvas></div>
   </div>
 
@@ -2191,6 +2193,19 @@ async function renderPortfolio() {
 // ── Portfolio vs S&P 500: growth-of-$100, money-weighted (each holding enters on
 // its buy date; cash held flat), built from the price history already cached. ──
 let pfChart = null;
+let pfPeriod = '1Y';   // selected comparison window
+const PF_PERIODS = ['1M','3M','6M','YTD','1Y','3Y','ALL'];
+function cashWeight(pf){ return Math.max(0, 100 - pf.holdings.reduce((a,h)=>a+(h.weight||0),0)); }
+function setPfPeriod(c){ pfPeriod = c; renderPfChart(curPf(), cashWeight(curPf())); }
+// First axis date for a window code, measured back from the latest data date.
+function pfWindowStart(code, axis){
+  const last = new Date(axis[axis.length-1] + 'T00:00:00');
+  if (code === 'ALL') return axis[0];
+  if (code === 'YTD') return `${last.getFullYear()}-01-01`;
+  const m = {'1M':1,'3M':3,'6M':6,'1Y':12,'3Y':36}[code] || 12;
+  const d = new Date(last); d.setMonth(d.getMonth() - m);
+  return d.toISOString().slice(0,10);
+}
 function renderPfChart(pf, cashW) {
   const wrap = document.getElementById('pf-chart-wrap');
   const spy = posOhlcCache['SPY'] && posOhlcCache['SPY'].ohlc;
@@ -2223,14 +2238,30 @@ function renderPfChart(pf, cashW) {
       bench[k] += (axis[k] < it.d || sBuy == null || spyClose[k] == null) ? it.w : it.w * (spyClose[k] / sBuy);
     }
   });
-  const base = port[0] || 100;                    // ≈ total weight at t0 → rebase to 100
-  const pV = port.map(v => +(v / base * 100).toFixed(2));
-  const bV = bench.map(v => +(v / base * 100).toFixed(2));
+  // ── window the series to the selected period, rebasing each to 100 at its start ──
+  const wStart = pfWindowStart(pfPeriod, axis);
+  let sIdx = axis.findIndex(d => d >= wStart); if (sIdx < 0) sIdx = 0;
+  const aWin  = axis.slice(sIdx);
+  const pBase = port[sIdx] || 1, bBase = bench[sIdx] || 1;
+  const pV = port.slice(sIdx).map(v => +(v / pBase * 100).toFixed(2));
+  const bV = bench.slice(sIdx).map(v => +(v / bBase * 100).toFixed(2));
+  // period buttons + stat caption
+  document.getElementById('pf-period-btns').innerHTML = PF_PERIODS.map(c => {
+    const on = c === pfPeriod;
+    return `<button onclick="setPfPeriod('${c}')" style="background:${on?'var(--amber-dim)':'transparent'};color:${on?'var(--amber)':'var(--muted)'};border:1px solid var(--border);border-radius:7px;font-family:var(--mono);font-size:11px;font-weight:${on?700:400};padding:5px 11px;cursor:pointer;">${c}</button>`;
+  }).join('');
+  const pRet = pV[pV.length-1] - 100, bRet = bV[bV.length-1] - 100, al = pRet - bRet;
+  const col = v => v >= 0 ? 'var(--green)' : 'var(--red)';
+  document.getElementById('pf-period-stat').innerHTML =
+    `<b style="color:${col(pRet)}">Portfolio ${pRet>=0?'+':''}${pRet.toFixed(2)}%</b> &middot; ` +
+    `S&amp;P ${bRet>=0?'+':''}${bRet.toFixed(2)}% &middot; ` +
+    `<b style="color:${col(al)}">${al>=0?'+':''}${al.toFixed(2)}pp</b> ` +
+    `<span style="opacity:.7">(since ${aWin[0]})</span>`;
   wrap.style.display = '';
   if (pfChart) pfChart.destroy();
   pfChart = new Chart(document.getElementById('pf-chart').getContext('2d'), {
     type: 'line',
-    data: { labels: axis, datasets: [
+    data: { labels: aWin, datasets: [
       { label: 'Portfolio', data: pV, borderColor: '#5b8def', backgroundColor: '#5b8def18', borderWidth: 2, pointRadius: 0, tension: 0.1, fill: true },
       { label: 'S&P 500', data: bV, borderColor: '#f5a623', borderWidth: 2, borderDash: [5,3], pointRadius: 0, tension: 0.1 },
     ]},
