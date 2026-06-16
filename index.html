@@ -385,6 +385,7 @@ td.r{text-align:right;}
     <button class="btn" onclick="renamePortfolio()">Rename</button>
     <button class="btn" onclick="deletePortfolio()">Delete</button>
     <button class="btn" onclick="openPfImport()" title="Bulk-add holdings by pasting them">&#8681; Import</button>
+    <button class="btn" onclick="openPfExport()" title="Copy this portfolio to move it to another computer">&#8682; Export</button>
     <span style="flex:1"></span>
     <label title="Used as the period for the S&amp;P 500 comparison">STARTED</label>
     <input id="pf-start" type="date" style="flex:0 0 150px;min-width:130px" onchange="setPortfolioStart(this.value)" />
@@ -426,6 +427,7 @@ td.r{text-align:right;}
   </div>
 
   <div class="table-wrap" id="pf-table"><div class="empty-state">Create a portfolio, then add stocks with their weight % and your buy price.</div></div>
+  <div id="pf-insights" style="margin-top:18px;"></div>
 
   <!-- Bulk import modal -->
   <div id="pf-import-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:9999;align-items:center;justify-content:center;padding:20px;">
@@ -440,6 +442,21 @@ td.r{text-align:right;}
       <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px;">
         <button class="btn" onclick="closePfImport()">Cancel</button>
         <button class="btn btn-primary" onclick="doPfImport()">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export modal -->
+  <div id="pf-export-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:9999;align-items:center;justify-content:center;padding:20px;">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:540px;width:100%;padding:22px;box-shadow:0 20px 60px #000c;">
+      <div style="font-size:16px;font-weight:800;margin-bottom:4px;">Export <span id="pf-export-name"></span></div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.7;margin-bottom:14px;">
+        Copy this, then on the other computer open this tab &rarr; <b style="color:var(--text)">&#8681; Import</b> and paste it.
+      </div>
+      <textarea id="pf-export-text" rows="11" readonly onclick="this.select()" style="width:100%;font-family:var(--mono);font-size:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;resize:vertical;box-sizing:border-box;"></textarea>
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px;">
+        <button class="btn" onclick="closePfExport()">Close</button>
+        <button class="btn btn-primary" onclick="copyPfExport(this)">Copy to clipboard</button>
       </div>
     </div>
   </div>
@@ -2008,6 +2025,23 @@ function doPfImport(){
   toast(`Imported ${holdings.length} holdings into "${name}"`);
 }
 
+// ── Export: copy the current portfolio in the same paste format (cross-device) ──
+function openPfExport(){
+  const pf = curPf();
+  const lines = pf.holdings.map(h => `${h.sym}, ${h.weight}, ${h.buy}${h.date ? ', ' + h.date : ''}`);
+  document.getElementById('pf-export-name').textContent = pf.name;
+  document.getElementById('pf-export-text').value = lines.join('\n');
+  document.getElementById('pf-export-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('pf-export-text').select(), 50);
+}
+function closePfExport(){ document.getElementById('pf-export-modal').style.display = 'none'; }
+function copyPfExport(btn){
+  const ta = document.getElementById('pf-export-text'); ta.select();
+  const done = () => { btn.textContent = 'Copied ✓'; toast('Copied — paste it into Import on the other computer'); setTimeout(() => btn.textContent = 'Copy to clipboard', 1600); };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(ta.value).then(done, () => { document.execCommand('copy'); done(); });
+  else { document.execCommand('copy'); done(); }
+}
+
 // Lightweight toast for non-blocking feedback
 function toast(msg) {
   let t = document.getElementById('app-toast');
@@ -2071,15 +2105,17 @@ async function renderPortfolio() {
   if (!pf.holdings.length) {
     tb.innerHTML = '<div class="empty-state">Add stocks above with their weight % and your buy price.</div>';
     document.getElementById('pf-summary').style.display = 'none';
+    document.getElementById('pf-insights').innerHTML = '';
     const cw = document.getElementById('pf-chart-wrap'); if (cw) cw.style.display = 'none';
     return;
   }
   if (pf.holdings.some(h=>!posOhlcCache[h.sym]) || !posOhlcCache['SPY'])
     tb.innerHTML = '<div class="empty-state">Loading prices…</div>';   // skip flash when re-sorting cached data
   // Current price + dividend history for each holding; SPY for the benchmark.
-  const syms = [...new Set(pf.holdings.map(h=>h.sym))], price = {}, divsBy = {};
+  const syms = [...new Set(pf.holdings.map(h=>h.sym))], price = {}, divsBy = {}, lastDt = {};
   await Promise.all(syms.map(async s => {
-    try { const o = await getOHLC(s); price[s] = o.ohlc[o.ohlc.length-1][4]; divsBy[s] = o.divs; }
+    try { const o = await getOHLC(s); const last = o.ohlc[o.ohlc.length-1];
+      price[s] = last[4]; lastDt[s] = last[0]; divsBy[s] = o.divs; }
     catch(e){ price[s] = null; divsBy[s] = []; }
   }));
   let spyNow = null, spyOhlc = null;
@@ -2105,6 +2141,11 @@ async function renderPortfolio() {
   const totW = weightSum + cashW;   // = 100 unless weights exceed 100%
   const overall = totW ? (totFactor/totW - 1) : null;            // total return, incl. dividends-to-cash
   const valid = rows.filter(r=>r.cur!=null).length;
+  // ── price freshness: newest close we have, plus stale / unpriced holdings ──
+  const pricedDates = rows.filter(r=>r.cur!=null && lastDt[r.sym]).map(r=>lastDt[r.sym]);
+  const asOf = pricedDates.length ? pricedDates.reduce((m,d)=>d>m?d:m) : null;
+  if (asOf && spyOhlc && spyOhlc[spyOhlc.length-1][0] > asOf) {} // SPY may be newer; asOf tracks holdings
+  const failedSyms = rows.filter(r=>r.cur==null).map(r=>r.sym);
   // Money-weighted S&P benchmark: each holding vs S&P since ITS buy date (fallback to
   // the portfolio start). Cash is held flat in both, so alpha isolates picks + timing.
   let benchNum = 0, benchHas = false;
@@ -2145,7 +2186,7 @@ async function renderPortfolio() {
       <td class="r c-muted" style="white-space:nowrap">${fmtBought(r.date)}</td>
       <td class="r">${r.curPct!=null ? r.curPct.toFixed(2)+'%' : '&#8212;'}</td>
       <td class="r c-muted">$${r.buy.toFixed(2)}</td>
-      <td class="r">${r.cur!=null ? '$'+r.cur.toFixed(2) : '<span class="c-muted">n/a</span>'}</td>
+      <td class="r"${r.cur!=null&&lastDt[r.sym]?` title="close ${lastDt[r.sym]}"`:''}>${r.cur!=null ? '$'+r.cur.toFixed(2) + (asOf && lastDt[r.sym] && lastDt[r.sym] < asOf ? ` <span title="stale — last close ${lastDt[r.sym]}, newer data exists" style="color:var(--amber)">&#9888;</span>` : '') : '<span class="c-muted" title="no price data from Yahoo">n/a</span>'}</td>
       <td class="r ${r.ret==null?'c-muted':r.ret>=0?'c-green':'c-red'}"${retTitle?` title="${retTitle}"`:''}>${r.ret!=null ? (r.ret>=0?'+':'')+(r.ret*100).toFixed(2)+'%'+divNote : '&#8212;'}</td>
       <td class="r"><button onclick="removeHolding(${r._idx})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
     </tr>`;
@@ -2176,7 +2217,8 @@ async function renderPortfolio() {
   tEl.textContent = overall!=null ? (overall>=0?'+':'')+(overall*100).toFixed(2)+'%' : '&#8212;';
   if (overall!=null) tEl.style.color = overall>=0 ? 'var(--green)' : 'var(--red)';
   document.getElementById('pf-total-sub').textContent =
-    `${valid} of ${pf.holdings.length} holdings priced` + (divCash>0 ? ` · +${divPctOfPort.toFixed(2)}% from dividends` : '');
+    `${valid} of ${pf.holdings.length} holdings priced` + (divCash>0 ? ` · +${divPctOfPort.toFixed(2)}% from dividends` : '')
+    + (failedSyms.length ? ` · ⚠ no price: ${failedSyms.join(', ')}` : '');
   const aEl = document.getElementById('pf-alpha');
   if (alpha!=null) {
     aEl.textContent = (alpha>=0?'+':'')+(alpha*100).toFixed(2)+'pp';
@@ -2186,8 +2228,44 @@ async function renderPortfolio() {
     aEl.textContent = '&#8212;'; aEl.style.color = 'var(--muted)';
     document.getElementById('pf-spy-sub').textContent = 'add buy dates (or a start date) for the S&P comparison';
   }
-  document.getElementById('pf-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  document.getElementById('pf-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
+    + (asOf ? ' · prices as of ' + asOf : '');
+  renderPfInsights(rows, totW);
   renderPfChart(pf, cashW);
+}
+
+// ── "What drove your return" + rebalance drift ─────────────────────────────
+function renderPfInsights(rows, totW) {
+  const el = document.getElementById('pf-insights');
+  const priced = rows.filter(r => r.ret != null && r.curPct != null);
+  if (!totW || priced.length < 2) { el.innerHTML = ''; return; }
+  // contribution to total return (pp) = weight × return / totW × 100  (sums to overall)
+  const contrib = priced.map(r => ({ sym: r.sym, c: r.weight * r.ret / totW * 100 }))
+                        .sort((a,b) => b.c - a.c);
+  const top = contrib.slice(0, 5);
+  const topSyms = new Set(top.map(x => x.sym));
+  const bot = contrib.filter(x => x.c < 0 && !topSyms.has(x.sym)).reverse().slice(0, 5);  // most-negative first
+  // drift from target (cost-basis weight): current % − target %
+  const drift = priced.map(r => ({ sym: r.sym, cur: r.curPct, tgt: r.weight, d: r.curPct - r.weight }))
+                      .sort((a,b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 6);
+  const col = v => v >= 0 ? 'var(--green)' : 'var(--red)';
+  const cRow = x => `<div class="contrib-row"><div class="contrib-name">${x.sym}</div>
+    <div class="contrib-val" style="width:auto;color:${col(x.c)}">${x.c>=0?'+':''}${x.c.toFixed(2)}pp</div></div>`;
+  const dRow = x => `<div class="contrib-row" title="${x.sym}: now ${x.cur.toFixed(2)}% vs ${x.tgt.toFixed(2)}% target">
+    <div class="contrib-name">${x.sym}</div>
+    <div style="flex:1;font-family:var(--mono);font-size:11px;color:var(--muted)">${x.cur.toFixed(2)}% / ${x.tgt.toFixed(2)}%</div>
+    <div class="contrib-val" style="width:auto;color:${x.d>=0?'var(--amber)':'var(--blue)'}">${x.d>=0?'trim ':'add '}${Math.abs(x.d).toFixed(2)}pp</div></div>`;
+  el.innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;">
+    <div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:10px;">WHAT DROVE YOUR RETURN <span style="opacity:.6">(contribution, pp)</span></div>
+      ${top.map(cRow).join('')}
+      ${bot.length ? `<div style="height:8px"></div>${bot.map(cRow).join('')}` : ''}
+    </div>
+    <div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:10px;">REBALANCE <span style="opacity:.6">(now / target → drift)</span></div>
+      ${drift.map(dRow).join('')}
+    </div>
+  </div>`;
 }
 
 // ── Portfolio vs S&P 500: growth-of-$100, money-weighted (each holding enters on
