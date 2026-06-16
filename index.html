@@ -2093,10 +2093,10 @@ async function renderPortfolio() {
     const divNote = r.divPerSh>0 ? ` <span class="c-green" style="font-size:9px" title="$${r.divPerSh.toFixed(2)}/share in dividends since ${pf.start} → cash">+div</span>` : '';
     return `<tr>
       <td class="ticker-cell">${r.sym}</td>
-      <td class="r">${r.curPct!=null ? r.curPct.toFixed(1)+'%' : '&#8212;'}</td>
-      <td class="r c-muted">$${r.buy}</td>
+      <td class="r">${r.curPct!=null ? r.curPct.toFixed(2)+'%' : '&#8212;'}</td>
+      <td class="r c-muted">$${r.buy.toFixed(2)}</td>
       <td class="r">${r.cur!=null ? '$'+r.cur.toFixed(2) : '<span class="c-muted">n/a</span>'}</td>
-      <td class="r ${r.ret==null?'c-muted':r.ret>=0?'c-green':'c-red'}">${r.ret!=null ? (r.ret>=0?'+':'')+(r.ret*100).toFixed(1)+'%'+divNote : '&#8212;'}</td>
+      <td class="r ${r.ret==null?'c-muted':r.ret>=0?'c-green':'c-red'}">${r.ret!=null ? (r.ret>=0?'+':'')+(r.ret*100).toFixed(2)+'%'+divNote : '&#8212;'}</td>
       <td class="r"><button onclick="removeHolding(${r._idx})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
     </tr>`;
   }).join('');
@@ -2105,10 +2105,10 @@ async function renderPortfolio() {
     const cashPct = totFactor>0 ? (cashFactor/totFactor*100) : null;
     cashRow = `<tr style="border-top:1px solid var(--border)">
       <td class="ticker-cell">&#128181; Cash</td>
-      <td class="r">${cashPct!=null ? cashPct.toFixed(1)+'%' : '&#8212;'}</td>
+      <td class="r">${cashPct!=null ? cashPct.toFixed(2)+'%' : '&#8212;'}</td>
       <td class="r c-muted">&#8212;</td>
       <td class="r c-muted">&#8212;</td>
-      <td class="r ${divCash>0?'c-green':'c-muted'}" title="dividends collected since ${pf.start||'start'}">${divCash>0 ? '+'+divPctOfPort.toFixed(1)+'% div' : '&#8212;'}</td>
+      <td class="r ${divCash>0?'c-green':'c-muted'}" title="dividends collected since ${pf.start||'start'}">${divCash>0 ? '+'+divPctOfPort.toFixed(2)+'% div' : '&#8212;'}</td>
       <td></td>
     </tr>`;
   }
@@ -2122,15 +2122,15 @@ async function renderPortfolio() {
 
   document.getElementById('pf-summary').style.display = '';
   const tEl = document.getElementById('pf-total');
-  tEl.textContent = overall!=null ? (overall>=0?'+':'')+(overall*100).toFixed(1)+'%' : '&#8212;';
+  tEl.textContent = overall!=null ? (overall>=0?'+':'')+(overall*100).toFixed(2)+'%' : '&#8212;';
   if (overall!=null) tEl.style.color = overall>=0 ? 'var(--green)' : 'var(--red)';
   document.getElementById('pf-total-sub').textContent =
-    `${valid} of ${pf.holdings.length} holdings priced` + (divCash>0 ? ` · +${divPctOfPort.toFixed(1)}% from dividends` : '');
+    `${valid} of ${pf.holdings.length} holdings priced` + (divCash>0 ? ` · +${divPctOfPort.toFixed(2)}% from dividends` : '');
   const aEl = document.getElementById('pf-alpha');
   if (alpha!=null) {
-    aEl.textContent = (alpha>=0?'+':'')+(alpha*100).toFixed(1)+'pp';
+    aEl.textContent = (alpha>=0?'+':'')+(alpha*100).toFixed(2)+'pp';
     aEl.style.color = alpha>=0 ? 'var(--green)' : 'var(--red)';
-    document.getElementById('pf-spy-sub').innerHTML = `S&amp;P ${spyRet>=0?'+':''}${(spyRet*100).toFixed(1)}% · you're ${alpha>=0?'beating':'trailing'} it by ${Math.abs(alpha*100).toFixed(1)}pp`;
+    document.getElementById('pf-spy-sub').innerHTML = `S&amp;P ${spyRet>=0?'+':''}${(spyRet*100).toFixed(2)}% · you're ${alpha>=0?'beating':'trailing'} it by ${Math.abs(alpha*100).toFixed(2)}pp`;
   } else {
     aEl.textContent = '&#8212;'; aEl.style.color = 'var(--muted)';
     document.getElementById('pf-spy-sub').textContent = 'set a start date for the S&P comparison';
