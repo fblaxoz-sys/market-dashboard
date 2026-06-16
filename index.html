@@ -384,6 +384,7 @@ td.r{text-align:right;}
     <button class="btn" onclick="newPortfolio()">+ New</button>
     <button class="btn" onclick="renamePortfolio()">Rename</button>
     <button class="btn" onclick="deletePortfolio()">Delete</button>
+    <button class="btn" onclick="openPfImport()" title="Bulk-add holdings by pasting them">&#8681; Import</button>
     <span style="flex:1"></span>
     <label title="Used as the period for the S&amp;P 500 comparison">STARTED</label>
     <input id="pf-start" type="date" style="flex:0 0 150px;min-width:130px" onchange="setPortfolioStart(this.value)" />
@@ -415,6 +416,23 @@ td.r{text-align:right;}
   </div>
 
   <div class="table-wrap" id="pf-table"><div class="empty-state">Create a portfolio, then add stocks with their weight % and your buy price.</div></div>
+
+  <!-- Bulk import modal -->
+  <div id="pf-import-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:9999;align-items:center;justify-content:center;padding:20px;">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:540px;width:100%;padding:22px;box-shadow:0 20px 60px #000c;">
+      <div style="font-size:16px;font-weight:800;margin-bottom:4px;">Import holdings</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.7;margin-bottom:14px;">
+        One per line: <b style="color:var(--text)">TICKER, weight%, buyPrice</b> &middot; optional <b style="color:var(--text)">CASH, %</b> line.<br>
+        Weight = cost-basis allocation; the Current % column drifts to match your statement after Refresh.
+      </div>
+      <input id="pf-import-name" type="text" placeholder="Portfolio name" style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 11px;font-family:inherit;font-size:13px;box-sizing:border-box;" />
+      <textarea id="pf-import-text" rows="11" placeholder="CASH, 13.45&#10;AAAU, 1.70, 28.70&#10;AMZN, 1.72, 150.39" style="width:100%;font-family:var(--mono);font-size:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;resize:vertical;box-sizing:border-box;"></textarea>
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px;">
+        <button class="btn" onclick="closePfImport()">Cancel</button>
+        <button class="btn btn-primary" onclick="doPfImport()">Import</button>
+      </div>
+    </div>
+  </div>
 </div>
 </div>
 
@@ -1921,6 +1939,43 @@ function addHolding(){
   renderPortfolio();
 }
 function removeHolding(i){ curPf().holdings.splice(i,1); savePortfolios(); renderPortfolio(); }
+
+// ── Bulk import: paste "TICKER, weight%, buyPrice" lines (+ optional "CASH, %") ──
+function openPfImport(){
+  document.getElementById('pf-import-name').value = curPf().name;
+  document.getElementById('pf-import-text').value = '';
+  document.getElementById('pf-import-modal').style.display = 'flex';
+  document.getElementById('pf-import-text').focus();
+}
+function closePfImport(){ document.getElementById('pf-import-modal').style.display = 'none'; }
+function doPfImport(){
+  const name = (document.getElementById('pf-import-name').value || '').trim() || 'Imported';
+  const raw  = document.getElementById('pf-import-text').value || '';
+  const holdings = []; let cash = 0;
+  for (let line of raw.split('\n')) {
+    line = line.trim();
+    if (!line || line[0] === '#') continue;
+    const parts = line.split(/[,\s]+/).filter(Boolean);
+    const sym = (parts[0] || '').toUpperCase();
+    const nums = parts.slice(1).map(parseFloat).filter(n => !isNaN(n));
+    if (sym === 'CASH') { cash = nums[0] || 0; continue; }
+    if (!sym || nums.length < 2) continue;            // need weight + buy
+    const [weight, buy] = nums;
+    if (!(weight > 0) || !(buy > 0)) continue;
+    if (!holdings.some(h => h.sym === sym)) holdings.push({ sym, weight, buy });
+  }
+  if (!holdings.length) { alert('No valid rows found.\nUse one per line:  TICKER, weight%, buyPrice'); return; }
+  let idx = portfolios.findIndex(p => p.name === name);
+  if (idx >= 0) {
+    if (!confirm(`Replace the ${portfolios[idx].holdings.length} holding(s) in "${name}" with these ${holdings.length}?`)) return;
+    portfolios[idx].holdings = holdings; portfolios[idx].cash = cash;
+  } else {
+    portfolios.push({ name, start: new Date().toISOString().slice(0,10), cash, holdings });
+    idx = portfolios.length - 1;
+  }
+  pfActive = idx; savePortfolios(); closePfImport(); renderPortfolio();
+  toast(`Imported ${holdings.length} holdings into "${name}"`);
+}
 
 // Lightweight toast for non-blocking feedback
 function toast(msg) {
