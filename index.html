@@ -418,6 +418,13 @@ td.r{text-align:right;}
 
   <div class="table-wrap" id="pf-table"><div class="empty-state">Create a portfolio, then add stocks with their weight % and your buy price.</div></div>
 
+  <!-- Portfolio vs S&P 500 performance chart -->
+  <div id="pf-chart-wrap" style="display:none;margin-top:20px;">
+    <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Portfolio vs S&amp;P 500</div>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">growth of $100 · each holding enters on its buy date · cash held flat</span></div>
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;height:320px;"><canvas id="pf-chart"></canvas></div>
+  </div>
+
   <!-- Bulk import modal -->
   <div id="pf-import-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:9999;align-items:center;justify-content:center;padding:20px;">
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:540px;width:100%;padding:22px;box-shadow:0 20px 60px #000c;">
@@ -2062,6 +2069,7 @@ async function renderPortfolio() {
   if (!pf.holdings.length) {
     tb.innerHTML = '<div class="empty-state">Add stocks above with their weight % and your buy price.</div>';
     document.getElementById('pf-summary').style.display = 'none';
+    const cw = document.getElementById('pf-chart-wrap'); if (cw) cw.style.display = 'none';
     return;
   }
   if (pf.holdings.some(h=>!posOhlcCache[h.sym]) || !posOhlcCache['SPY'])
@@ -2177,6 +2185,61 @@ async function renderPortfolio() {
     document.getElementById('pf-spy-sub').textContent = 'add buy dates (or a start date) for the S&P comparison';
   }
   document.getElementById('pf-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  renderPfChart(pf, cashW);
+}
+
+// ── Portfolio vs S&P 500: growth-of-$100, money-weighted (each holding enters on
+// its buy date; cash held flat), built from the price history already cached. ──
+let pfChart = null;
+function renderPfChart(pf, cashW) {
+  const wrap = document.getElementById('pf-chart-wrap');
+  const spy = posOhlcCache['SPY'] && posOhlcCache['SPY'].ohlc;
+  const items = pf.holdings.map(h => ({
+    w: h.weight, d: h.date || pf.start,
+    ohlc: posOhlcCache[h.sym] && posOhlcCache[h.sym].ohlc
+  })).filter(it => it.ohlc && it.ohlc.length && it.d);
+  if (!spy || !items.length) { wrap.style.display = 'none'; if (pfChart) { pfChart.destroy(); pfChart = null; } return; }
+  const t0 = items.reduce((m,it) => it.d < m ? it.d : m, items[0].d);
+  const axis = spy.filter(r => r[0] >= t0).map(r => r[0]);
+  if (axis.length < 2) { wrap.style.display = 'none'; return; }
+  // forward-fill a [date,o,h,l,c] series onto the axis (last close ≤ each axis date)
+  const align = (ohlc) => {
+    const out = new Array(axis.length); let oi = 0, last = null;
+    for (let k = 0; k < axis.length; k++) {
+      while (oi < ohlc.length && ohlc[oi][0] <= axis[k]) { last = ohlc[oi][4]; oi++; }
+      out[k] = last;
+    }
+    return out;
+  };
+  const spyClose = align(spy);
+  const cw = cashW || 0;
+  const port = new Array(axis.length).fill(cw);   // cash held flat in both
+  const bench = new Array(axis.length).fill(cw);
+  items.forEach(it => {
+    const cl = align(it.ohlc);
+    const pBuy = closeOnOrBefore(it.ohlc, it.d), sBuy = closeOnOrBefore(spy, it.d);
+    for (let k = 0; k < axis.length; k++) {
+      port[k]  += (axis[k] < it.d || pBuy == null || cl[k] == null) ? it.w : it.w * (cl[k] / pBuy);
+      bench[k] += (axis[k] < it.d || sBuy == null || spyClose[k] == null) ? it.w : it.w * (spyClose[k] / sBuy);
+    }
+  });
+  const base = port[0] || 100;                    // ≈ total weight at t0 → rebase to 100
+  const pV = port.map(v => +(v / base * 100).toFixed(2));
+  const bV = bench.map(v => +(v / base * 100).toFixed(2));
+  wrap.style.display = '';
+  if (pfChart) pfChart.destroy();
+  pfChart = new Chart(document.getElementById('pf-chart').getContext('2d'), {
+    type: 'line',
+    data: { labels: axis, datasets: [
+      { label: 'Portfolio', data: pV, borderColor: '#5b8def', backgroundColor: '#5b8def18', borderWidth: 2, pointRadius: 0, tension: 0.1, fill: true },
+      { label: 'S&P 500', data: bV, borderColor: '#f5a623', borderWidth: 2, borderDash: [5,3], pointRadius: 0, tension: 0.1 },
+    ]},
+    options: { responsive: true, maintainAspectRatio: false, interaction: { intersect: false, mode: 'index' },
+      plugins: { legend: { labels: { color: '#c8c8d4', boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: $${c.parsed.y.toFixed(1)} (${c.parsed.y-100>=0?'+':''}${(c.parsed.y-100).toFixed(1)}%)` } } },
+      scales: { x: { ticks: { color: '#6b6b80', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: '#ffffff08' } },
+        y: { ticks: { color: '#6b6b80', font: { size: 10 } }, grid: { color: '#ffffff08' }, title: { display: true, text: 'Growth of $100', color: '#6b6b80', font: { size: 10 } } } } }
+  });
 }
 
 // Refresh = drop the price cache and re-pull, recomputing prices + current weights
