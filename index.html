@@ -190,7 +190,7 @@ td.r{text-align:right;}
   <button class="tab-btn active" onclick="switchTab('etf')">&#128201; ETF Swings</button>
   <button class="tab-btn" onclick="switchTab('stock')">&#128200; Stock Swings</button>
   <button class="tab-btn" onclick="switchTab('corr')">&#128279; Correlations</button>
-  <button class="tab-btn" onclick="switchTab('positions')">&#128204; My Positions</button>
+  <button class="tab-btn" onclick="switchTab('portfolios')">&#128188; My Portfolios</button>
   <button class="tab-btn" onclick="switchTab('inflation')">&#127777; Inflation Predictor</button>
   <button class="tab-btn" onclick="switchTab('gdp')">&#128202; GDP Predictor</button>
 </nav>
@@ -364,36 +364,55 @@ td.r{text-align:right;}
 </div>
 </div>
 
-<div class="tab-panel" id="tab-positions">
+<div class="tab-panel" id="tab-portfolios">
 <div class="wrap">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
     <div>
-      <h2 style="font-size:22px;font-weight:800;">My Positions</h2>
-      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Trailing-stop sell tracker &mdash; 6&times; ATR Chandelier stop from your entry · Yahoo daily data</p>
+      <h2 style="font-size:22px;font-weight:800;">My Portfolios</h2>
+      <p style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px;">Build your own portfolios &mdash; weighted returns vs the S&amp;P 500 · Yahoo daily prices</p>
     </div>
-    <div style="display:flex;align-items:center;gap:10px;">
-      <span id="pos-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
-      <button class="btn btn-primary" onclick="renderPositions()"><span id="pos-refresh-icon">&#8635;</span> Refresh</button>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span id="pf-updated" style="font-family:var(--mono);font-size:11px;color:var(--muted);"></span>
+      <button class="btn btn-primary" onclick="refreshPortfolio()"><span id="pf-refresh-icon">&#8635;</span> Refresh prices</button>
     </div>
   </div>
 
-  <div class="config-bar">
-    <label>ADD POSITION</label>
-    <input id="pos-sym"   type="text"   style="flex:0 0 110px;min-width:90px" placeholder="Ticker e.g. IGV" />
-    <input id="pos-price" type="number" style="flex:0 0 130px;min-width:100px" step="0.01" placeholder="Entry price" />
-    <input id="pos-date"  type="date"   style="flex:0 0 160px;min-width:140px" />
-    <button class="btn" onclick="addPosition()">Add</button>
+  <!-- Portfolio picker + management -->
+  <div class="config-bar" style="flex-wrap:wrap;">
+    <label>PORTFOLIO</label>
+    <select id="pf-select" onchange="selectPortfolio(this.value)" style="flex:0 0 200px;min-width:150px"></select>
+    <button class="btn" onclick="newPortfolio()">+ New</button>
+    <button class="btn" onclick="renamePortfolio()">Rename</button>
+    <button class="btn" onclick="deletePortfolio()">Delete</button>
+    <span style="flex:1"></span>
+    <label title="Used as the period for the S&amp;P 500 comparison">STARTED</label>
+    <input id="pf-start" type="date" style="flex:0 0 160px;min-width:140px" onchange="setPortfolioStart(this.value)" />
   </div>
 
-  <div id="pos-chart-wrap" class="chart-wrap" style="display:none;">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
-      <div id="pos-chart-title" style="font-size:16px;font-weight:800;"></div>
-      <div id="pos-chart-legend" style="font-family:var(--mono);font-size:10px;color:var(--muted);"></div>
+  <!-- Overall gain + S&P comparison -->
+  <div class="pred-hero" id="pf-summary" style="display:none;">
+    <div class="pred-card" style="border-top:3px solid var(--amber);">
+      <div class="pred-label">Portfolio return <span style="font-size:9px;color:var(--muted)">weighted, from your buy prices</span></div>
+      <div class="pred-value" id="pf-total" style="color:var(--amber);">&#8212;</div>
+      <div class="pred-sub" id="pf-total-sub"></div>
     </div>
-    <div id="pos-chart" style="height:340px;"></div>
+    <div class="pred-card" style="border-top:3px solid var(--green);">
+      <div class="pred-label">vs S&amp;P 500 <span style="font-size:9px;color:var(--muted)">since <span id="pf-spy-since">start</span></span></div>
+      <div class="pred-value" id="pf-alpha" style="color:var(--green);">&#8212;</div>
+      <div class="pred-sub" id="pf-spy-sub"></div>
+    </div>
   </div>
 
-  <div class="table-wrap" id="positions-table"><div class="empty-state">Add an ETF you bought above &mdash; it'll track the trailing stop so you know when to sell</div></div>
+  <!-- Add a holding -->
+  <div class="config-bar" style="margin-top:14px;">
+    <label>ADD STOCK</label>
+    <input id="pf-sym"    type="text"   style="flex:0 0 110px;min-width:90px" placeholder="Ticker e.g. NVDA" onkeydown="if(event.key==='Enter')addHolding()" />
+    <input id="pf-weight" type="number" style="flex:0 0 110px;min-width:90px" step="0.1" placeholder="Weight %" onkeydown="if(event.key==='Enter')addHolding()" />
+    <input id="pf-buy"    type="number" style="flex:0 0 130px;min-width:100px" step="0.01" placeholder="Buy price" onkeydown="if(event.key==='Enter')addHolding()" />
+    <button class="btn" onclick="addHolding()">Add</button>
+  </div>
+
+  <div class="table-wrap" id="pf-table"><div class="empty-state">Create a portfolio, then add stocks with their weight % and your buy price.</div></div>
 </div>
 </div>
 
@@ -635,7 +654,7 @@ function applyHashRoute() {
   const raw = (location.hash || '').replace(/^#/, '');
   if (!raw) return false;
   const [tab, arg] = raw.split('/');
-  if (!['etf','stock','corr','positions','inflation','gdp'].includes(tab)) return false;
+  if (!['etf','stock','corr','portfolios','inflation','gdp'].includes(tab)) return false;
   switchTab(tab);
   if (tab === 'corr' && arg) {
     const inp = document.getElementById('corr-sym');
@@ -645,8 +664,8 @@ function applyHashRoute() {
 }
 
 function switchTab(id) {
-  const ids = ['etf','stock','corr','positions','inflation','gdp'];
-  if (id === 'positions') setTimeout(renderPositions, 50);
+  const ids = ['etf','stock','corr','portfolios','inflation','gdp'];
+  if (id === 'portfolios') setTimeout(renderPortfolio, 50);
   document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', ids[i] === id));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-'+id));
   hydrateScan(id);
@@ -1677,7 +1696,7 @@ function etfRow(a, chartFn) {
       + `<br><button title="See ${a.sym}'s beta & correlations" onclick="event.stopPropagation();gotoCorr('${a.sym}')" style="margin-top:3px;font-size:9px;padding:1px 7px;border-radius:5px;border:1px solid #5b8def55;background:#5b8def15;color:#5b8def;cursor:pointer;font-family:inherit;">corr →</button>`;
   }
   return `<tr style="cursor:pointer" onclick="${chartFn}('${a.sym}')">
-    <td class="ticker-cell">${a.sym}<button class="track-btn" title="Add ${a.sym} to My Positions at the current price" onclick="event.stopPropagation();trackFromScan('${a.sym}',this)">+ track</button></td>
+    <td class="ticker-cell">${a.sym}<button class="track-btn" title="Add ${a.sym} to a portfolio at the current price" onclick="event.stopPropagation();trackFromScan('${a.sym}',this)">+ track</button></td>
     <td class="r">$${a.price.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
     <td class="r"><span class="c-green">$${a.entry ?? a.level}</span><br>
       <span style="font-size:9px;color:var(--red);opacity:.85" title="6× ATR trailing stop (ratchets up as price rises)">stop $${a.stop ?? '—'}${a.atr_pct?` (-${a.atr_pct}%)`:''}</span></td>
@@ -1866,25 +1885,39 @@ async function showTradeChart(sym, date) {
 // ════════════════════════════════════════════════════════
 // TAB — MY POSITIONS (trailing-stop sell tracker)
 // ════════════════════════════════════════════════════════
-let positions = JSON.parse(localStorage.getItem('positions') || '[]');
-let posChart  = null;
-const posOhlcCache = {};
+const posOhlcCache = {};   // sym -> ohlc, shared by getOHLC
 
-function savePositions() { localStorage.setItem('positions', JSON.stringify(positions)); }
-
-function addPosition() {
-  const sym = document.getElementById('pos-sym').value.trim().toUpperCase();
-  const price = parseFloat(document.getElementById('pos-price').value);
-  const date = document.getElementById('pos-date').value || new Date().toISOString().slice(0,10);
-  if (!sym || !(price > 0)) { alert('Enter a ticker and a valid entry price.'); return; }
-  positions.push({ sym, price, date });
-  savePositions();
-  document.getElementById('pos-sym').value = '';
-  document.getElementById('pos-price').value = '';
-  renderPositions();
+// ── Portfolio state (localStorage) — multiple named portfolios ──
+let portfolios = JSON.parse(localStorage.getItem('portfolios') || 'null') || [];
+if (!portfolios.length) portfolios = [{ name:'My Portfolio', start:new Date().toISOString().slice(0,10), holdings:[] }];
+let pfActive = Math.min(Math.max(0, parseInt(localStorage.getItem('pf_active')||'0',10)||0), portfolios.length-1);
+function savePortfolios(){ localStorage.setItem('portfolios', JSON.stringify(portfolios)); localStorage.setItem('pf_active', String(pfActive)); }
+function curPf(){ return portfolios[pfActive]; }
+function selectPortfolio(i){ pfActive = +i; savePortfolios(); renderPortfolio(); }
+function newPortfolio(){
+  const n = (prompt('Name this portfolio:', 'Portfolio '+(portfolios.length+1))||'').trim();
+  if (!n) return;
+  portfolios.push({ name:n, start:new Date().toISOString().slice(0,10), holdings:[] });
+  pfActive = portfolios.length-1; savePortfolios(); renderPortfolio();
 }
-
-function removePosition(i) { positions.splice(i, 1); savePositions(); renderPositions(); }
+function renamePortfolio(){ const n=(prompt('Rename portfolio:', curPf().name)||'').trim(); if(!n) return; curPf().name=n; savePortfolios(); renderPortfolio(); }
+function deletePortfolio(){
+  if (portfolios.length===1){ toast('Keep at least one portfolio'); return; }
+  if (!confirm('Delete "'+curPf().name+'"?')) return;
+  portfolios.splice(pfActive,1); pfActive = Math.max(0, pfActive-1); savePortfolios(); renderPortfolio();
+}
+function setPortfolioStart(v){ curPf().start = v; savePortfolios(); renderPortfolio(); }
+function addHolding(){
+  const sym = document.getElementById('pf-sym').value.trim().toUpperCase();
+  const weight = parseFloat(document.getElementById('pf-weight').value);
+  const buy = parseFloat(document.getElementById('pf-buy').value);
+  if (!sym || !(weight>0) || !(buy>0)) { alert('Enter a ticker, weight %, and buy price.'); return; }
+  if (curPf().holdings.some(h=>h.sym===sym)) { toast(sym+' is already in this portfolio'); return; }
+  curPf().holdings.push({ sym, weight, buy }); savePortfolios();
+  document.getElementById('pf-sym').value=''; document.getElementById('pf-weight').value=''; document.getElementById('pf-buy').value='';
+  renderPortfolio();
+}
+function removeHolding(i){ curPf().holdings.splice(i,1); savePortfolios(); renderPortfolio(); }
 
 // Lightweight toast for non-blocking feedback
 function toast(msg) {
@@ -1898,7 +1931,8 @@ function toast(msg) {
   clearTimeout(t._timer); t._timer = setTimeout(() => { t.style.opacity = '0'; }, 2600);
 }
 
-// One-click "Track": add a scanned ticker to My Positions (entry = current price, date = today)
+// One-click "Track": jump to My Portfolios and prefill the add-stock form for this
+// ticker at its current price, ready for you to set its weight % and add it.
 function trackFromScan(sym, btn) {
   const pools = [];
   if (typeof lastSearch !== 'undefined' && lastSearch) pools.push(lastSearch);
@@ -1906,18 +1940,12 @@ function trackFromScan(sym, btn) {
   if (typeof etfData !== 'undefined' && etfData) pools.push(...(etfData.breakouts||[]), ...(etfData.approaching||[]));
   if (typeof stockData !== 'undefined' && stockData) pools.push(...(stockData.breakouts||[]), ...(stockData.approaching||[]));
   const a = pools.find(x => x && x.sym === sym);
-  if (!a) { toast('Could not find ' + sym + ' — run a scan first'); return; }
-  if (positions.some(p => p.sym === sym)) {
-    toast(sym + ' is already in My Positions');
-    if (btn) { btn.textContent = '✓ tracked'; btn.classList.add('tracked'); }
-    return;
-  }
-  const today = new Date().toISOString().slice(0,10);
-  positions.push({ sym: sym, price: a.price, date: today });
-  savePositions();
-  if (typeof renderPositions === 'function') renderPositions();
-  if (btn) { btn.textContent = '✓ tracked'; btn.classList.add('tracked'); }
-  toast(`✓ ${sym} added to My Positions @ $${a.price} — open 📌 My Positions to watch the stop`);
+  switchTab('portfolios');
+  document.getElementById('pf-sym').value = sym;
+  if (a && a.price) document.getElementById('pf-buy').value = a.price;
+  const w = document.getElementById('pf-weight'); w.value = ''; w.focus();
+  if (btn) { btn.textContent = '✓'; btn.classList.add('tracked'); }
+  toast(`Set ${sym}'s weight %, then Add it to "${curPf().name}"`);
 }
 
 async function getOHLC(sym) {
@@ -1929,113 +1957,91 @@ async function getOHLC(sym) {
   return d.ohlc;
 }
 
-function atrSeries(ohlc, p=14) {
-  const tr = [ohlc[0][2]-ohlc[0][3]];
-  for (let k=1; k<ohlc.length; k++) {
-    const h=ohlc[k][2], l=ohlc[k][3], pc=ohlc[k-1][4];
-    tr.push(Math.max(h-l, Math.abs(h-pc), Math.abs(l-pc)));
-  }
-  const atr = [];
-  for (let k=0; k<ohlc.length; k++) {
-    const s = Math.max(0, k-p+1), sl = tr.slice(s, k+1);
-    atr.push(sl.reduce((a,b)=>a+b,0)/sl.length);
-  }
-  return atr;
+// Close on or just before a date (for the S&P benchmark over the portfolio's period)
+function closeOnOrBefore(ohlc, date) {
+  let v = null;
+  for (const r of ohlc) { if (r[0] <= date) v = r[4]; else break; }
+  return v != null ? v : (ohlc.length ? ohlc[0][4] : null);
 }
 
-// 6× ATR Chandelier trailing stop computed from the entry date forward
-function computeTrail(ohlc, entryDate, mult=6) {
-  let ei = ohlc.findIndex(r => r[0] >= entryDate);
-  if (ei < 0) ei = ohlc.length - 1;
-  const atr = atrSeries(ohlc);
-  let hh = ohlc[ei][2], trail = hh - mult*atr[ei];
-  const line = [{ time: ohlc[ei][0], value: trail }];
-  let triggered = null;
-  for (let k=ei+1; k<ohlc.length; k++) {
-    hh = Math.max(hh, ohlc[k][2]);
-    trail = Math.max(trail, hh - mult*atr[k]);
-    line.push({ time: ohlc[k][0], value: trail });
-    if (ohlc[k][4] < trail) { triggered = { date: ohlc[k][0], price: ohlc[k][4] }; break; }
-  }
-  return { ei, hh, trail, current: ohlc[ohlc.length-1][4], triggered, line };
+function renderPfSelect() {
+  const sel = document.getElementById('pf-select');
+  sel.innerHTML = portfolios.map((p,i)=>`<option value="${i}"${i===pfActive?' selected':''}>${p.name}</option>`).join('');
+  document.getElementById('pf-start').value = curPf().start || '';
 }
 
-async function renderPositions() {
-  const tb = document.getElementById('positions-table');
-  if (!positions.length) {
-    tb.innerHTML = '<div class="empty-state">Add an ETF you bought above &mdash; it\'ll track the trailing stop so you know when to sell</div>';
-    document.getElementById('pos-chart-wrap').style.display = 'none';
+async function renderPortfolio() {
+  renderPfSelect();
+  const pf = curPf(), tb = document.getElementById('pf-table');
+  document.getElementById('pf-spy-since').textContent = pf.start || 'start';
+  if (!pf.holdings.length) {
+    tb.innerHTML = '<div class="empty-state">Add stocks above with their weight % and your buy price.</div>';
+    document.getElementById('pf-summary').style.display = 'none';
     return;
   }
-  tb.innerHTML = '<div class="empty-state">Loading positions…</div>';
-  const rows = await Promise.all(positions.map(async (p, idx) => {
-    try {
-      const ohlc = await getOHLC(p.sym);
-      const t = computeTrail(ohlc, p.date, 6);
-      const sold = !!t.triggered;
-      const exitPx = sold ? t.triggered.price : t.current;
-      const pl = (exitPx / p.price - 1) * 100;
-      const stopBelow = ((t.current - t.trail) / t.current * 100);
-      const status = sold
-        ? `<span class="wl-badge" style="background:#f0526a22;color:var(--red);border-color:#f0526a55">&#9210; SOLD</span>`
-        : `<span class="wl-badge" style="background:#2dd4a022;color:var(--green);border-color:#2dd4a055">&#9679; HOLD</span>`;
-      const sellCell = sold
-        ? `<span class="c-red">stop hit ${t.triggered.date}<br>@ $${t.triggered.price}</span>`
-        : `<span class="c-amber">$${t.trail.toFixed(2)} <span style="opacity:.6;font-size:10px">(${stopBelow.toFixed(1)}% below)</span></span>`;
-      return `<tr style="cursor:pointer" onclick="showPositionChart('${p.sym}',${idx})">
-        <td class="ticker-cell">${p.sym} ${status}</td>
-        <td class="r c-muted">$${p.price}<br><span style="font-size:9px">${p.date}</span></td>
-        <td class="r">$${exitPx.toFixed(2)}</td>
-        <td class="r ${pl>=0?'c-green':'c-red'}">${pl>=0?'+':''}${pl.toFixed(1)}%</td>
-        <td class="r">${sellCell}</td>
-        <td class="r c-muted">$${t.hh.toFixed(2)}</td>
-        <td class="r"><button onclick="event.stopPropagation();removePosition(${idx})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
-      </tr>`;
-    } catch(e) {
-      return `<tr><td class="ticker-cell">${p.sym}</td><td colspan="5" class="c-muted">data unavailable</td>
-        <td class="r"><button onclick="removePosition(${idx})" style="background:none;border:none;color:var(--muted);cursor:pointer">&times;</button></td></tr>`;
-    }
-  }));
+  tb.innerHTML = '<div class="empty-state">Loading prices…</div>';
+  // Current price = latest close for each holding; SPY for the benchmark.
+  const syms = [...new Set(pf.holdings.map(h=>h.sym))], price = {};
+  await Promise.all(syms.map(async s => { try { const o = await getOHLC(s); price[s] = o[o.length-1][4]; } catch(e){ price[s] = null; } }));
+  let spyNow = null, spyThen = null;
+  try { const spy = await getOHLC('SPY'); spyNow = spy[spy.length-1][4]; spyThen = closeOnOrBefore(spy, pf.start); } catch(e){}
+
+  // weight × (cur/buy) is the relative current value; the notional cancels for % and weighted return
+  const rows = pf.holdings.map(h => {
+    const cur = price[h.sym];
+    const ret = cur != null ? (cur/h.buy - 1) : null;
+    const factor = cur != null ? h.weight*(cur/h.buy) : null;
+    return { ...h, cur, ret, factor };
+  });
+  const totW = rows.reduce((a,r)=>a+(r.weight||0),0);
+  const totFactor = rows.reduce((a,r)=>a+(r.factor||0),0);
+  const valid = rows.filter(r=>r.cur!=null), vw = valid.reduce((a,r)=>a+r.weight,0);
+  const overall = vw ? valid.reduce((a,r)=>a+r.weight*r.ret,0)/vw : null;       // weighted % return
+  const spyRet = (spyNow!=null && spyThen) ? (spyNow/spyThen - 1) : null;
+  const alpha = (overall!=null && spyRet!=null) ? overall - spyRet : null;
+
+  const body = rows.map((r,i) => {
+    const curPct = (r.factor!=null && totFactor>0) ? (r.factor/totFactor*100) : null;
+    return `<tr>
+      <td class="ticker-cell">${r.sym}</td>
+      <td class="r c-muted">${r.weight}%</td>
+      <td class="r">${curPct!=null ? curPct.toFixed(1)+'%' : '&#8212;'}</td>
+      <td class="r c-muted">$${r.buy}</td>
+      <td class="r">${r.cur!=null ? '$'+r.cur.toFixed(2) : '<span class="c-muted">n/a</span>'}</td>
+      <td class="r ${r.ret==null?'c-muted':r.ret>=0?'c-green':'c-red'}">${r.ret!=null ? (r.ret>=0?'+':'')+(r.ret*100).toFixed(1)+'%' : '&#8212;'}</td>
+      <td class="r"><button onclick="removeHolding(${i})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
+    </tr>`;
+  }).join('');
+  const wnote = Math.abs(totW-100) > 0.5 ? ` &middot; <span class="c-amber">weights sum to ${totW.toFixed(0)}%</span>` : '';
   tb.innerHTML = `<table><thead><tr>
-    <th>Ticker</th><th class="r">Entry</th><th class="r">Now / Exit</th><th class="r">P/L</th>
-    <th class="r">Trailing stop &mdash; sell level</th><th class="r">High since</th><th></th>
-  </tr></thead><tbody>${rows.join('')}</tbody></table>`;
-  document.getElementById('pos-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-  // auto-show first position's chart
-  if (positions[0]) showPositionChart(positions[0].sym, 0);
+    <th>Ticker</th><th class="r">Target %</th><th class="r">Current %</th><th class="r">Buy</th>
+    <th class="r">Price</th><th class="r">Return</th><th></th>
+  </tr></thead><tbody>${body}</tbody></table>
+  <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px">Current % drifts with price · returns measured from your buy price${wnote}</div>`;
+
+  document.getElementById('pf-summary').style.display = '';
+  const tEl = document.getElementById('pf-total');
+  tEl.textContent = overall!=null ? (overall>=0?'+':'')+(overall*100).toFixed(1)+'%' : '&#8212;';
+  if (overall!=null) tEl.style.color = overall>=0 ? 'var(--green)' : 'var(--red)';
+  document.getElementById('pf-total-sub').textContent = `${valid.length} of ${pf.holdings.length} holdings priced`;
+  const aEl = document.getElementById('pf-alpha');
+  if (alpha!=null) {
+    aEl.textContent = (alpha>=0?'+':'')+(alpha*100).toFixed(1)+'pp';
+    aEl.style.color = alpha>=0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('pf-spy-sub').innerHTML = `S&amp;P ${spyRet>=0?'+':''}${(spyRet*100).toFixed(1)}% · you're ${alpha>=0?'beating':'trailing'} it by ${Math.abs(alpha*100).toFixed(1)}pp`;
+  } else {
+    aEl.textContent = '&#8212;'; aEl.style.color = 'var(--muted)';
+    document.getElementById('pf-spy-sub').textContent = 'set a start date for the S&P comparison';
+  }
+  document.getElementById('pf-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 }
 
-async function showPositionChart(sym, idx) {
-  const p = positions[idx]; if (!p) return;
-  const wrap = document.getElementById('pos-chart-wrap'); wrap.style.display = '';
-  document.getElementById('pos-chart-title').textContent = `${sym} — loading…`;
-  let ohlc;
-  try { ohlc = await getOHLC(sym); } catch(e) { document.getElementById('pos-chart-title').textContent = sym+' — unavailable'; return; }
-  const t = computeTrail(ohlc, p.date, 6);
-  const sold = !!t.triggered;
-  const exitPx = sold ? t.triggered.price : t.current;
-  const pl = (exitPx/p.price - 1)*100;
-  document.getElementById('pos-chart-title').innerHTML =
-    `${sym} — bought ${p.date} @ $${p.price} · ${sold?'SOLD':'now'} $${exitPx.toFixed(2)} <span style="color:${pl>=0?'var(--green)':'var(--red)'}">(${pl>=0?'+':''}${pl.toFixed(1)}%)</span>`;
-  document.getElementById('pos-chart-legend').innerHTML = sold
-    ? `<span style="color:var(--red)">trailing stop hit ${t.triggered.date} → sell signal</span>`
-    : `<span style="color:var(--amber)">━ trailing stop (sell if it closes below $${t.trail.toFixed(2)})</span>`;
-
-  const el = document.getElementById('pos-chart'); el.innerHTML = '';
-  posChart = LightweightCharts.createChart(el, {
-    height: 340,
-    layout: { background:{color:'transparent'}, textColor:'#6b6b80', fontFamily:"'Space Mono'" },
-    grid: { vertLines:{color:'#ffffff08'}, horzLines:{color:'#ffffff08'} },
-    timeScale: { borderColor:'#ffffff18' }, rightPriceScale: { borderColor:'#ffffff18' },
-  });
-  const candle = posChart.addCandlestickSeries({ upColor:'#2dd4a0', downColor:'#f0526a', borderVisible:false, wickUpColor:'#2dd4a0', wickDownColor:'#f0526a' });
-  candle.setData(ohlc.map(([d,o,h,l,c]) => ({ time:d, open:o, high:h, low:l, close:c })));
-  const trailLine = posChart.addLineSeries({ color:'#f5a623', lineWidth:2, lineStyle:0, priceLineVisible:false });
-  trailLine.setData(t.line);
-  const markers = [{ time: ohlc[Math.max(0,t.ei)][0], position:'belowBar', color:'#2dd4a0', shape:'arrowUp', text:'BUY $'+p.price }];
-  if (sold) markers.push({ time:t.triggered.date, position:'aboveBar', color:'#f0526a', shape:'arrowDown', text:'SELL $'+t.triggered.price });
-  candle.setMarkers(markers);
-  posChart.timeScale().fitContent();
+// Refresh = drop the price cache and re-pull, recomputing prices + current weights
+async function refreshPortfolio() {
+  for (const k in posOhlcCache) delete posOhlcCache[k];
+  const icon = document.getElementById('pf-refresh-icon');
+  icon.innerHTML = '<span class="spinner"></span>';
+  try { await renderPortfolio(); } finally { icon.textContent = '↻'; }
 }
 
 // ════════════════════════════════════════════════════════
@@ -2330,7 +2336,6 @@ function renderCorrOverlay(days) {
     document.getElementById('fred-key').value=fredKey; showBadge('fred-badge',true);
     document.getElementById('gdp-fred-key').value=fredKey; showBadge('gdp-fred-badge',true);
   }
-  const pd = document.getElementById('pos-date'); if (pd) pd.value = new Date().toISOString().slice(0,10);
   // Deep-link route from the URL hash (#stock, #corr/AAPL…); otherwise show any cached ETF scan.
   if (!applyHashRoute()) hydrateScan('etf');
   // Also respond to later hash changes (pasted links, back/forward). switchTab uses
