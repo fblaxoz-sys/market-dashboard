@@ -412,6 +412,7 @@ td.r{text-align:right;}
     <input id="pf-sym"    type="text"   style="flex:0 0 110px;min-width:90px" placeholder="Ticker e.g. NVDA" onkeydown="if(event.key==='Enter')addHolding()" />
     <input id="pf-weight" type="number" style="flex:0 0 110px;min-width:90px" step="0.1" placeholder="Weight %" onkeydown="if(event.key==='Enter')addHolding()" />
     <input id="pf-buy"    type="number" style="flex:0 0 130px;min-width:100px" step="0.01" placeholder="Buy price" onkeydown="if(event.key==='Enter')addHolding()" />
+    <input id="pf-date"   type="date"   style="flex:0 0 150px;min-width:130px" title="Purchase date (for the S&amp;P comparison)" onkeydown="if(event.key==='Enter')addHolding()" />
     <button class="btn" onclick="addHolding()">Add</button>
   </div>
 
@@ -422,11 +423,11 @@ td.r{text-align:right;}
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:540px;width:100%;padding:22px;box-shadow:0 20px 60px #000c;">
       <div style="font-size:16px;font-weight:800;margin-bottom:4px;">Import holdings</div>
       <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.7;margin-bottom:14px;">
-        One per line: <b style="color:var(--text)">TICKER, weight%, buyPrice</b> &middot; optional <b style="color:var(--text)">CASH, %</b> line.<br>
-        Weight = cost-basis allocation; the Current % column drifts to match your statement after Refresh.
+        One per line: <b style="color:var(--text)">TICKER, weight%, buyPrice, buyDate</b> (date optional) &middot; optional <b style="color:var(--text)">CASH, %</b> line.<br>
+        Weight = cost-basis allocation; buyDate drives the S&amp;P comparison (each holding vs S&amp;P since you bought it).
       </div>
       <input id="pf-import-name" type="text" placeholder="Portfolio name" style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 11px;font-family:inherit;font-size:13px;box-sizing:border-box;" />
-      <textarea id="pf-import-text" rows="11" placeholder="CASH, 13.45&#10;AAAU, 1.70, 28.70&#10;AMZN, 1.72, 150.39" style="width:100%;font-family:var(--mono);font-size:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;resize:vertical;box-sizing:border-box;"></textarea>
+      <textarea id="pf-import-text" rows="11" placeholder="AAAU, 2.03, 31.16, 2025-05-29&#10;AMZN, 2.46, 212.54, 2025-05-18&#10;CASH, 5" style="width:100%;font-family:var(--mono);font-size:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;resize:vertical;box-sizing:border-box;"></textarea>
       <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px;">
         <button class="btn" onclick="closePfImport()">Cancel</button>
         <button class="btn btn-primary" onclick="doPfImport()">Import</button>
@@ -1915,8 +1916,8 @@ function savePortfolios(){ localStorage.setItem('portfolios', JSON.stringify(por
 function curPf(){ return portfolios[pfActive]; }
 // Portfolio table sorting (click a header). Default: largest current weight first.
 let pfSort = { k:'curPct', d:-1 };
-const PF_COLS  = [['sym','Ticker',''],['curPct','Current %','r'],['buy','Buy','r'],['cur','Price','r'],['ret','Return','r']];
-const PF_SORTV = { sym:r=>r.sym, curPct:r=>r.curPct, buy:r=>r.buy, cur:r=>r.cur, ret:r=>r.ret };
+const PF_COLS  = [['sym','Ticker',''],['date','Bought','r'],['curPct','Current %','r'],['buy','Buy','r'],['cur','Price','r'],['ret','Return','r']];
+const PF_SORTV = { sym:r=>r.sym, date:r=>r.date||'', curPct:r=>r.curPct, buy:r=>r.buy, cur:r=>r.cur, ret:r=>r.ret };
 function sortPf(k){ pfSort = (pfSort.k===k) ? {k, d:-pfSort.d} : {k, d:(k==='sym'?1:-1)}; renderPortfolio(); }
 function selectPortfolio(i){ pfActive = +i; savePortfolios(); renderPortfolio(); }
 function newPortfolio(){
@@ -1933,14 +1934,30 @@ function deletePortfolio(){
 }
 function setPortfolioStart(v){ curPf().start = v; savePortfolios(); renderPortfolio(); }
 // Cash is derived (100% − sum of holding weights), not entered — see renderPortfolio.
+// Normalize a date to YYYY-MM-DD (accepts 2025-05-29 or 5/29/2025); '' if unparseable.
+function normDate(s){
+  if (!s) return ''; s = String(s).trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  return '';
+}
+function fmtBought(d){
+  if (!d) return '<span class="c-muted">—</span>';
+  const p = d.split('-'); if (p.length < 2) return d;
+  const mo = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+p[1]] || p[1];
+  return `${mo} '${p[0].slice(2)}`;
+}
 function addHolding(){
   const sym = document.getElementById('pf-sym').value.trim().toUpperCase();
   const weight = parseFloat(document.getElementById('pf-weight').value);
   const buy = parseFloat(document.getElementById('pf-buy').value);
+  const date = normDate(document.getElementById('pf-date').value);
   if (!sym || !(weight>0) || !(buy>0)) { alert('Enter a ticker, weight %, and buy price.'); return; }
   if (curPf().holdings.some(h=>h.sym===sym)) { toast(sym+' is already in this portfolio'); return; }
-  curPf().holdings.push({ sym, weight, buy }); savePortfolios();
-  document.getElementById('pf-sym').value=''; document.getElementById('pf-weight').value=''; document.getElementById('pf-buy').value='';
+  curPf().holdings.push({ sym, weight, buy, ...(date?{date}:{}) }); savePortfolios();
+  ['pf-sym','pf-weight','pf-buy','pf-date'].forEach(id=>document.getElementById(id).value='');
   renderPortfolio();
 }
 function removeHolding(i){ curPf().holdings.splice(i,1); savePortfolios(); renderPortfolio(); }
@@ -1960,16 +1977,16 @@ function doPfImport(){
   for (let line of raw.split('\n')) {
     line = line.trim();
     if (!line || line[0] === '#') continue;
-    const parts = line.split(/[,\s]+/).filter(Boolean);
+    // comma-separated (keeps M/D/YYYY dates intact); fall back to whitespace
+    const parts = (line.includes(',') ? line.split(',') : line.split(/\s+/)).map(s => s.trim()).filter(Boolean);
     const sym = (parts[0] || '').toUpperCase();
-    const nums = parts.slice(1).map(parseFloat).filter(n => !isNaN(n));
-    if (sym === 'CASH') { cash = nums[0] || 0; continue; }
-    if (!sym || nums.length < 2) continue;            // need weight + buy
-    const [weight, buy] = nums;
-    if (!(weight > 0) || !(buy > 0)) continue;
-    if (!holdings.some(h => h.sym === sym)) holdings.push({ sym, weight, buy });
+    if (sym === 'CASH') { cash = parseFloat(parts[1]) || 0; continue; }
+    const weight = parseFloat(parts[1]), buy = parseFloat(parts[2]);
+    const date = normDate(parts[3] || '');
+    if (!sym || !(weight > 0) || !(buy > 0)) continue;   // need weight + buy
+    if (!holdings.some(h => h.sym === sym)) holdings.push({ sym, weight, buy, ...(date?{date}:{}) });
   }
-  if (!holdings.length) { alert('No valid rows found.\nUse one per line:  TICKER, weight%, buyPrice'); return; }
+  if (!holdings.length) { alert('No valid rows found.\nUse one per line:  TICKER, weight%, buyPrice, buyDate'); return; }
   let idx = portfolios.findIndex(p => p.name === name);
   if (idx >= 0) {
     if (!confirm(`Replace the ${portfolios[idx].holdings.length} holding(s) in "${name}" with these ${holdings.length}?`)) return;
@@ -2041,7 +2058,7 @@ async function renderPortfolio() {
   const pf = curPf(), tb = document.getElementById('pf-table');
   const weightSum = pf.holdings.reduce((a,h)=>a+(h.weight||0),0);
   const cashW = Math.max(0, 100 - weightSum);   // cash = whatever's left after holdings
-  document.getElementById('pf-spy-since').textContent = pf.start || 'start';
+  document.getElementById('pf-spy-since').textContent = 'each purchase';
   if (!pf.holdings.length) {
     tb.innerHTML = '<div class="empty-state">Add stocks above with their weight % and your buy price.</div>';
     document.getElementById('pf-summary').style.display = 'none';
@@ -2055,18 +2072,19 @@ async function renderPortfolio() {
     try { const o = await getOHLC(s); price[s] = o.ohlc[o.ohlc.length-1][4]; divsBy[s] = o.divs; }
     catch(e){ price[s] = null; divsBy[s] = []; }
   }));
-  let spyNow = null, spyThen = null;
-  try { const spy = await getOHLC('SPY'); spyNow = spy.ohlc[spy.ohlc.length-1][4]; spyThen = closeOnOrBefore(spy.ohlc, pf.start); } catch(e){}
+  let spyNow = null, spyOhlc = null;
+  try { const spy = await getOHLC('SPY'); spyOhlc = spy.ohlc; spyNow = spyOhlc[spyOhlc.length-1][4]; } catch(e){}
 
-  // Dividends per share paid since the portfolio start date (they accrue to cash).
-  const divSince = s => (!pf.start ? 0 : (divsBy[s]||[]).filter(d => d[0] >= pf.start).reduce((a,d)=>a+d[1], 0));
+  // Dividends per share paid since a given date (they accrue to cash). Per holding
+  // we use that holding's own buy date, falling back to the portfolio start.
+  const divSince = (s, since) => (!since ? 0 : (divsBy[s]||[]).filter(d => d[0] >= since).reduce((a,d)=>a+d[1], 0));
 
   // weight × (cur/buy) = relative current value (price only); weight × (div/buy) = dividend cash.
   const rows = pf.holdings.map((h,i) => {
     const cur = price[h.sym];
     const ret = cur != null ? (cur/h.buy - 1) : null;
     const factor = cur != null ? h.weight*(cur/h.buy) : null;
-    const divPerSh = divSince(h.sym);
+    const divPerSh = divSince(h.sym, h.date || pf.start);
     const divFrac = cur != null ? h.weight*(divPerSh/h.buy) : 0;
     return { ...h, _idx:i, cur, ret, factor, divPerSh, divFrac };
   });
@@ -2077,7 +2095,18 @@ async function renderPortfolio() {
   const totW = weightSum + cashW;   // = 100 unless weights exceed 100%
   const overall = totW ? (totFactor/totW - 1) : null;            // total return, incl. dividends-to-cash
   const valid = rows.filter(r=>r.cur!=null).length;
-  const spyRet = (spyNow!=null && spyThen) ? (spyNow/spyThen - 1) : null;
+  // Money-weighted S&P benchmark: each holding vs S&P since ITS buy date (fallback to
+  // the portfolio start). Cash is held flat in both, so alpha isolates picks + timing.
+  let benchNum = 0, benchHas = false;
+  if (spyOhlc && spyNow!=null) {
+    rows.forEach(r => {
+      const d = r.date || pf.start;
+      if (!d || r.cur==null) return;
+      const sThen = closeOnOrBefore(spyOhlc, d);
+      if (sThen) { benchNum += r.weight*(spyNow/sThen); benchHas = true; }
+    });
+  }
+  const spyRet = (benchHas && totW>0) ? ((benchNum + cashW)/totW - 1) : null;
   const alpha = (overall!=null && spyRet!=null) ? overall - spyRet : null;
   const divPctOfPort = totW ? (divCash/totW*100) : 0;
 
@@ -2092,13 +2121,22 @@ async function renderPortfolio() {
     return pfSort.d * (x - y);
   });
   const body = rows.map(r => {
-    const divNote = r.divPerSh>0 ? ` <span class="c-green" style="font-size:9px" title="$${r.divPerSh.toFixed(2)}/share in dividends since ${pf.start} → cash">+div</span>` : '';
+    const divNote = r.divPerSh>0 ? ` <span class="c-green" style="font-size:9px" title="$${r.divPerSh.toFixed(2)}/share in dividends since ${fmtBought(r.date)||pf.start} → cash">+div</span>` : '';
+    // per-holding S&P-since-purchase comparison (tooltip on the Return cell)
+    let retTitle = '';
+    const bd = r.date || pf.start;
+    if (spyOhlc && spyNow!=null && bd && r.ret!=null) {
+      const sThen = closeOnOrBefore(spyOhlc, bd);
+      if (sThen) { const spyH = spyNow/sThen-1, aH = r.ret-spyH;
+        retTitle = `S&P ${(spyH*100>=0?'+':'')}${(spyH*100).toFixed(1)}% since ${fmtBought(r.date)} · you ${aH>=0?'beat it +':'trail it '}${(aH*100).toFixed(1)}pp`; }
+    }
     return `<tr>
       <td class="ticker-cell">${r.sym}</td>
+      <td class="r c-muted" style="white-space:nowrap">${fmtBought(r.date)}</td>
       <td class="r">${r.curPct!=null ? r.curPct.toFixed(2)+'%' : '&#8212;'}</td>
       <td class="r c-muted">$${r.buy.toFixed(2)}</td>
       <td class="r">${r.cur!=null ? '$'+r.cur.toFixed(2) : '<span class="c-muted">n/a</span>'}</td>
-      <td class="r ${r.ret==null?'c-muted':r.ret>=0?'c-green':'c-red'}">${r.ret!=null ? (r.ret>=0?'+':'')+(r.ret*100).toFixed(2)+'%'+divNote : '&#8212;'}</td>
+      <td class="r ${r.ret==null?'c-muted':r.ret>=0?'c-green':'c-red'}"${retTitle?` title="${retTitle}"`:''}>${r.ret!=null ? (r.ret>=0?'+':'')+(r.ret*100).toFixed(2)+'%'+divNote : '&#8212;'}</td>
       <td class="r"><button onclick="removeHolding(${r._idx})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
     </tr>`;
   }).join('');
@@ -2107,6 +2145,7 @@ async function renderPortfolio() {
     const cashPct = totFactor>0 ? (cashFactor/totFactor*100) : null;
     cashRow = `<tr style="border-top:1px solid var(--border)">
       <td class="ticker-cell">&#128181; Cash</td>
+      <td class="r c-muted">&#8212;</td>
       <td class="r">${cashPct!=null ? cashPct.toFixed(2)+'%' : '&#8212;'}</td>
       <td class="r c-muted">&#8212;</td>
       <td class="r c-muted">&#8212;</td>
@@ -2120,7 +2159,7 @@ async function renderPortfolio() {
     return `<th class="${al}" style="cursor:pointer;white-space:nowrap" onclick="sortPf('${k}')">${lbl}${ar}</th>`;
   }).join('') + '<th></th></tr></thead>';
   tb.innerHTML = `<table>${head}<tbody>${body}${cashRow}</tbody></table>
-  <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px">Current % drifts with price · returns from your buy price · dividends since ${pf.start||'start'} go to cash${wnote}</div>`;
+  <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px">Current % drifts with price · returns from your buy price · hover a Return to see it vs S&amp;P since you bought · dividends accrue to cash${wnote}</div>`;
 
   document.getElementById('pf-summary').style.display = '';
   const tEl = document.getElementById('pf-total');
@@ -2135,7 +2174,7 @@ async function renderPortfolio() {
     document.getElementById('pf-spy-sub').innerHTML = `S&amp;P ${spyRet>=0?'+':''}${(spyRet*100).toFixed(2)}% · you're ${alpha>=0?'beating':'trailing'} it by ${Math.abs(alpha*100).toFixed(2)}pp`;
   } else {
     aEl.textContent = '&#8212;'; aEl.style.color = 'var(--muted)';
-    document.getElementById('pf-spy-sub').textContent = 'set a start date for the S&P comparison';
+    document.getElementById('pf-spy-sub').textContent = 'add buy dates (or a start date) for the S&P comparison';
   }
   document.getElementById('pf-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 }
