@@ -1913,6 +1913,11 @@ if (!portfolios.length) portfolios = [{ name:'My Portfolio', start:new Date().to
 let pfActive = Math.min(Math.max(0, parseInt(localStorage.getItem('pf_active')||'0',10)||0), portfolios.length-1);
 function savePortfolios(){ localStorage.setItem('portfolios', JSON.stringify(portfolios)); localStorage.setItem('pf_active', String(pfActive)); }
 function curPf(){ return portfolios[pfActive]; }
+// Portfolio table sorting (click a header). Default: largest current weight first.
+let pfSort = { k:'curPct', d:-1 };
+const PF_COLS  = [['sym','Ticker',''],['curPct','Current %','r'],['buy','Buy','r'],['cur','Price','r'],['ret','Return','r']];
+const PF_SORTV = { sym:r=>r.sym, curPct:r=>r.curPct, buy:r=>r.buy, cur:r=>r.cur, ret:r=>r.ret };
+function sortPf(k){ pfSort = (pfSort.k===k) ? {k, d:-pfSort.d} : {k, d:(k==='sym'?1:-1)}; renderPortfolio(); }
 function selectPortfolio(i){ pfActive = +i; savePortfolios(); renderPortfolio(); }
 function newPortfolio(){
   const n = (prompt('Name this portfolio:', 'Portfolio '+(portfolios.length+1))||'').trim();
@@ -2040,7 +2045,8 @@ async function renderPortfolio() {
     document.getElementById('pf-summary').style.display = 'none';
     return;
   }
-  tb.innerHTML = '<div class="empty-state">Loading prices…</div>';
+  if (pf.holdings.some(h=>!posOhlcCache[h.sym]) || !posOhlcCache['SPY'])
+    tb.innerHTML = '<div class="empty-state">Loading prices…</div>';   // skip flash when re-sorting cached data
   // Current price + dividend history for each holding; SPY for the benchmark.
   const syms = [...new Set(pf.holdings.map(h=>h.sym))], price = {}, divsBy = {};
   await Promise.all(syms.map(async s => {
@@ -2054,13 +2060,13 @@ async function renderPortfolio() {
   const divSince = s => (!pf.start ? 0 : (divsBy[s]||[]).filter(d => d[0] >= pf.start).reduce((a,d)=>a+d[1], 0));
 
   // weight × (cur/buy) = relative current value (price only); weight × (div/buy) = dividend cash.
-  const rows = pf.holdings.map(h => {
+  const rows = pf.holdings.map((h,i) => {
     const cur = price[h.sym];
     const ret = cur != null ? (cur/h.buy - 1) : null;
     const factor = cur != null ? h.weight*(cur/h.buy) : null;
     const divPerSh = divSince(h.sym);
     const divFrac = cur != null ? h.weight*(divPerSh/h.buy) : 0;
-    return { ...h, cur, ret, factor, divPerSh, divFrac };
+    return { ...h, _idx:i, cur, ret, factor, divPerSh, divFrac };
   });
   const stockFactor = rows.reduce((a,r)=>a+(r.factor||0),0);
   const divCash = rows.reduce((a,r)=>a+(r.divFrac||0),0);         // total dividends → cash
@@ -2073,17 +2079,25 @@ async function renderPortfolio() {
   const alpha = (overall!=null && spyRet!=null) ? overall - spyRet : null;
   const divPctOfPort = totW ? (divCash/totW*100) : 0;
 
-  const body = rows.map((r,i) => {
-    const curPct = (r.factor!=null && totFactor>0) ? (r.factor/totFactor*100) : null;
+  // current % of portfolio (drifts with price) — also the default sort key
+  rows.forEach(r => { r.curPct = (r.factor!=null && totFactor>0) ? (r.factor/totFactor*100) : null; });
+  const sf = PF_SORTV[pfSort.k] || PF_SORTV.curPct;
+  rows.sort((a,b) => {
+    const x = sf(a), y = sf(b);
+    if (typeof x === 'string') return pfSort.d * x.localeCompare(y);
+    const xn = x==null, yn = y==null;                 // unpriced rows always sink to the bottom
+    if (xn || yn) return xn === yn ? 0 : (xn ? 1 : -1);
+    return pfSort.d * (x - y);
+  });
+  const body = rows.map(r => {
     const divNote = r.divPerSh>0 ? ` <span class="c-green" style="font-size:9px" title="$${r.divPerSh.toFixed(2)}/share in dividends since ${pf.start} → cash">+div</span>` : '';
     return `<tr>
       <td class="ticker-cell">${r.sym}</td>
-      <td class="r c-muted">${r.weight}%</td>
-      <td class="r">${curPct!=null ? curPct.toFixed(1)+'%' : '&#8212;'}</td>
+      <td class="r">${r.curPct!=null ? r.curPct.toFixed(1)+'%' : '&#8212;'}</td>
       <td class="r c-muted">$${r.buy}</td>
       <td class="r">${r.cur!=null ? '$'+r.cur.toFixed(2) : '<span class="c-muted">n/a</span>'}</td>
       <td class="r ${r.ret==null?'c-muted':r.ret>=0?'c-green':'c-red'}">${r.ret!=null ? (r.ret>=0?'+':'')+(r.ret*100).toFixed(1)+'%'+divNote : '&#8212;'}</td>
-      <td class="r"><button onclick="removeHolding(${i})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
+      <td class="r"><button onclick="removeHolding(${r._idx})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
     </tr>`;
   }).join('');
   let cashRow = '';
@@ -2091,7 +2105,6 @@ async function renderPortfolio() {
     const cashPct = totFactor>0 ? (cashFactor/totFactor*100) : null;
     cashRow = `<tr style="border-top:1px solid var(--border)">
       <td class="ticker-cell">&#128181; Cash</td>
-      <td class="r c-muted">${cashW}%</td>
       <td class="r">${cashPct!=null ? cashPct.toFixed(1)+'%' : '&#8212;'}</td>
       <td class="r c-muted">&#8212;</td>
       <td class="r c-muted">&#8212;</td>
@@ -2100,10 +2113,11 @@ async function renderPortfolio() {
     </tr>`;
   }
   const wnote = Math.abs(totW-100) > 0.5 ? ` &middot; <span class="c-amber">weights sum to ${totW.toFixed(0)}%</span>` : '';
-  tb.innerHTML = `<table><thead><tr>
-    <th>Ticker</th><th class="r">Target %</th><th class="r">Current %</th><th class="r">Buy</th>
-    <th class="r">Price</th><th class="r">Return</th><th></th>
-  </tr></thead><tbody>${body}${cashRow}</tbody></table>
+  const head = '<thead><tr>' + PF_COLS.map(([k,lbl,al]) => {
+    const ar = pfSort.k===k ? (pfSort.d<0?' ▾':' ▴') : '';
+    return `<th class="${al}" style="cursor:pointer;white-space:nowrap" onclick="sortPf('${k}')">${lbl}${ar}</th>`;
+  }).join('') + '<th></th></tr></thead>';
+  tb.innerHTML = `<table>${head}<tbody>${body}${cashRow}</tbody></table>
   <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px">Current % drifts with price · returns from your buy price · dividends since ${pf.start||'start'} go to cash${wnote}</div>`;
 
   document.getElementById('pf-summary').style.display = '';
