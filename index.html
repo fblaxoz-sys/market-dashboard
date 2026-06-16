@@ -406,6 +406,13 @@ td.r{text-align:right;}
     </div>
   </div>
 
+  <!-- Portfolio vs S&P 500 performance chart -->
+  <div id="pf-chart-wrap" style="display:none;margin-top:18px;">
+    <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Portfolio vs S&amp;P 500</div>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">growth of $100 · each holding enters on its buy date · cash held flat</span></div>
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;height:320px;"><canvas id="pf-chart"></canvas></div>
+  </div>
+
   <!-- Add a holding -->
   <div class="config-bar" style="margin-top:14px;">
     <label>ADD STOCK</label>
@@ -417,13 +424,6 @@ td.r{text-align:right;}
   </div>
 
   <div class="table-wrap" id="pf-table"><div class="empty-state">Create a portfolio, then add stocks with their weight % and your buy price.</div></div>
-
-  <!-- Portfolio vs S&P 500 performance chart -->
-  <div id="pf-chart-wrap" style="display:none;margin-top:20px;">
-    <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Portfolio vs S&amp;P 500</div>
-      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">growth of $100 · each holding enters on its buy date · cash held flat</span></div>
-    <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;height:320px;"><canvas id="pf-chart"></canvas></div>
-  </div>
 
   <!-- Bulk import modal -->
   <div id="pf-import-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:9999;align-items:center;justify-content:center;padding:20px;">
