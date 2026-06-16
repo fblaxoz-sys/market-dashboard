@@ -1103,9 +1103,10 @@ QUAD_PLAYBOOK = {
         'etfs': ['TLT','IEF','AGG','BND','LQD','VCIT','VCSH','MUB','XLU','VPU','XLP','VDC','XLV','VHT','USMV','SPLV','QUAL','SCHD','VYM','VIG','HDV','DVY','SDY','NOBL','DGRO','SPHD','GLD','GLDM','IAU','SGOL']},
 }
 
-def _yahoo_ohlc(sym, rng="2y"):
+def _yahoo_ohlc(sym, rng="2y", divs=False):
     import urllib.request, json as _json, datetime as _dt
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym.replace('^','%5E')}?range={rng}&interval=1d"
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym.replace('^','%5E')}"
+           f"?range={rng}&interval=1d" + ("&events=div" if divs else ""))
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     with urllib.request.urlopen(req, timeout=20) as r:
         d = _json.load(r)
@@ -1115,7 +1116,14 @@ def _yahoo_ohlc(sym, rng="2y"):
     for t, o, h, l, c, v in zip(ts, q['open'], q['high'], q['low'], q['close'], q['volume']):
         if None in (o, h, l, c, v): continue
         rows.append((_dt.date.fromtimestamp(t).isoformat(), o, h, l, c, v))
-    return rows
+    if not divs:
+        return rows
+    dv = []                                   # [(ex-date, amount/share)] — for portfolio cash
+    for o in (res.get('events', {}).get('dividends', {}) or {}).values():
+        try: dv.append((_dt.date.fromtimestamp(o['date']).isoformat(), float(o['amount'])))
+        except Exception: pass
+    dv.sort()
+    return rows, dv
 
 def _atr_series(highs, lows, closes, p=14):
     import numpy as np
@@ -1981,9 +1989,10 @@ class Handler(SimpleHTTPRequestHandler):
             if not sym:
                 self.send_error(400, 'sym required'); return
             try:
-                rows = _yahoo_ohlc(sym, '5y')     # cover multi-year backtest entries
+                rows, divs = _yahoo_ohlc(sym, '5y', divs=True)   # multi-year entries + dividends
                 ohlc = [[r[0], round(r[1],2), round(r[2],2), round(r[3],2), round(r[4],2)] for r in rows[-1300:]]
-                payload = json.dumps({'sym': sym, 'ohlc': ohlc}).encode()
+                payload = json.dumps({'sym': sym, 'ohlc': ohlc,
+                                      'divs': [[d, round(a, 4)] for d, a in divs]}).encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')

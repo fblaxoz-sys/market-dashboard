@@ -386,7 +386,9 @@ td.r{text-align:right;}
     <button class="btn" onclick="deletePortfolio()">Delete</button>
     <span style="flex:1"></span>
     <label title="Used as the period for the S&amp;P 500 comparison">STARTED</label>
-    <input id="pf-start" type="date" style="flex:0 0 160px;min-width:140px" onchange="setPortfolioStart(this.value)" />
+    <input id="pf-start" type="date" style="flex:0 0 150px;min-width:130px" onchange="setPortfolioStart(this.value)" />
+    <label title="Cash held in the portfolio. Dividends paid since the start date are added here.">CASH %</label>
+    <input id="pf-cash" type="number" step="0.1" style="flex:0 0 80px;min-width:64px" placeholder="0" onchange="setPortfolioCash(this.value)" />
   </div>
 
   <!-- Overall gain + S&P comparison -->
@@ -1889,7 +1891,7 @@ const posOhlcCache = {};   // sym -> ohlc, shared by getOHLC
 
 // ── Portfolio state (localStorage) — multiple named portfolios ──
 let portfolios = JSON.parse(localStorage.getItem('portfolios') || 'null') || [];
-if (!portfolios.length) portfolios = [{ name:'My Portfolio', start:new Date().toISOString().slice(0,10), holdings:[] }];
+if (!portfolios.length) portfolios = [{ name:'My Portfolio', start:new Date().toISOString().slice(0,10), cash:0, holdings:[] }];
 let pfActive = Math.min(Math.max(0, parseInt(localStorage.getItem('pf_active')||'0',10)||0), portfolios.length-1);
 function savePortfolios(){ localStorage.setItem('portfolios', JSON.stringify(portfolios)); localStorage.setItem('pf_active', String(pfActive)); }
 function curPf(){ return portfolios[pfActive]; }
@@ -1897,7 +1899,7 @@ function selectPortfolio(i){ pfActive = +i; savePortfolios(); renderPortfolio();
 function newPortfolio(){
   const n = (prompt('Name this portfolio:', 'Portfolio '+(portfolios.length+1))||'').trim();
   if (!n) return;
-  portfolios.push({ name:n, start:new Date().toISOString().slice(0,10), holdings:[] });
+  portfolios.push({ name:n, start:new Date().toISOString().slice(0,10), cash:0, holdings:[] });
   pfActive = portfolios.length-1; savePortfolios(); renderPortfolio();
 }
 function renamePortfolio(){ const n=(prompt('Rename portfolio:', curPf().name)||'').trim(); if(!n) return; curPf().name=n; savePortfolios(); renderPortfolio(); }
@@ -1907,6 +1909,7 @@ function deletePortfolio(){
   portfolios.splice(pfActive,1); pfActive = Math.max(0, pfActive-1); savePortfolios(); renderPortfolio();
 }
 function setPortfolioStart(v){ curPf().start = v; savePortfolios(); renderPortfolio(); }
+function setPortfolioCash(v){ curPf().cash = parseFloat(v) || 0; savePortfolios(); renderPortfolio(); }
 function addHolding(){
   const sym = document.getElementById('pf-sym').value.trim().toUpperCase();
   const weight = parseFloat(document.getElementById('pf-weight').value);
@@ -1953,8 +1956,9 @@ async function getOHLC(sym) {
   const res = await fetch(`/etf-chart?sym=${encodeURIComponent(sym)}`);
   const d = await res.json();
   if (d.error || !d.ohlc) throw new Error('no data');
-  posOhlcCache[sym] = d.ohlc;
-  return d.ohlc;
+  const data = { ohlc: d.ohlc, divs: d.divs || [] };
+  posOhlcCache[sym] = data;
+  return data;
 }
 
 // Close on or just before a date (for the S&P benchmark over the portfolio's period)
@@ -1968,62 +1972,91 @@ function renderPfSelect() {
   const sel = document.getElementById('pf-select');
   sel.innerHTML = portfolios.map((p,i)=>`<option value="${i}"${i===pfActive?' selected':''}>${p.name}</option>`).join('');
   document.getElementById('pf-start').value = curPf().start || '';
+  document.getElementById('pf-cash').value = curPf().cash || 0;
 }
 
 async function renderPortfolio() {
   renderPfSelect();
   const pf = curPf(), tb = document.getElementById('pf-table');
+  const cashW = +pf.cash || 0;
   document.getElementById('pf-spy-since').textContent = pf.start || 'start';
-  if (!pf.holdings.length) {
+  if (!pf.holdings.length && !cashW) {
     tb.innerHTML = '<div class="empty-state">Add stocks above with their weight % and your buy price.</div>';
     document.getElementById('pf-summary').style.display = 'none';
     return;
   }
   tb.innerHTML = '<div class="empty-state">Loading prices…</div>';
-  // Current price = latest close for each holding; SPY for the benchmark.
-  const syms = [...new Set(pf.holdings.map(h=>h.sym))], price = {};
-  await Promise.all(syms.map(async s => { try { const o = await getOHLC(s); price[s] = o[o.length-1][4]; } catch(e){ price[s] = null; } }));
+  // Current price + dividend history for each holding; SPY for the benchmark.
+  const syms = [...new Set(pf.holdings.map(h=>h.sym))], price = {}, divsBy = {};
+  await Promise.all(syms.map(async s => {
+    try { const o = await getOHLC(s); price[s] = o.ohlc[o.ohlc.length-1][4]; divsBy[s] = o.divs; }
+    catch(e){ price[s] = null; divsBy[s] = []; }
+  }));
   let spyNow = null, spyThen = null;
-  try { const spy = await getOHLC('SPY'); spyNow = spy[spy.length-1][4]; spyThen = closeOnOrBefore(spy, pf.start); } catch(e){}
+  try { const spy = await getOHLC('SPY'); spyNow = spy.ohlc[spy.ohlc.length-1][4]; spyThen = closeOnOrBefore(spy.ohlc, pf.start); } catch(e){}
 
-  // weight × (cur/buy) is the relative current value; the notional cancels for % and weighted return
+  // Dividends per share paid since the portfolio start date (they accrue to cash).
+  const divSince = s => (!pf.start ? 0 : (divsBy[s]||[]).filter(d => d[0] >= pf.start).reduce((a,d)=>a+d[1], 0));
+
+  // weight × (cur/buy) = relative current value (price only); weight × (div/buy) = dividend cash.
   const rows = pf.holdings.map(h => {
     const cur = price[h.sym];
     const ret = cur != null ? (cur/h.buy - 1) : null;
     const factor = cur != null ? h.weight*(cur/h.buy) : null;
-    return { ...h, cur, ret, factor };
+    const divPerSh = divSince(h.sym);
+    const divFrac = cur != null ? h.weight*(divPerSh/h.buy) : 0;
+    return { ...h, cur, ret, factor, divPerSh, divFrac };
   });
-  const totW = rows.reduce((a,r)=>a+(r.weight||0),0);
-  const totFactor = rows.reduce((a,r)=>a+(r.factor||0),0);
-  const valid = rows.filter(r=>r.cur!=null), vw = valid.reduce((a,r)=>a+r.weight,0);
-  const overall = vw ? valid.reduce((a,r)=>a+r.weight*r.ret,0)/vw : null;       // weighted % return
+  const stockFactor = rows.reduce((a,r)=>a+(r.factor||0),0);
+  const divCash = rows.reduce((a,r)=>a+(r.divFrac||0),0);         // total dividends → cash
+  const cashFactor = cashW + divCash;
+  const totFactor = stockFactor + cashFactor;
+  const totW = pf.holdings.reduce((a,h)=>a+(h.weight||0),0) + cashW;   // initial weights incl. cash
+  const overall = totW ? (totFactor/totW - 1) : null;            // total return, incl. dividends-to-cash
+  const valid = rows.filter(r=>r.cur!=null).length;
   const spyRet = (spyNow!=null && spyThen) ? (spyNow/spyThen - 1) : null;
   const alpha = (overall!=null && spyRet!=null) ? overall - spyRet : null;
+  const divPctOfPort = totW ? (divCash/totW*100) : 0;
 
   const body = rows.map((r,i) => {
     const curPct = (r.factor!=null && totFactor>0) ? (r.factor/totFactor*100) : null;
+    const divNote = r.divPerSh>0 ? ` <span class="c-green" style="font-size:9px" title="$${r.divPerSh.toFixed(2)}/share in dividends since ${pf.start} → cash">+div</span>` : '';
     return `<tr>
       <td class="ticker-cell">${r.sym}</td>
       <td class="r c-muted">${r.weight}%</td>
       <td class="r">${curPct!=null ? curPct.toFixed(1)+'%' : '&#8212;'}</td>
       <td class="r c-muted">$${r.buy}</td>
       <td class="r">${r.cur!=null ? '$'+r.cur.toFixed(2) : '<span class="c-muted">n/a</span>'}</td>
-      <td class="r ${r.ret==null?'c-muted':r.ret>=0?'c-green':'c-red'}">${r.ret!=null ? (r.ret>=0?'+':'')+(r.ret*100).toFixed(1)+'%' : '&#8212;'}</td>
+      <td class="r ${r.ret==null?'c-muted':r.ret>=0?'c-green':'c-red'}">${r.ret!=null ? (r.ret>=0?'+':'')+(r.ret*100).toFixed(1)+'%'+divNote : '&#8212;'}</td>
       <td class="r"><button onclick="removeHolding(${i})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
     </tr>`;
   }).join('');
+  let cashRow = '';
+  if (cashW>0 || divCash>0) {
+    const cashPct = totFactor>0 ? (cashFactor/totFactor*100) : null;
+    cashRow = `<tr style="border-top:1px solid var(--border)">
+      <td class="ticker-cell">&#128181; Cash</td>
+      <td class="r c-muted">${cashW}%</td>
+      <td class="r">${cashPct!=null ? cashPct.toFixed(1)+'%' : '&#8212;'}</td>
+      <td class="r c-muted">&#8212;</td>
+      <td class="r c-muted">&#8212;</td>
+      <td class="r ${divCash>0?'c-green':'c-muted'}" title="dividends collected since ${pf.start||'start'}">${divCash>0 ? '+'+divPctOfPort.toFixed(1)+'% div' : '&#8212;'}</td>
+      <td></td>
+    </tr>`;
+  }
   const wnote = Math.abs(totW-100) > 0.5 ? ` &middot; <span class="c-amber">weights sum to ${totW.toFixed(0)}%</span>` : '';
   tb.innerHTML = `<table><thead><tr>
     <th>Ticker</th><th class="r">Target %</th><th class="r">Current %</th><th class="r">Buy</th>
     <th class="r">Price</th><th class="r">Return</th><th></th>
-  </tr></thead><tbody>${body}</tbody></table>
-  <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px">Current % drifts with price · returns measured from your buy price${wnote}</div>`;
+  </tr></thead><tbody>${body}${cashRow}</tbody></table>
+  <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px">Current % drifts with price · returns from your buy price · dividends since ${pf.start||'start'} go to cash${wnote}</div>`;
 
   document.getElementById('pf-summary').style.display = '';
   const tEl = document.getElementById('pf-total');
   tEl.textContent = overall!=null ? (overall>=0?'+':'')+(overall*100).toFixed(1)+'%' : '&#8212;';
   if (overall!=null) tEl.style.color = overall>=0 ? 'var(--green)' : 'var(--red)';
-  document.getElementById('pf-total-sub').textContent = `${valid.length} of ${pf.holdings.length} holdings priced`;
+  document.getElementById('pf-total-sub').textContent =
+    `${valid} of ${pf.holdings.length} holdings priced` + (divCash>0 ? ` · +${divPctOfPort.toFixed(1)}% from dividends` : '');
   const aEl = document.getElementById('pf-alpha');
   if (alpha!=null) {
     aEl.textContent = (alpha>=0?'+':'')+(alpha*100).toFixed(1)+'pp';
