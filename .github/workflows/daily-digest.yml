@@ -1,7 +1,9 @@
 name: Daily Swing Digest
 on:
   schedule:
-    - cron: '0 12 * * *'
+    # 11:45 UTC = 7:45am EDT (summer). Off-the-hour to reduce GitHub's scheduler
+    # delays. NOTE: GitHub cron is fixed UTC — in winter (EST) this is 6:45am.
+    - cron: '45 11 * * *'
   workflow_dispatch:
 jobs:
   send-digest:
