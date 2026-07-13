@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Account Masker — Download</title>
+<style>
+  :root {
+    --bg: #F4F7F5;
+    --card: #FFFFFF;
+    --ink: #1C2523;
+    --muted: #5C6A65;
+    --line: #DDE5E1;
+    --accent: #176A55;
+    --accent-hover: #135946;
+    --accent-ink: #F2FBF7;
+    --token-bg: #EAF3EF;
+    --warn-bg: #FBF3E4;
+    --warn-line: #E4CFA1;
+    --warn-ink: #6B5320;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121816;
+      --card: #1A211E;
+      --ink: #E6EDEA;
+      --muted: #93A29B;
+      --line: #2A342F;
+      --accent: #3FB58F;
+      --accent-hover: #55C7A2;
+      --accent-ink: #0C1512;
+      --token-bg: #20302A;
+      --warn-bg: #2A2417;
+      --warn-line: #57482A;
+      --warn-ink: #D8BE85;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #F4F7F5; --card: #FFFFFF; --ink: #1C2523; --muted: #5C6A65;
+    --line: #DDE5E1; --accent: #176A55; --accent-hover: #135946;
+    --accent-ink: #F2FBF7; --token-bg: #EAF3EF;
+    --warn-bg: #FBF3E4; --warn-line: #E4CFA1; --warn-ink: #6B5320;
+  }
+  :root[data-theme="dark"] {
+    --bg: #121816; --card: #1A211E; --ink: #E6EDEA; --muted: #93A29B;
+    --line: #2A342F; --accent: #3FB58F; --accent-hover: #55C7A2;
+    --accent-ink: #0C1512; --token-bg: #20302A;
+    --warn-bg: #2A2417; --warn-line: #57482A; --warn-ink: #D8BE85;
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    color: var(--ink);
+    font-family: "Avenir Next", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  .wrap {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 48px 24px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .wordmark { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; }
+  .runs-local {
+    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--accent);
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px;
+    white-space: nowrap;
+  }
+  .lede { margin: 0; color: var(--muted); max-width: 58ch; text-wrap: pretty; }
+
+  .demo {
+    display: flex; align-items: center; justify-content: center; gap: 18px;
+    flex-wrap: wrap;
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 22px 18px;
+  }
+  .chip {
+    display: inline-flex; flex-direction: column; align-items: center; gap: 6px;
+  }
+  .chip .val {
+    background: var(--token-bg); border-radius: 6px;
+    padding: 8px 14px; font-size: 1.05rem; letter-spacing: 0.02em;
+  }
+  .chip .lbl {
+    font-size: 0.68rem; font-weight: 600; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .arrows {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    color: var(--muted); font-size: 0.78rem; line-height: 1.35;
+  }
+  .arrows .a { color: var(--accent); font-weight: 600; }
+
+  .dl {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  a.button {
+    display: inline-block;
+    background: var(--accent); color: var(--accent-ink);
+    text-decoration: none; font-weight: 600; font-size: 1.05rem;
+    padding: 14px 34px; border-radius: 8px;
+  }
+  a.button:hover { background: var(--accent-hover); }
+  a.button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .dl .meta { font-size: 0.82rem; color: var(--muted); }
+
+  h2 {
+    font-size: 0.8rem; font-weight: 600; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--muted); margin: 0 0 10px;
+  }
+  .setup { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 620px) { .setup { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 20px 22px;
+    min-width: 0;
+  }
+  .card h3 { margin: 0 0 10px; font-size: 1rem; font-weight: 600; }
+  .card ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; }
+  .card li { padding-left: 4px; }
+  .card li::marker { color: var(--accent); font-weight: 600; }
+  .fine { color: var(--muted); font-size: 0.86rem; }
+  .cmd {
+    display: block; background: var(--token-bg); border-radius: 6px;
+    padding: 7px 10px; margin-top: 6px; font-size: 0.8rem;
+    overflow-x: auto; white-space: nowrap;
+  }
+  b { font-weight: 600; }
+
+  .vault {
+    background: var(--warn-bg); border: 1px solid var(--warn-line);
+    border-radius: 10px; padding: 18px 22px; color: var(--warn-ink);
+  }
+  .vault h2 { color: inherit; margin-bottom: 8px; }
+  .vault p { margin: 0 0 8px; }
+  .vault p:last-child { margin-bottom: 0; }
+
+  footer { text-align: center; color: var(--muted); font-size: 0.82rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="wordmark">Account Masker</div>
+    <div class="runs-local">Runs on your computer only</div>
+  </header>
+
+  <p class="lede">Swaps real account numbers for fake tokens before a spreadsheet
+  goes into an outside system, and swaps them back when the file comes out.
+  Formulas, formatting, and everything else in the workbook are left exactly
+  as they were.</p>
+
+  <div class="demo" aria-label="Example: account number 44586337 becomes token ACCT-7F3K92 when masked, and back when unmasked">
+    <span class="chip"><span class="val mono">44586337</span><span class="lbl">Real number</span></span>
+    <span class="arrows"><span><span class="a">mask</span> &#8594;</span><span>&#8592; <span class="a">unmask</span></span></span>
+    <span class="chip"><span class="val mono">ACCT&#8209;7F3K92</span><span class="lbl">Safe token</span></span>
+  </div>
+
+  <div class="dl">
+    <a class="button" download="Account Masker.zip" href="AccountMasker.zip">Download Account&nbsp;Masker</a>
+    <span class="meta">ZIP &middot; 17 KB &middot; Windows &amp; Mac &middot; updated July 13, 2026</span>
+  </div>
+
+  <div class="setup">
+    <div class="card">
+      <h3>Set up on Windows</h3>
+      <ol>
+        <li>Unzip the folder somewhere permanent, like Documents or Desktop.</li>
+        <li>Double-click <b>Account Masker (Windows).bat</b>.
+          <div class="fine">If a blue &ldquo;Windows protected your PC&rdquo; screen appears,
+          click <b>More info</b>, then <b>Run anyway</b> &mdash; it asks once.</div></li>
+        <li>First run only: press <b>Y</b> when it offers to install the free
+          <span class="mono">uv</span> helper. The app window opens.</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h3>Set up on Mac</h3>
+      <ol>
+        <li>Unzip the folder somewhere permanent, like Documents or Desktop.</li>
+        <li>Install the free helper once &mdash; paste this in Terminal:
+          <code class="cmd mono">curl -LsSf https://astral.sh/uv/install.sh | sh</code></li>
+        <li>Right-click <b>Account Masker.app</b> &rarr; <b>Open</b> &rarr; <b>Open</b>.
+          <div class="fine">macOS asks once; after that, double-click works.</div></li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="vault">
+    <h2>Protect the vault</h2>
+    <p>After your first mask, a file called <b class="mono">account_vault.json</b>
+    appears next to the app. It is the decoder that turns tokens back into real
+    account numbers.</p>
+    <p><b>Never</b> upload, email, or share it &mdash; and <b>back it up</b> somewhere
+    safe. If it&rsquo;s lost, masked files can&rsquo;t be reverted. Each computer keeps its
+    own vault, so files masked on one computer are unmasked on that same computer.</p>
+  </div>
+
+  <footer>Nothing is sent anywhere &mdash; masking, unmasking, and the vault all stay
+  on the computer where you run it. Full details in the README inside the download.</footer>
+</div>
+</body>
+</html>
