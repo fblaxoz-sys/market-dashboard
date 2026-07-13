@@ -105,14 +105,16 @@
   .arrows .a { color: var(--accent); font-weight: 600; }
 
   .dl {
-    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
   }
+  .dl-buttons { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
   a.button {
-    display: inline-block;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
     background: var(--accent); color: var(--accent-ink);
     text-decoration: none; font-weight: 600; font-size: 1.05rem;
-    padding: 14px 34px; border-radius: 8px;
+    padding: 12px 30px; border-radius: 8px;
   }
+  a.button .sub { font-size: 0.72rem; font-weight: 500; opacity: 0.85; }
   a.button:hover { background: var(--accent-hover); }
   a.button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .dl .meta { font-size: 0.82rem; color: var(--muted); }
@@ -170,8 +172,11 @@
   </div>
 
   <div class="dl">
-    <a class="button" download="Account Masker.zip" href="AccountMasker.zip">Download Account&nbsp;Masker</a>
-    <span class="meta">ZIP &middot; 17 KB &middot; Windows &amp; Mac &middot; updated July 13, 2026</span>
+    <div class="dl-buttons">
+      <a class="button" download="Account Masker (Windows).zip" href="AccountMasker-Windows.zip">Download for Windows<span class="sub">ZIP &middot; 15 KB</span></a>
+      <a class="button" download="Account Masker (Mac).zip" href="AccountMasker-Mac.zip">Download for Mac<span class="sub">ZIP &middot; 16 KB</span></a>
+    </div>
+    <span class="meta">Updated July 13, 2026 &middot; setup steps below</span>
   </div>
 
   <div class="setup">
@@ -193,7 +198,10 @@
         <li>Install the free helper once &mdash; paste this in Terminal:
           <code class="cmd mono">curl -LsSf https://astral.sh/uv/install.sh | sh</code></li>
         <li>Right-click <b>Account Masker.app</b> &rarr; <b>Open</b> &rarr; <b>Open</b>.
-          <div class="fine">macOS asks once; after that, double-click works.</div></li>
+          <div class="fine">macOS asks once; after that, double-click works.
+          On macOS&nbsp;15 and newer, if there&rsquo;s no Open button: double-click the app
+          once (it gets blocked), then go to <b>System Settings &rarr; Privacy &amp;
+          Security</b>, scroll down, and click <b>Open Anyway</b>.</div></li>
       </ol>
     </div>
   </div>
