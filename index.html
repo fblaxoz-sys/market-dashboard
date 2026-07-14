@@ -767,8 +767,7 @@ async function fetchFRED(seriesId, freq=null) {
   const fredUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${fredKey}&sort_order=desc&limit=60&file_type=json${freqParam}`;
   const url = `/fred-proxy?url=${encodeURIComponent(fredUrl)}`;
   try {
-    const res = await fetch(url);
-    const j = await res.json();
+    const j = await fetchJSON(url, { timeout: 25000, tries: 3 });   // retry — survives cold starts
     if (!j.observations) return null;
     return j.observations
       .filter(o => o.value !== '.')
@@ -782,6 +781,8 @@ async function fetchFRED(seriesId, freq=null) {
 
 async function loadInflation() {
   if (!fredKey) { alert('Enter your FRED API key first.'); return; }
+  if (loadInflation._busy) return;               // ignore double-clicks while running
+  loadInflation._busy = true;
   const btn  = document.getElementById('inf-refresh-btn');
   btn.disabled = true;
   document.getElementById('inf-refresh-icon').innerHTML = '<span class="spinner"></span>';
@@ -790,38 +791,47 @@ async function loadInflation() {
   const fill = document.getElementById('inf-prog-fill');
   const lbl  = document.getElementById('inf-prog-lbl');
   prog.classList.add('visible');
-  fredData = {};
 
-  for (let i=0; i<FRED_SERIES.length; i++) {
-    const s = FRED_SERIES[i];
-    lbl.textContent  = `Fetching ${s.label}... (${i+1}/${FRED_SERIES.length})`;
-    fill.style.width = Math.round(((i+1)/FRED_SERIES.length)*100) + '%';
-    const obs = await fetchFRED(s.id, s.freq || null);
-    if (obs && obs.length) fredData[s.id] = obs;
-    await sleep(250);
-  }
+  try {
+    // Wake the free-tier server FIRST — after ~15 min idle it 503s/hangs for
+    // ~40-60s, which silently killed every FRED call ("refresh just doesn't work").
+    lbl.textContent = 'Contacting server…'; fill.style.width = '5%';
+    try { await fetchJSON('/healthz', { timeout: 90000, tries: 2,
+      onWake: () => lbl.textContent = 'Server waking up (free tier) — ~40s, hang tight…' }); } catch(e) {}
 
-  prog.classList.remove('visible');
+    // All series in parallel (was one-at-a-time + 250ms pauses ≈ 10-15s; now ~1-2s).
+    fredData = {};
+    let done = 0;
+    await Promise.all(FRED_SERIES.map(async (s, i) => {
+      await sleep(i * 60);                       // small stagger, gentle on the proxy
+      const obs = await fetchFRED(s.id, s.freq || null);
+      if (obs && obs.length) fredData[s.id] = obs;
+      done++;
+      fill.style.width = Math.round(done / FRED_SERIES.length * 100) + '%';
+      lbl.textContent  = `Fetching data… (${done}/${FRED_SERIES.length})`;
+    }));
 
-  if (!fredData['CPIAUCSL'] || !fredData['CPIAUCSL'].length) {
-    showBadge('fred-badge', false);
-    btn.disabled = false;
-    document.getElementById('inf-refresh-icon').textContent = '\u21BB';
-    alert('Could not load CPI data. Please check your FRED API key.');
-    return;
-  }
+    if (!fredData['CPIAUCSL'] || !fredData['CPIAUCSL'].length) {
+      showBadge('fred-badge', false);
+      alert('Could not load CPI data \u2014 the server may still be waking up. Hit Refresh once more. (If it keeps failing, check your FRED API key.)');
+      return;
+    }
 
   showBadge('fred-badge', true);
   renderDrivers();
   renderCPIChart();
 
-  document.getElementById('inf-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-  btn.disabled = false;
-  // Auto-run the ML ensemble (primary prediction). Cached server-side for 6h,
-  // so repeat refreshes are instant; first run takes ~1-2 min.
-  document.getElementById('inf-main-s1').textContent = 'Running ML ensemble… (~1-2 min first time)';
-  runInflationML();
-  document.getElementById('inf-refresh-icon').textContent = '\u21BB';
+    document.getElementById('inf-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    // Auto-run the ML ensemble (primary prediction). Cached server-side for 6h,
+    // so repeat refreshes are instant; first run takes ~1-2 min.
+    document.getElementById('inf-main-s1').textContent = 'Running ML ensemble… (~1-2 min first time)';
+    runInflationML();
+  } finally {                                    // the Refresh button can never stay stuck
+    loadInflation._busy = false;
+    prog.classList.remove('visible');
+    btn.disabled = false;
+    document.getElementById('inf-refresh-icon').textContent = '\u21BB';
+  }
 }
 
 // Prediction model
@@ -1153,6 +1163,8 @@ function renderGDPDrivers() {
 // ── Inflation ML Nowcast ──────────────────────────────────────────────
 async function runInflationML() {
   if (!fredKey) { alert('Enter your FRED API key first.'); return; }
+  if (runInflationML._busy) return;              // one model run at a time
+  runInflationML._busy = true;
   const btn = document.getElementById('inf-ml-btn');
   btn.disabled = true;
   document.getElementById('inf-ml-icon').innerHTML = '<span class="spinner"></span>';
@@ -1162,8 +1174,9 @@ async function runInflationML() {
 
   const months = document.getElementById('bt-months') ? document.getElementById('bt-months').value : 24;
   try {
-    const res = await fetch(`/inflation-nowcast?fred_key=${encodeURIComponent(fredKey)}&months=${months}&series=${inflationSeries}`);
-    const d = await res.json();
+    const d = await fetchJSON(`/inflation-nowcast?fred_key=${encodeURIComponent(fredKey)}&months=${months}&series=${inflationSeries}`,
+      { timeout: 300000, tries: 2,               // 5-min cap per try — a hung request can't spin forever
+        onWake: () => document.getElementById('inf-ml-sub').textContent = 'Server working — model training takes ~1-2 min on a cold start…' });
     if (d.error) throw new Error(d.error);
     const m = d.metrics;
     // Series-aware labels (Headline CPI vs Core CPI) + driver attribution panel
@@ -1308,6 +1321,7 @@ async function runInflationML() {
     document.getElementById('inf-main-s1').textContent = 'ML forecast unavailable — hit Refresh to retry';
     console.error(e);
   }
+  runInflationML._busy = false;
   btn.disabled = false;
   document.getElementById('inf-ml-icon').textContent = '⚙';
 }
@@ -1315,6 +1329,7 @@ async function runInflationML() {
 // Switch the whole inflation tab between Headline CPI and Core CPI, then re-run.
 function setInflationSeries(s) {
   if (s === inflationSeries && document.getElementById('inf-ml-section').style.display !== 'none') return;
+  if (runInflationML._busy) { toast('Model is still running — try again in a moment'); return; }
   inflationSeries = s;
   document.querySelectorAll('#inf-series-toggle button').forEach(b =>
     b.classList.toggle('active', b.dataset.series === s));
