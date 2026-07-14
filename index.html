@@ -825,10 +825,29 @@ async function loadInflation() {
 }
 
 // Prediction model
+// YoY by CALENDAR month, not array position. FRED series can have missing
+// months (CPI 2025-10 is a '.') — indexing arr[i-12] silently reaches 13
+// months back past a gap and overstates YoY for every later point (the graph
+// showed June 2026 at +3.73% vs the true +3.46%). Look the base month up by
+// date; if the base itself is the gap, interpolate its neighbors.
+function yoyByCalendar(obsArr) {
+  const lvl = {};
+  (obsArr || []).forEach(o => lvl[o.date.slice(0,7)] = o.value);
+  return (ym) => {
+    const cur = lvl[ym];
+    if (cur == null) return null;
+    let base = lvl[addMonthsYM(ym, -12)];
+    if (base == null) {
+      const a = lvl[addMonthsYM(ym, -13)], b = lvl[addMonthsYM(ym, -11)];
+      if (a != null && b != null) base = (a + b) / 2;
+    }
+    return base ? +((cur / base - 1) * 100).toFixed(2) : null;
+  };
+}
 function getYoY(seriesId) {
   const d = fredData[seriesId];
   if (!d || d.length < 13) return null;
-  return +((d[d.length-1].value / d[d.length-13].value - 1)*100).toFixed(2);
+  return yoyByCalendar(d)(d[d.length-1].date.slice(0,7));
 }
 
 function getMoM(seriesId) {
@@ -877,11 +896,12 @@ function renderCPIChart() {
   const ctx = document.getElementById('cpi-chart').getContext('2d');
   if (cpiChart) cpiChart.destroy();
 
-  // Last 24 months of actual CPI YoY, then 2 empty future months so the ML
-  // forecast overlay (added in runInflationML) has labels to land on.
-  const hist = cpi.slice(-24).map((o,i,arr) => ({
+  // Last 24 months of actual CPI YoY (calendar-correct across FRED gaps),
+  // then 2 empty future months so the ML forecast overlay has labels.
+  const yoy = yoyByCalendar(cpi);
+  const hist = cpi.slice(-24).map(o => ({
     date: o.date.slice(0,7),
-    actual: i>=12 ? +((o.value/arr[i-12].value-1)*100).toFixed(2) : null
+    actual: yoy(o.date.slice(0,7))
   }));
   const lastDate = cpi[cpi.length-1].date;
   hist.push({date: addMonthsYM(lastDate, 1), actual:null});
