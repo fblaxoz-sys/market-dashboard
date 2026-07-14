@@ -1190,8 +1190,11 @@ async function runInflationML() {
     document.getElementById('inf-main-v2').style.color = 'var(--accent2)';
     document.getElementById('inf-main-s2').textContent = 'Latest published CPI reading';
     document.getElementById('inf-main-d2').innerHTML = '';
+    // rolling intramonth oil read — updates through the month as daily data lands
+    const ow = d.oil_watch;
+    const owHtml = ow ? ` · <span style="color:${Math.abs(ow.mtd_pct)>=5?'var(--amber)':'var(--muted)'}" title="WTI ${ow.month} month-to-date vs prior month, from ${ow.days} day(s) of daily data — feeds the nowcast and refreshes as the month progresses">🛢 WTI ${ow.mtd_pct>0?'+':''}${ow.mtd_pct}% MTD (${ow.days}d)</span>` : '';
     document.getElementById('inf-ml-sub').innerHTML =
-      `Last actual (${d.last_actual_month || '—'}): ${d.nowcast.last_actual}% · Change ${diff>0?'+':''}${diff}pp`;
+      `Last actual (${d.last_actual_month || '—'}): ${d.nowcast.last_actual}% · Change ${diff>0?'+':''}${diff}pp${owHtml}`;
     document.getElementById('inf-ml-dir').innerHTML = Math.abs(diff) < 0.05
       ? `<span class="pred-dir dir-flat">&#8594; Flat</span>`
       : diff > 0

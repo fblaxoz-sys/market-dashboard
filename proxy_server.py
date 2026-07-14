@@ -662,12 +662,14 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
     # Oil enters above as last-complete-month monthly averages, so a crash
     # INSIDE the month being forecast (June 2026: May avg $102 → June $85,
     # −17% → CPI fell −0.42% MoM while we forecast +) is invisible and the
-    # nowcast overshoots. Daily WTI publishes near-real-time, so the target
-    # month's first two weeks ARE known while we forecast it (Cleveland-Fed
-    # style). Feature at row m = month (m+1)'s first-14-day daily-oil average
-    # vs month m's full average — the same information set at backtest time
-    # as at live nowcast time (no look-ahead).
-    oil_mtd = None
+    # nowcast overshoots. Daily WTI publishes near-real-time (Cleveland-Fed
+    # style nowcasting). Feature at row m = month (m+1)'s daily-oil average vs
+    # month m's full average. resample('MS').mean() on a partial month IS the
+    # month-to-date average, so at the live edge this feature updates every
+    # time FRED adds a day (the 6h model cache re-reads it), converging to the
+    # full-month value that historical rows train on. Early-month reads are
+    # partial; oil_watch['days'] discloses how many days it's based on.
+    oil_mtd = None; oil_watch = None
     try:
         u = (f"https://api.stlouisfed.org/fred/series/observations"
              f"?series_id=DCOILWTICO&api_key={fred_key}&file_type=json"
@@ -675,10 +677,15 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
         obs = _get(u).get('observations', [])
         ds = pd.Series({pd.Timestamp(o['date']): float(o['value'])
                         for o in obs if o['value'] != '.'}).sort_index()
-        mfull = ds.resample('MS').mean()                       # full-month avg
-        mhalf = ds[ds.index.day <= 14].resample('MS').mean()   # first-14-day avg
-        oil_mtd = (mhalf.shift(-1) / mfull - 1) * 100          # row m ← month m+1's early read
-        print(f"  [inf] daily WTI: {len(ds)} obs → intramonth feature (latest {oil_mtd.dropna().index[-1].strftime('%Y-%m')}: {oil_mtd.dropna().iloc[-1]:+.1f}%)")
+        mfull = ds.resample('MS').mean()                # full-month avg (partial → MTD)
+        oil_mtd = (mfull.shift(-1) / mfull - 1) * 100   # row m ← month m+1 vs month m
+        cur_ms = ds.index[-1].replace(day=1)            # month of the newest daily obs
+        cur = ds[ds.index >= cur_ms]
+        oil_watch = {'month': cur_ms.strftime('%Y-%m'), 'days': int(cur.count()),
+                     'mtd_pct': round(float(oil_mtd.dropna().iloc[-1]), 1),
+                     'last': round(float(ds.iloc[-1]), 2),
+                     'wk_pct': round(float(ds.iloc[-1] / ds.iloc[-6] - 1) * 100, 1) if len(ds) > 6 else None}
+        print(f"  [inf] daily WTI: {len(ds)} obs → MTD {oil_watch['month']} {oil_watch['mtd_pct']:+.1f}% ({oil_watch['days']} days)")
     except Exception as e:
         print(f"    skip DCOILWTICO daily: {e}")
 
@@ -1004,6 +1011,7 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
         'target': target_id,                    # CPIAUCSL=headline, CPILFESL=core
         'series': 'core' if target_id == 'CPILFESL' else 'headline',
         'drivers': drivers,                     # signed pp pull of each indicator
+        'oil_watch': oil_watch,                 # rolling intramonth WTI read (updates thru the month)
         'history': history,
         'bt_rows': bt_rows,
         'metrics': {
@@ -1545,6 +1553,36 @@ def run_quad(fred_key):
     }
 
 
+def _macro_watch_html():
+    """One-line oil strip for the digest: WTI last, month-to-date vs prior month,
+    and 5-day change (Yahoo CL=F — no key). Highlighted when the MTD move is big,
+    since that's exactly what shifts the CPI nowcast (June 2026: oil −17% → CPI
+    fell −0.42% MoM). Returns '' on any failure so the email never breaks."""
+    try:
+        rows = _yahoo_ohlc('CL=F', '3mo')
+        if len(rows) < 10: return ''
+        cur_ym = rows[-1][0][:7]
+        cur  = [r[4] for r in rows if r[0][:7] == cur_ym]
+        prev_ym = sorted({r[0][:7] for r in rows} - {cur_ym})[-1]
+        prev = [r[4] for r in rows if r[0][:7] == prev_ym]
+        if not cur or not prev: return ''
+        mtd = (sum(cur)/len(cur)) / (sum(prev)/len(prev)) - 1
+        wk  = rows[-1][4] / rows[-6][4] - 1 if len(rows) > 6 else 0.0
+        last = rows[-1][4]
+        big = abs(mtd) >= 0.05
+        bg, bd = ('#fdf3e7', '#e8a33d') if big else ('#f4f4f7', '#e2e2ea')
+        note = (' — <b>big move: the inflation nowcast is shifting</b>' if big else '')
+        c = lambda v: '#1a8f5f' if v >= 0 else '#c0392b'
+        return (f'<div style="background:{bg};border:1px solid {bd};border-radius:8px;'
+                f'padding:9px 12px;margin:0 0 14px;font:12px system-ui">'
+                f'🛢️ <b>Oil watch (WTI)</b> · ${last:.2f} · '
+                f'<span style="color:{c(mtd)};font-weight:600">{mtd*100:+.1f}% MTD</span> vs {prev_ym} · '
+                f'<span style="color:{c(wk)}">{wk*100:+.1f}% 5-day</span>{note}</div>')
+    except Exception as e:
+        print(f"[digest] macro watch skipped: {e}")
+        return ''
+
+
 _DIGEST_LOCK = threading.Lock()
 _last_digest_sent = None    # ISO date of the last real send — prevents double-sends
 
@@ -1651,7 +1689,7 @@ def send_daily_digest(dry=False, force=False):
     html = (f'<div style="max-width:680px;margin:0 auto">'
             f'<h1 style="font:700 20px system-ui;margin:0 0 4px">📈 Daily Swing Digest</h1>'
             f'<p style="color:#888;font:12px system-ui;margin:0 0 14px">{today} · within ±{band:g}% of the breakout line, ranked by score</p>'
-            f'{link}{table(f"Top {topn} ETFs", e_pick)}{table(f"Top {topn} Stocks", s_pick, show_rev=True)}'
+            f'{link}{_macro_watch_html()}{table(f"Top {topn} ETFs", e_pick)}{table(f"Top {topn} Stocks", s_pick, show_rev=True)}'
             f'<p style="color:#aaa;font:11px system-ui;margin-top:18px">Auto-generated from your market dashboard. '
             f'▲ = just broke out · ◇ = about to. Not financial advice.</p></div>')
 
