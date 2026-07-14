@@ -658,6 +658,30 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
     if target_id not in raw:
         raise ValueError(f"Could not load target {target_id}")
 
+    # ── Intramonth energy (daily WTI) — the June-2026 lesson ───────────────
+    # Oil enters above as last-complete-month monthly averages, so a crash
+    # INSIDE the month being forecast (June 2026: May avg $102 → June $85,
+    # −17% → CPI fell −0.42% MoM while we forecast +) is invisible and the
+    # nowcast overshoots. Daily WTI publishes near-real-time, so the target
+    # month's first two weeks ARE known while we forecast it (Cleveland-Fed
+    # style). Feature at row m = month (m+1)'s first-14-day daily-oil average
+    # vs month m's full average — the same information set at backtest time
+    # as at live nowcast time (no look-ahead).
+    oil_mtd = None
+    try:
+        u = (f"https://api.stlouisfed.org/fred/series/observations"
+             f"?series_id=DCOILWTICO&api_key={fred_key}&file_type=json"
+             f"&sort_order=desc&limit=9000")
+        obs = _get(u).get('observations', [])
+        ds = pd.Series({pd.Timestamp(o['date']): float(o['value'])
+                        for o in obs if o['value'] != '.'}).sort_index()
+        mfull = ds.resample('MS').mean()                       # full-month avg
+        mhalf = ds[ds.index.day <= 14].resample('MS').mean()   # first-14-day avg
+        oil_mtd = (mhalf.shift(-1) / mfull - 1) * 100          # row m ← month m+1's early read
+        print(f"  [inf] daily WTI: {len(ds)} obs → intramonth feature (latest {oil_mtd.dropna().index[-1].strftime('%Y-%m')}: {oil_mtd.dropna().iloc[-1]:+.1f}%)")
+    except Exception as e:
+        print(f"    skip DCOILWTICO daily: {e}")
+
     # FRED occasionally publishes a missing month (a '.' value — e.g. CPI 2025-10).
     # That gap makes the index non-continuous, so target = cpi.shift(-1) (a
     # *positional* shift) silently jumps 2 calendar months around the hole and
@@ -676,6 +700,8 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
     for sid in SERIES:
         if sid != target_id and sid in raw:
             df[sid.lower()] = raw[sid]
+    if oil_mtd is not None:
+        df['oil_mtd'] = oil_mtd        # target month's early daily-oil signal
     # ── Momentum features (month-over-month inflation) ────────────────────
     # Lets the model react to hot/cold streaks instead of anchoring on YoY.
     if cpi_level is not None:
@@ -934,6 +960,7 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
         'ppiaco': 'Producer prices (PPI)', 'mich': 'Inflation expectations (survey)',
         't5yie': '5Y breakeven (market)', 'ces0500000003': 'Wages',
         'pallfnfindexm': 'Global commodities', 'mcoilwtico': 'Oil (WTI)',
+        'oil_mtd': 'Oil this month (daily)',
         'm2sl': 'Money supply (M2)', 'unrate': 'Unemployment',
         'fedfunds': 'Fed funds rate', 'medcpim158sfrbcle': 'Median CPI (Cleveland)',
         'corestickm159sfrbatl': 'Sticky-price CPI', 'pcetrim12m159sfrbdal': 'Trimmed-mean PCE',
