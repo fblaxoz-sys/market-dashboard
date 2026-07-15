@@ -58,6 +58,35 @@ def cached_ml(key, fn, ttl=_ML_TTL):
         _ML_CACHE[key] = (time.time(), result)
         return result
 
+# ── Cache pre-warming ─────────────────────────────────────────────────────────
+# The inflation nowcast takes 1-2 min cold, and the in-memory cache dies with
+# every restart/spin-down — so users kept eating the full compute. The keep-alive
+# cron pings /healthz every 10 min during market hours; piggyback on it: if a
+# FRED_KEY env var is set on the server and either inflation cache entry is
+# stale, recompute both in a background thread. The ping itself stays instant,
+# and by the time a user opens the tab the result is already cached.
+_WARM_BUSY = threading.Lock()
+
+def _maybe_warm_inflation():
+    key = os.environ.get('FRED_KEY') or ''
+    if not key:
+        return
+    now = time.time()
+    stale = [t for t in ('CPIAUCSL', 'CPILFESL')
+             if not (h := _ML_CACHE.get(f"inf:{t}:24")) or now - h[0] >= _ML_TTL]
+    if not stale or not _WARM_BUSY.acquire(blocking=False):
+        return
+    def go():
+        try:
+            for t in stale:
+                cached_ml(f"inf:{t}:24", lambda t=t: run_inflation_nowcast(key, 24, target_id=t))
+                print(f"[warm] inflation {t} ready")
+        except Exception as e:
+            print(f"[warm] inflation failed: {e}")
+        finally:
+            _WARM_BUSY.release()
+    threading.Thread(target=go, daemon=True).start()
+
 # ── NOWCAST MODEL ────────────────────────────────────────────────────────────
 
 def run_gdp_nowcast(fred_key, bt_quarters=12):
@@ -641,19 +670,27 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
         m = s.resample('MS').last()
         return (m / m.shift(12) - 1) * 100 if t == 'yoy' else m
 
+    # Fetch all series concurrently — sequentially this took 15-25s (14 series
+    # plus a 1s courtesy sleep each); FRED allows 120 req/min so a small pool is
+    # well within limits and cuts the phase to a couple of seconds.
     raw = {}
     cpi_level = None
-    for sid, (t, freq) in SERIES.items():
-        print(f"  [inf] fetching {sid} …")
+    from concurrent.futures import ThreadPoolExecutor
+    def _load(item):
+        sid, (t, freq) = item
         try:
-            s = fetch(sid, freq)
+            return sid, t, fetch(sid, freq)
+        except Exception as e:
+            print(f"    skip {sid}: {e}")
+            return sid, t, None
+    _t0 = time.time()
+    with ThreadPoolExecutor(max_workers=7) as ex:
+        for sid, t, s in ex.map(_load, SERIES.items()):
             if s is not None and len(s) > 24:
                 raw[sid] = transform(s, t)
                 if sid == target_id:
                     cpi_level = s.resample('MS').last()   # keep level for MoM features
-        except Exception as e:
-            print(f"    skip {sid}: {e}")
-        time.sleep(1.0)
+    print(f"  [inf] fetched {len(raw)}/{len(SERIES)} series in {time.time()-_t0:.1f}s")
 
     if target_id not in raw:
         raise ValueError(f"Could not load target {target_id}")
@@ -1872,8 +1909,11 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
 
         # Cheap liveness probe for the keep-alive ping (avoids spinning up a scan
-        # or serving the 126KB page just to keep the free instance warm).
+        # or serving the 126KB page just to keep the free instance warm). Also
+        # opportunistically pre-warms the inflation cache in the background.
         if parsed.path == '/healthz':
+            try: _maybe_warm_inflation()
+            except Exception: pass
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')

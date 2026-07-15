@@ -2694,6 +2694,15 @@ function renderCorrOverlay(days) {
   // Also respond to later hash changes (pasted links, back/forward). switchTab uses
   // replaceState (no hashchange event), so this can't loop.
   window.addEventListener('hashchange', applyHashRoute);
+  // Pre-warm the inflation nowcast: kick the server off as soon as the site opens,
+  // so the 1-2 min cold compute happens while you browse, not while you wait on the
+  // tab. Server-side cache + lock make this idempotent (6h TTL, one job at a time).
+  if (fredKey) setTimeout(async () => {
+    for (const s of ['headline', 'core']) {
+      try { await fetch(`/inflation-nowcast?fred_key=${encodeURIComponent(fredKey)}&months=24&series=${s}`); }
+      catch (e) {}
+    }
+  }, 2500);
 })();
 </script>
 </body>
