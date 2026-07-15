@@ -677,11 +677,26 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
         obs = _get(u).get('observations', [])
         ds = pd.Series({pd.Timestamp(o['date']): float(o['value'])
                         for o in obs if o['value'] != '.'}).sort_index()
+        # Live edge: FRED's daily-WTI feed lags ~a week (EIA sourcing). Extend the
+        # tip with front-month WTI futures (CL=F ≈ spot) from Yahoo so the MTD read
+        # is same-day. Only dates AFTER FRED's last obs are appended, so every
+        # complete (historical/backtest) month stays pure FRED.
+        rt_days = 0
+        try:
+            fut = _yahoo_ohlc('CL=F', '3mo')
+            ext = pd.Series({pd.Timestamp(r[0]): float(r[4]) for r in fut
+                             if pd.Timestamp(r[0]) > ds.index[-1]}).sort_index()
+            if len(ext):
+                ds = pd.concat([ds, ext]); rt_days = int(len(ext))
+                print(f"  [inf] +{rt_days} real-time WTI day(s) from futures (CL=F)")
+        except Exception as e:
+            print(f"    skip CL=F extension: {e}")
         mfull = ds.resample('MS').mean()                # full-month avg (partial → MTD)
         oil_mtd = (mfull.shift(-1) / mfull - 1) * 100   # row m ← month m+1 vs month m
         cur_ms = ds.index[-1].replace(day=1)            # month of the newest daily obs
         cur = ds[ds.index >= cur_ms]
         oil_watch = {'month': cur_ms.strftime('%Y-%m'), 'days': int(cur.count()),
+                     'rt_days': rt_days,                # of which: same-day futures fill-in
                      'mtd_pct': round(float(oil_mtd.dropna().iloc[-1]), 1),
                      'last': round(float(ds.iloc[-1]), 2),
                      'wk_pct': round(float(ds.iloc[-1] / ds.iloc[-6] - 1) * 100, 1) if len(ds) > 6 else None}
