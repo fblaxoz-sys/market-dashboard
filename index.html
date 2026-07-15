@@ -401,7 +401,7 @@ td.r{text-align:right;}
       <div class="pred-sub" id="pf-total-sub"></div>
     </div>
     <div class="pred-card" style="border-top:3px solid var(--green);">
-      <div class="pred-label">vs S&amp;P 500 <span style="font-size:9px;color:var(--muted)">since <span id="pf-spy-since">start</span></span></div>
+      <div class="pred-label">vs S&amp;P 500 <span style="font-size:9px;color:var(--muted)">since <span id="pf-spy-since">start</span> · total return (incl. dividends)</span></div>
       <div class="pred-value" id="pf-alpha" style="color:var(--green);">&#8212;</div>
       <div class="pred-sub" id="pf-spy-sub"></div>
     </div>
@@ -410,7 +410,7 @@ td.r{text-align:right;}
   <!-- Portfolio vs S&P 500 performance chart -->
   <div id="pf-chart-wrap" style="display:none;margin-top:18px;">
     <div class="section-header"><div class="section-title"><span class="dot dot-green"></span>Portfolio vs S&amp;P 500</div>
-      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">growth of $100 · rebased to the start of the selected window</span></div>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--muted);">growth of $100 · total return, dividends held as cash · rebased to the window start</span></div>
     <div id="pf-period-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;"></div>
     <div id="pf-period-stat" style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:10px;"></div>
     <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;height:320px;"><canvas id="pf-chart"></canvas></div>
@@ -2212,8 +2212,12 @@ async function renderPortfolio() {
       price[s] = last[4]; lastDt[s] = last[0]; divsBy[s] = o.divs; }
     catch(e){ price[s] = null; divsBy[s] = []; }
   }));
-  let spyNow = null, spyOhlc = null;
-  try { const spy = await getOHLC('SPY'); spyOhlc = spy.ohlc; spyNow = spyOhlc[spyOhlc.length-1][4]; } catch(e){}
+  let spyNow = null, spyOhlc = null, spyDivs = [];
+  try { const spy = await getOHLC('SPY'); spyOhlc = spy.ohlc; spyNow = spyOhlc[spyOhlc.length-1][4]; spyDivs = spy.divs || []; } catch(e){}
+  // SPY dividends per share since a date — the benchmark must be TOTAL return,
+  // because the portfolio side already counts its own dividends (as cash).
+  // Price-only SPY was flattering alpha by ~1.3pp/yr.
+  const spyDivSince = d => (!d ? 0 : spyDivs.filter(x => x[0] >= d).reduce((a,x) => a+x[1], 0));
 
   // Dividends per share paid since a given date (they accrue to cash). Per holding
   // we use that holding's own buy date, falling back to the portfolio start.
@@ -2248,7 +2252,7 @@ async function renderPortfolio() {
       const d = r.date || pf.start;
       if (!d || r.cur==null) return;
       const sThen = closeOnOrBefore(spyOhlc, d);
-      if (sThen) { benchNum += r.weight*(spyNow/sThen); benchHas = true; }
+      if (sThen) { benchNum += r.weight*((spyNow + spyDivSince(d))/sThen); benchHas = true; }
     });
   }
   const spyRet = (benchHas && totW>0) ? ((benchNum + cashW)/totW - 1) : null;
@@ -2272,7 +2276,7 @@ async function renderPortfolio() {
     const bd = r.date || pf.start;
     if (spyOhlc && spyNow!=null && bd && r.ret!=null) {
       const sThen = closeOnOrBefore(spyOhlc, bd);
-      if (sThen) { const spyH = spyNow/sThen-1, aH = r.ret-spyH;
+      if (sThen) { const spyH = (spyNow + spyDivSince(bd))/sThen-1, aH = r.ret-spyH;
         retTitle = `S&P ${(spyH*100>=0?'+':'')}${(spyH*100).toFixed(1)}% since ${fmtBought(r.date)} · you ${aH>=0?'beat it +':'trail it '}${(aH*100).toFixed(1)}pp`; }
     }
     return `<tr>
@@ -2383,7 +2387,8 @@ function renderPfChart(pf, cashW) {
   const spy = posOhlcCache['SPY'] && posOhlcCache['SPY'].ohlc;
   const items = pf.holdings.map(h => ({
     w: h.weight, d: h.date || pf.start,
-    ohlc: posOhlcCache[h.sym] && posOhlcCache[h.sym].ohlc
+    ohlc: posOhlcCache[h.sym] && posOhlcCache[h.sym].ohlc,
+    divs: (posOhlcCache[h.sym] && posOhlcCache[h.sym].divs) || []
   })).filter(it => it.ohlc && it.ohlc.length && it.d);
   if (!spy || !items.length) { wrap.style.display = 'none'; if (pfChart) { pfChart.destroy(); pfChart = null; } return; }
   const t0 = items.reduce((m,it) => it.d < m ? it.d : m, items[0].d);
@@ -2399,15 +2404,32 @@ function renderPfChart(pf, cashW) {
     return out;
   };
   const spyClose = align(spy);
+  // cumulative dividends per share paid in [startDate, axis[k]] — forward-walked
+  // like align(). Both lines are TOTAL return (divs held as cash, not reinvested),
+  // matching how the summary cards count dividends.
+  const alignCumDiv = (divs, startDate) => {
+    const out = new Array(axis.length); let di = 0, cum = 0;
+    for (let k = 0; k < axis.length; k++) {
+      while (di < divs.length && divs[di][0] <= axis[k]) {
+        if (divs[di][0] >= startDate) cum += divs[di][1];
+        di++;
+      }
+      out[k] = cum;
+    }
+    return out;
+  };
+  const spyDivsAll = (posOhlcCache['SPY'] && posOhlcCache['SPY'].divs) || [];
   const cw = cashW || 0;
   const port = new Array(axis.length).fill(cw);   // cash held flat in both
   const bench = new Array(axis.length).fill(cw);
   items.forEach(it => {
     const cl = align(it.ohlc);
+    const cd = alignCumDiv(it.divs, it.d);
+    const sd = alignCumDiv(spyDivsAll, it.d);
     const pBuy = closeOnOrBefore(it.ohlc, it.d), sBuy = closeOnOrBefore(spy, it.d);
     for (let k = 0; k < axis.length; k++) {
-      port[k]  += (axis[k] < it.d || pBuy == null || cl[k] == null) ? it.w : it.w * (cl[k] / pBuy);
-      bench[k] += (axis[k] < it.d || sBuy == null || spyClose[k] == null) ? it.w : it.w * (spyClose[k] / sBuy);
+      port[k]  += (axis[k] < it.d || pBuy == null || cl[k] == null) ? it.w : it.w * ((cl[k] + cd[k]) / pBuy);
+      bench[k] += (axis[k] < it.d || sBuy == null || spyClose[k] == null) ? it.w : it.w * ((spyClose[k] + sd[k]) / sBuy);
     }
   });
   // ── window the series to the selected period, rebasing each to 100 at its start ──
