@@ -524,6 +524,27 @@ td.r{text-align:right;}
       </div>
     </div>
 
+    <!-- Scenario range — the walk-forward accuracy band as downside / base / upside -->
+    <div id="gdp-scenarios" style="display:none;margin:-4px 0 22px;">
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:8px;">
+        GDP SCENARIO RANGE &mdash; <span id="gdp-scen-q">&#8212;</span> &middot; walk-forward accuracy band
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <div class="pred-card" style="flex:1;min-width:140px;padding:12px 16px;border-top:3px solid var(--red);">
+          <div class="pred-label" style="font-size:9px;">DOWNSIDE &middot; weaker</div>
+          <div class="stat-value" id="gdp-scen-low" style="color:var(--red);font-size:22px;">&#8212;</div>
+        </div>
+        <div class="pred-card" style="flex:1;min-width:140px;padding:12px 16px;border-top:3px solid var(--amber);">
+          <div class="pred-label" style="font-size:9px;">BASE CASE</div>
+          <div class="stat-value" id="gdp-scen-base" style="color:var(--amber);font-size:22px;">&#8212;</div>
+        </div>
+        <div class="pred-card" style="flex:1;min-width:140px;padding:12px 16px;border-top:3px solid var(--green);">
+          <div class="pred-label" style="font-size:9px;">UPSIDE &middot; stronger</div>
+          <div class="stat-value" id="gdp-scen-high" style="color:var(--green);font-size:22px;">&#8212;</div>
+        </div>
+      </div>
+    </div>
+
     <div class="section-header"><div class="section-title"><span class="dot dot-amber"></span>25-Year Walk-Forward Backtest (true out-of-sample)</div></div>
     <div class="table-wrap" id="gdp-ml-bt-table"></div>
   </div>
@@ -965,6 +986,7 @@ const GDP_SERIES = [
 
 let gdpData = {};
 let gdpChart = null;
+let gdpFcAnchorIdx = -1;   // index of the Forecast bridge anchor (hidden from tooltip)
 
 function saveGdpFredKey() {
   const v = document.getElementById('gdp-fred-key').value.trim();
@@ -982,8 +1004,7 @@ async function fetchGDPSeries(seriesId, limit=96, freq=null) {
   const fredUrl = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${fredKey}&sort_order=desc&limit=${limit}&file_type=json${freqParam}`;
   const url = `/fred-proxy?url=${encodeURIComponent(fredUrl)}`;
   try {
-    const res = await fetch(url);
-    const j   = await res.json();
+    const j = await fetchJSON(url, { timeout: 25000, tries: 3 });   // retry — survives cold starts
     if (!j.observations) return null;
     return j.observations
       .filter(o => o.value !== '.')
@@ -997,6 +1018,8 @@ async function fetchGDPSeries(seriesId, limit=96, freq=null) {
 
 async function loadGDP() {
   if (!fredKey) { alert('Enter your FRED API key first.'); return; }
+  if (loadGDP._busy) return;                     // ignore double-clicks while running
+  loadGDP._busy = true;
   const btn = document.getElementById('gdp-refresh-btn');
   btn.disabled = true;
   document.getElementById('gdp-refresh-icon').innerHTML = '<span class="spinner"></span>';
@@ -1004,38 +1027,46 @@ async function loadGDP() {
   const fill = document.getElementById('gdp-prog-fill');
   const lbl  = document.getElementById('gdp-prog-lbl');
   prog.classList.add('visible');
-  gdpData = {};
 
-  for (let i=0; i<GDP_SERIES.length; i++) {
-    const s = GDP_SERIES[i];
-    lbl.textContent  = `Fetching ${s.label}... (${i+1}/${GDP_SERIES.length})`;
-    fill.style.width = Math.round(((i+1)/GDP_SERIES.length)*100) + '%';
+  try {
+    // Wake the free-tier server FIRST — it 503s/hangs for ~40-60s after sleeping,
+    // which silently killed every FRED call (same fix as the Inflation tab).
+    lbl.textContent = 'Contacting server…'; fill.style.width = '5%';
+    try { await fetchJSON('/healthz', { timeout: 90000, tries: 2,
+      onWake: () => lbl.textContent = 'Server waking up (free tier) — ~40s, hang tight…' }); } catch(e) {}
+
+    gdpData = {};
+    // All series in parallel (was one-at-a-time + 250ms pauses ≈ 8-12s; now ~1-2s).
+    let gdpDone = 0;
+  await Promise.all(GDP_SERIES.map(async (s, i) => {
+    await sleep(i * 60);                       // small stagger, gentle on the proxy
     const obs = await fetchGDPSeries(s.id, s.id==='GDPC1' ? 80 : 96, s.freq || null);
     if (obs && obs.length) gdpData[s.id] = obs;
-    await sleep(250);
-  }
+    gdpDone++;
+    fill.style.width = Math.round(gdpDone / GDP_SERIES.length * 100) + '%';
+    lbl.textContent  = `Fetching ${s.label}... (${gdpDone}/${GDP_SERIES.length})`;
+  }));
 
-  prog.classList.remove('visible');
-
-  if (!gdpData['GDPC1'] || gdpData['GDPC1'].length < 5) {
-    showBadge('gdp-fred-badge', false);
-    btn.disabled = false;
-    document.getElementById('gdp-refresh-icon').textContent = '↻';
-    alert('Could not load GDP data. Please check your FRED API key.');
-    return;
-  }
+    if (!gdpData['GDPC1'] || gdpData['GDPC1'].length < 5) {
+      showBadge('gdp-fred-badge', false);
+      alert('Could not load GDP data — the server may still be waking up. Hit Refresh once more. (If it keeps failing, check your FRED API key.)');
+      return;
+    }
 
   showBadge('gdp-fred-badge', true);
   renderGDPDrivers();
   renderGDPChart(buildGDPPredictions());        // actual GDP line; ML line added when model runs
 
-  document.getElementById('gdp-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-  document.getElementById('gdp-ml-btn').style.display = '';
-  btn.disabled = false;
-  document.getElementById('gdp-refresh-icon').textContent = '↻';
-
-  // The 25-year ML model is the prediction — run it automatically (cached 6h server-side)
-  runMLNowcast();
+    document.getElementById('gdp-updated').textContent = 'Updated ' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    document.getElementById('gdp-ml-btn').style.display = '';
+    // The 25-year ML model is the prediction — run it automatically (cached 6h server-side)
+    runMLNowcast();
+  } finally {                                    // the Refresh button can never stay stuck
+    loadGDP._busy = false;
+    prog.classList.remove('visible');
+    btn.disabled = false;
+    document.getElementById('gdp-refresh-icon').textContent = '↻';
+  }
 }
 
 function gdpYoY(data, idx) {
@@ -1306,12 +1337,19 @@ async function runInflationML() {
         borderColor:'#2dd4a0', backgroundColor:'#2dd4a015', tension:0.4,
         borderWidth:2, pointRadius:2, pointBackgroundColor:'#2dd4a0', spanGaps:false,
       });
+      // The point AT the last actual month is only a visual bridge (the dashed
+      // line has to start somewhere) — hide its marker and keep it out of the
+      // tooltip, so "Forecast" never appears to duplicate an actual print.
       cpiChart.data.datasets.push({
         label:'Forecast', data: fcLine,
         borderColor:'#f5a623', backgroundColor:'#f5a62300', borderDash:[6,4], tension:0.3,
-        borderWidth:2.5, pointRadius:6, pointStyle:'rectRot', pointBackgroundColor:'#f5a623',
+        borderWidth:2.5, pointStyle:'rectRot', pointBackgroundColor:'#f5a623',
         pointBorderColor:'#fff', pointBorderWidth:1.5, spanGaps:true,
+        pointRadius: fcLine.map((v,i) => i === lastActualIdx ? 0 : 6),
+        pointHoverRadius: fcLine.map((v,i) => i === lastActualIdx ? 0 : 8),
       });
+      cpiChart.options.plugins.tooltip.filter =
+        (item) => !(item.dataset.label === 'Forecast' && item.dataIndex === lastActualIdx);
       cpiChart.update();
     }
 
@@ -1366,6 +1404,8 @@ function updateEnsembleCards() { /* ensemble removed — GDP shows simple + 25-y
 
 async function runMLNowcast() {
   if (!fredKey) { alert('Enter your FRED API key first.'); return; }
+  if (runMLNowcast._busy) return;                // one model run at a time
+  runMLNowcast._busy = true;
   const btn = document.getElementById('gdp-ml-btn');
   btn.disabled = true;
   document.getElementById('gdp-ml-icon').innerHTML = '<span class="spinner"></span>';
@@ -1375,8 +1415,9 @@ async function runMLNowcast() {
 
   const quarters = document.getElementById('gdp-bt-quarters').value || 12;
   try {
-    const res = await fetch(`/gdp-nowcast?fred_key=${encodeURIComponent(fredKey)}&quarters=${quarters}`);
-    const d   = await res.json();
+    const d = await fetchJSON(`/gdp-nowcast?fred_key=${encodeURIComponent(fredKey)}&quarters=${quarters}`,
+      { timeout: 300000, tries: 2,               // 5-min cap per try — a hung request can't spin forever
+        onWake: () => document.getElementById('gdp-ml-sub').textContent = 'Server working — model training takes ~1-2 min on a cold start…' });
     if (d.error) throw new Error(d.error);
 
     // Hero card
@@ -1398,6 +1439,14 @@ async function runMLNowcast() {
       document.getElementById('gdp-ml-acc').textContent = m.accuracy + '%';
       document.getElementById('gdp-ml-acc-band').textContent =
         `within ±${m.acc_band}pp · ${m.wf_quarters}-qtr walk-forward since ${m.wf_start}`;
+    }
+    // Scenario range — nowcast ± the walk-forward accuracy band
+    if (m.acc_band != null && d.nowcast.value != null) {
+      document.getElementById('gdp-scenarios').style.display = '';
+      document.getElementById('gdp-scen-q').textContent = d.nowcast.quarter || '—';
+      document.getElementById('gdp-scen-low').textContent  = (d.nowcast.value - m.acc_band).toFixed(2) + '%';
+      document.getElementById('gdp-scen-base').textContent = d.nowcast.value.toFixed(2) + '%';
+      document.getElementById('gdp-scen-high').textContent = (d.nowcast.value + m.acc_band).toFixed(2) + '%';
     }
     document.getElementById('gdp-ml-rmse-in').textContent  = `±${m.wf_mae ?? m.mae}pp`;
     document.getElementById('gdp-ml-rmse-out').textContent = `±${m.rmse_out}pp`;
@@ -1484,6 +1533,7 @@ async function runMLNowcast() {
     console.error(e);
   }
 
+  runMLNowcast._busy = false;
   btn.disabled = false;
   document.getElementById('gdp-ml-icon').textContent = '⚙';
 }
@@ -1531,12 +1581,17 @@ function renderGDPChart(preds, btRows=[], mlData=[]) {
     const fcLine = preds.map((p, i) =>
       (i > lastActualIdx && resolvedMlPred[i] != null) ? resolvedMlPred[i]
       : (i === lastActualIdx ? p.actual : null));
+    // The anchor point at the last actual quarter is only a visual bridge —
+    // hide its marker so 'Forecast' never appears to duplicate an actual print.
     datasets.push({
       label:'Forecast', data: fcLine,
       borderColor:'#f5a623', backgroundColor:'#f5a62300', borderDash:[6,4], tension:0.3,
-      borderWidth:2.5, pointRadius:6, pointStyle:'rectRot', pointBackgroundColor:'#f5a623',
-      pointBorderColor:'#fff', pointBorderWidth:1.5, spanGaps:true,
+      pointStyle:'rectRot', pointBackgroundColor:'#f5a623',
+      borderWidth:2.5, pointBorderColor:'#fff', pointBorderWidth:1.5, spanGaps:true,
+      pointRadius: fcLine.map((v,i) => i === lastActualIdx ? 0 : 6),
+      pointHoverRadius: fcLine.map((v,i) => i === lastActualIdx ? 0 : 8),
     });
+    gdpFcAnchorIdx = lastActualIdx;
   }
 
   gdpChart = new Chart(ctx, {
@@ -1548,6 +1603,7 @@ function renderGDPChart(preds, btRows=[], mlData=[]) {
         legend:{labels:{color:'#6b6b80',font:{family:"'Space Mono'",size:11}}},
         tooltip:{backgroundColor:'#18181f',borderColor:'#ffffff18',borderWidth:1,
           titleColor:'#e8e8f0',bodyColor:'#6b6b80',
+          filter:(item)=>!(item.dataset.label==='Forecast' && item.dataIndex===gdpFcAnchorIdx),
           callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.y!=null?c.parsed.y+'%':'—'}`}}
       },
       scales:{
@@ -2702,6 +2758,7 @@ function renderCorrOverlay(days) {
       try { await fetch(`/inflation-nowcast?fred_key=${encodeURIComponent(fredKey)}&months=24&series=${s}`); }
       catch (e) {}
     }
+    try { await fetch(`/gdp-nowcast?fred_key=${encodeURIComponent(fredKey)}&quarters=12`); } catch (e) {}
   }, 2500);
 })();
 </script>
