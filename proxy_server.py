@@ -1086,8 +1086,15 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
         trail = {}
         for n in mem_names:
             if idx >= MIN_HIST:
-                e = [(mem_pred[n][j]-_act[j])**2 for j in range(idx) if mem_pred[n][j] == mem_pred[n][j]]
-                trail[n] = (sum(e)/len(e))**0.5 if e else 1e9
+                # EWMA squared error (half-life 24 months, fixed a priori): recent
+                # accuracy counts more, so weights adapt after regime shifts
+                # instead of dragging a decade of stale errors — the June lesson.
+                num = den = 0.0
+                for j in range(idx):
+                    if mem_pred[n][j] == mem_pred[n][j]:
+                        wgt = 0.5 ** ((idx - j) / 24.0)
+                        num += wgt * (mem_pred[n][j] - _act[j]) ** 2; den += wgt
+                trail[n] = (num / den) ** 0.5 if den else 1e9
             else:
                 trail[n] = mem_rmse[n]
         qual = [n for n in mem_names if n in ALLOWED and trail[n] <= THRESH and mem_pred[n][idx] == mem_pred[n][idx]]
@@ -1096,10 +1103,19 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
         w = _inv2(qual, trail)
         wf.append((d, a, sum(w[n]*mem_pred[n][idx] for n in qual), pv))
 
-    # Final-forecast eligibility: allowed members within 0.50pp over the backtest
+    # Final-forecast eligibility: allowed members within 0.50pp, weighted by the
+    # same EWMA-recency RMSE the gate uses (full history still gates entry).
+    ew_rmse = {}
+    for n in mem_names:
+        num = den = 0.0
+        for j in range(len(_act)):
+            if mem_pred[n][j] == mem_pred[n][j]:
+                wgt = 0.5 ** ((len(_act) - j) / 24.0)
+                num += wgt * (mem_pred[n][j] - _act[j]) ** 2; den += wgt
+        ew_rmse[n] = (num / den) ** 0.5 if den else 1e9
     fc_members = [n for n in mem_names if n in ALLOWED and mem_rmse[n] <= THRESH] \
                  or [min([n for n in mem_names if n in ALLOWED], key=lambda n: mem_rmse[n])]
-    mem_wt = _inv2(fc_members, mem_rmse)
+    mem_wt = _inv2(fc_members, ew_rmse)
     for n in mem_names: mem_wt.setdefault(n, 0.0)   # excluded models → 0 weight
     print(f"  [inf] eligible (<=0.50pp): " + ", ".join(f"{n} {mem_wt[n]*100:.0f}%(±{mem_rmse[n]:.2f})"
           for n in sorted(mem_names, key=lambda x: -mem_wt[x])))
