@@ -29,6 +29,8 @@ const required = [
   'function addMonthsYM',                             // timezone-safe month math
   'function fetchJSON',                               // resilient fetch
   "switchTab('inflation')", "switchTab('gdp')",       // tabs wired
+  'inf-scenarios', 'gdp-scenarios',                   // scenario ranges on both predictors
+  'GDP SCENARIO RANGE',                               // GDP scenario strip populated
 ];
 for (const marker of required) {
   assert.ok(html.includes(marker), `missing required feature marker: ${marker}`);

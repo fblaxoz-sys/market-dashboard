@@ -59,3 +59,6 @@ def run():
 
 if __name__ == '__main__':
     run()
+    # Also run the cache-warming / release-freshness suite (CI invokes only this file)
+    import test_freshness
+    test_freshness.run()
