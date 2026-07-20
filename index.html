@@ -2452,7 +2452,7 @@ function renderPfInsights(rows, totW) {
 // its buy date; cash held flat), built from the price history already cached. ──
 let pfChart = null;
 let pfPeriod = '1Y';   // selected comparison window
-const PF_PERIODS = ['1M','3M','6M','YTD','1Y','3Y','ALL'];
+const PF_PERIODS = ['1D','1W','1M','3M','6M','YTD','1Y','3Y','ALL'];
 function cashWeight(pf){
   if (pfSharesMode(pf)) return Math.max(0, +pf.cash || 0);   // dollar mode: cash in $
   return Math.max(0, 100 - pf.holdings.reduce((a,h)=>a+(h.weight||0),0));
@@ -2462,7 +2462,9 @@ function setPfPeriod(c){ pfPeriod = c; renderPfChart(curPf(), cashWeight(curPf()
 function pfWindowStart(code, axis){
   const last = new Date(axis[axis.length-1] + 'T00:00:00');
   if (code === 'ALL') return axis[0];
+  if (code === '1D')  return axis[Math.max(0, axis.length - 2)];   // previous trading day
   if (code === 'YTD') return `${last.getFullYear()}-01-01`;
+  if (code === '1W') { const d = new Date(last); d.setDate(d.getDate() - 7); return d.toISOString().slice(0,10); }
   const m = {'1M':1,'3M':3,'6M':6,'1Y':12,'3Y':36}[code] || 12;
   const d = new Date(last); d.setMonth(d.getMonth() - m);
   return d.toISOString().slice(0,10);
@@ -2470,12 +2472,19 @@ function pfWindowStart(code, axis){
 function renderPfChart(pf, cashW) {
   const wrap = document.getElementById('pf-chart-wrap');
   const spy = posOhlcCache['SPY'] && posOhlcCache['SPY'].ohlc;
-  const items = pf.holdings.map(h => ({
-    w: h.shares ? h.shares * h.buy : h.weight,   // dollar mode: cost $ as weight
-    d: h.date || pf.start,
-    ohlc: posOhlcCache[h.sym] && posOhlcCache[h.sym].ohlc,
-    divs: (posOhlcCache[h.sym] && posOhlcCache[h.sym].divs) || []
-  })).filter(it => it.ohlc && it.ohlc.length && it.d);
+  // Dateless holdings in a dollar (shares) portfolio: assume held through the
+  // whole lookback (brokerage-style "your current positions over time") so the
+  // 1D/1W/… returns exist. Dated holdings still enter on their buy date.
+  // Shares weights use entry-date market value, making the portfolio line
+  // literally Σ shares × price — exact, matching the table's Day column.
+  const heldFrom = pfSharesMode(pf) && spy && spy.length ? spy[0][0] : pf.start;
+  const items = pf.holdings.map(h => {
+    const ohlc = posOhlcCache[h.sym] && posOhlcCache[h.sym].ohlc;
+    const d = h.date || heldFrom;
+    let w = h.weight;
+    if (h.shares) { const p0 = ohlc && closeOnOrBefore(ohlc, d); w = h.shares * (p0 || h.buy); }
+    return { w, d, ohlc, divs: (posOhlcCache[h.sym] && posOhlcCache[h.sym].divs) || [] };
+  }).filter(it => it.ohlc && it.ohlc.length && it.d);
   if (!spy || !items.length) { wrap.style.display = 'none'; if (pfChart) { pfChart.destroy(); pfChart = null; } return; }
   const t0 = items.reduce((m,it) => it.d < m ? it.d : m, items[0].d);
   const axis = spy.filter(r => r[0] >= t0).map(r => r[0]);
@@ -2525,15 +2534,31 @@ function renderPfChart(pf, cashW) {
   const pBase = port[sIdx] || 1, bBase = bench[sIdx] || 1;
   const pV = port.slice(sIdx).map(v => +(v / pBase * 100).toFixed(2));
   const bV = bench.slice(sIdx).map(v => +(v / bBase * 100).toFixed(2));
-  // period buttons + stat caption
+  // Period RETURN chips: every window's return at a glance (green/red), click
+  // to view it on the chart. In dollar mode the tooltip adds the $ change.
+  const dollarPf = pfSharesMode(pf);
   document.getElementById('pf-period-btns').innerHTML = PF_PERIODS.map(c => {
+    const ws = pfWindowStart(c, axis);
+    let si = axis.findIndex(x => x >= ws); if (si < 0) si = 0;
+    const p0 = port[si], p1 = port[port.length-1], b0 = bench[si], b1 = bench[bench.length-1];
+    const r  = p0 > 0 ? (p1/p0 - 1)*100 : null;
+    const br = b0 > 0 ? (b1/b0 - 1)*100 : null;
     const on = c === pfPeriod;
-    return `<button onclick="setPfPeriod('${c}')" style="background:${on?'var(--amber-dim)':'transparent'};color:${on?'var(--amber)':'var(--muted)'};border:1px solid var(--border);border-radius:7px;font-family:var(--mono);font-size:11px;font-weight:${on?700:400};padding:5px 11px;cursor:pointer;">${c}</button>`;
+    const rc = r == null ? 'var(--muted)' : r >= 0 ? 'var(--green)' : 'var(--red)';
+    const rtxt = r == null ? '' : ` <span style="color:${rc};font-weight:700">${r>=0?'+':''}${r.toFixed(Math.abs(r)<10?2:1)}%</span>`;
+    const tip = r == null ? c :
+      `${c}: ${r>=0?'+':''}${r.toFixed(2)}%` +
+      (dollarPf ? ` (${p1-p0>=0?'+':''}${fmtUsd(p1-p0)})` : '') +
+      (br != null ? ` · S&P ${br>=0?'+':''}${br.toFixed(2)}% · ${r-br>=0?'+':''}${(r-br).toFixed(2)}pp` : '') +
+      ` · since ${axis[si]}`;
+    return `<button onclick="setPfPeriod('${c}')" title="${tip}" style="background:${on?'var(--amber-dim)':'transparent'};border:1px solid ${on?'var(--amber)':'var(--border)'};border-radius:7px;font-family:var(--mono);font-size:11px;color:${on?'var(--amber)':'var(--muted)'};font-weight:${on?700:400};padding:5px 10px;cursor:pointer;white-space:nowrap;">${c}${rtxt}</button>`;
   }).join('');
   const pRet = pV[pV.length-1] - 100, bRet = bV[bV.length-1] - 100, al = pRet - bRet;
   const col = v => v >= 0 ? 'var(--green)' : 'var(--red)';
+  const winUsd = dollarPf ? (() => { const d = port[port.length-1] - port[sIdx];
+    return ` <b style="color:${col(d)}">(${d>=0?'+':''}${fmtUsd(d)})</b>`; })() : '';
   document.getElementById('pf-period-stat').innerHTML =
-    `<b style="color:${col(pRet)}">Portfolio ${pRet>=0?'+':''}${pRet.toFixed(2)}%</b> &middot; ` +
+    `<b style="color:${col(pRet)}">Portfolio ${pRet>=0?'+':''}${pRet.toFixed(2)}%</b>${winUsd} &middot; ` +
     `S&amp;P ${bRet>=0?'+':''}${bRet.toFixed(2)}% &middot; ` +
     `<b style="color:${col(al)}">${al>=0?'+':''}${al.toFixed(2)}pp</b> ` +
     `<span style="opacity:.7">(since ${aWin[0]})</span>`;
