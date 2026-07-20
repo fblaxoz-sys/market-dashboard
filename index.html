@@ -389,14 +389,14 @@ td.r{text-align:right;}
     <span style="flex:1"></span>
     <label title="Used as the period for the S&amp;P 500 comparison">STARTED</label>
     <input id="pf-start" type="date" style="flex:0 0 150px;min-width:130px" onchange="setPortfolioStart(this.value)" />
-    <label title="Auto: 100% − the sum of your holding weights. Dividends since the start date also accrue here.">CASH %</label>
-    <input id="pf-cash" type="number" readonly title="Auto: whatever's left after your holding weights" style="flex:0 0 80px;min-width:64px;opacity:.7;cursor:not-allowed" placeholder="0" />
+    <label id="pf-cash-label" title="Dollar-mode portfolios: cash in $, editable. Weight portfolios: auto leftover %.">CASH %</label>
+    <input id="pf-cash" type="number" readonly style="flex:0 0 100px;min-width:64px;opacity:.7;cursor:not-allowed" placeholder="0" onchange="setPortfolioCashDollars(this.value)" />
   </div>
 
   <!-- Overall gain + S&P comparison -->
   <div class="pred-hero" id="pf-summary" style="display:none;">
     <div class="pred-card" style="border-top:3px solid var(--amber);">
-      <div class="pred-label">Portfolio return <span style="font-size:9px;color:var(--muted)">weighted, from your buy prices</span></div>
+      <div class="pred-label" id="pf-total-label">Portfolio return <span style="font-size:9px;color:var(--muted)">weighted, from your buy prices</span></div>
       <div class="pred-value" id="pf-total" style="color:var(--amber);">&#8212;</div>
       <div class="pred-sub" id="pf-total-sub"></div>
     </div>
@@ -420,7 +420,7 @@ td.r{text-align:right;}
   <div class="config-bar" style="margin-top:14px;">
     <label>ADD STOCK</label>
     <input id="pf-sym"    type="text"   style="flex:0 0 110px;min-width:90px" placeholder="Ticker e.g. NVDA" onkeydown="if(event.key==='Enter')addHolding()" />
-    <input id="pf-weight" type="number" style="flex:0 0 110px;min-width:90px" step="0.1" placeholder="Weight %" onkeydown="if(event.key==='Enter')addHolding()" />
+    <input id="pf-weight" type="number" style="flex:0 0 110px;min-width:90px" step="0.001" placeholder="Shares" title="Number of shares (in a legacy weight-% portfolio this is the weight %)" onkeydown="if(event.key==='Enter')addHolding()" />
     <input id="pf-buy"    type="number" style="flex:0 0 130px;min-width:100px" step="0.01" placeholder="Buy price" onkeydown="if(event.key==='Enter')addHolding()" />
     <input id="pf-date"   type="date"   style="flex:0 0 150px;min-width:130px" title="Purchase date (for the S&amp;P comparison)" onkeydown="if(event.key==='Enter')addHolding()" />
     <button class="btn" onclick="addHolding()">Add</button>
@@ -433,12 +433,16 @@ td.r{text-align:right;}
   <div id="pf-import-modal" style="display:none;position:fixed;inset:0;background:#000a;z-index:9999;align-items:center;justify-content:center;padding:20px;">
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:540px;width:100%;padding:22px;box-shadow:0 20px 60px #000c;">
       <div style="font-size:16px;font-weight:800;margin-bottom:4px;">Import holdings</div>
-      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.7;margin-bottom:14px;">
-        One per line: <b style="color:var(--text)">TICKER, weight%, buyPrice, buyDate</b> (date optional) &middot; optional <b style="color:var(--text)">CASH, %</b> line.<br>
-        Weight = cost-basis allocation; buyDate drives the S&amp;P comparison (each holding vs S&amp;P since you bought it).
+      <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.7;margin-bottom:10px;">
+        One per line: <b style="color:var(--text)">TICKER, shares, buyPrice, buyDate</b> (date optional) &middot; optional <b style="color:var(--text)">CASH, $</b> line.<br>
+        Shares mode shows dollar values &amp; daily P/L; buyDate drives the vs-S&amp;P comparison.
+      </div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text);display:flex;gap:18px;margin-bottom:10px;">
+        <label style="cursor:pointer"><input type="radio" name="pf-import-mode" value="shares" checked /> Shares (real account)</label>
+        <label style="cursor:pointer"><input type="radio" name="pf-import-mode" value="weights" /> Weights % (hypothetical)</label>
       </div>
       <input id="pf-import-name" type="text" placeholder="Portfolio name" style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 11px;font-family:inherit;font-size:13px;box-sizing:border-box;" />
-      <textarea id="pf-import-text" rows="11" placeholder="AAAU, 2.03, 31.16, 2025-05-29&#10;AMZN, 2.46, 212.54, 2025-05-18&#10;CASH, 5" style="width:100%;font-family:var(--mono);font-size:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;resize:vertical;box-sizing:border-box;"></textarea>
+      <textarea id="pf-import-text" rows="11" placeholder="AAAU, 26, 28.70, 2025-03-07&#10;AMZN, 5, 150.39, 2024-12-13&#10;CASH, 5891.11" style="width:100%;font-family:var(--mono);font-size:12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;resize:vertical;box-sizing:border-box;"></textarea>
       <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px;">
         <button class="btn" onclick="closePfImport()">Cancel</button>
         <button class="btn btn-primary" onclick="doPfImport()">Import</button>
@@ -2040,10 +2044,21 @@ if (!portfolios.length) portfolios = [{ name:'My Portfolio', start:new Date().to
 let pfActive = Math.min(Math.max(0, parseInt(localStorage.getItem('pf_active')||'0',10)||0), portfolios.length-1);
 function savePortfolios(){ localStorage.setItem('portfolios', JSON.stringify(portfolios)); localStorage.setItem('pf_active', String(pfActive)); }
 function curPf(){ return portfolios[pfActive]; }
+// A portfolio runs in DOLLAR mode when every holding has a share count —
+// then cost ($ = shares × buy) doubles as the weight, cash is in dollars,
+// and the table shows Value / Day / P&L in real money. Legacy weight-%
+// portfolios keep the original relative behavior.
+function pfSharesMode(pf){ return pf.holdings.length > 0 && pf.holdings.every(h => h.shares > 0); }
+const fmtUsd = v => (v<0?'-$':'$') + Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 // Portfolio table sorting (click a header). Default: largest current weight first.
 let pfSort = { k:'curPct', d:-1 };
-const PF_COLS  = [['sym','Ticker',''],['date','Bought','r'],['curPct','Current %','r'],['buy','Buy','r'],['cur','Price','r'],['ret','Return','r']];
-const PF_SORTV = { sym:r=>r.sym, date:r=>r.date||'', curPct:r=>r.curPct, buy:r=>r.buy, cur:r=>r.cur, ret:r=>r.ret };
+function pfCols(dollar){
+  return dollar
+    ? [['sym','Ticker',''],['date','Bought','r'],['shares','Shares','r'],['val','Value','r'],['day','Day','r'],['curPct','Current %','r'],['buy','Buy','r'],['cur','Price','r'],['ret','Return','r']]
+    : [['sym','Ticker',''],['date','Bought','r'],['curPct','Current %','r'],['buy','Buy','r'],['cur','Price','r'],['ret','Return','r']];
+}
+const PF_SORTV = { sym:r=>r.sym, date:r=>r.date||'', curPct:r=>r.curPct, buy:r=>r.buy, cur:r=>r.cur, ret:r=>r.ret,
+                   shares:r=>r.shares, val:r=>r.val, day:r=>r.dayUsd };
 function sortPf(k){ pfSort = (pfSort.k===k) ? {k, d:-pfSort.d} : {k, d:(k==='sym'?1:-1)}; renderPortfolio(); }
 function selectPortfolio(i){ pfActive = +i; savePortfolios(); renderPortfolio(); }
 function newPortfolio(){
@@ -2077,14 +2092,22 @@ function fmtBought(d){
 }
 function addHolding(){
   const sym = document.getElementById('pf-sym').value.trim().toUpperCase();
-  const weight = parseFloat(document.getElementById('pf-weight').value);
+  const qty = parseFloat(document.getElementById('pf-weight').value);
   const buy = parseFloat(document.getElementById('pf-buy').value);
   const date = normDate(document.getElementById('pf-date').value);
-  if (!sym || !(weight>0) || !(buy>0)) { alert('Enter a ticker, weight %, and buy price.'); return; }
+  if (!sym || !(qty>0) || !(buy>0)) { alert('Enter a ticker, shares (or weight %), and buy price.'); return; }
   if (curPf().holdings.some(h=>h.sym===sym)) { toast(sym+' is already in this portfolio'); return; }
-  curPf().holdings.push({ sym, weight, buy, ...(date?{date}:{}) }); savePortfolios();
+  // empty or all-shares portfolio → the number is SHARES; legacy weight-% pf → weight
+  const asShares = curPf().holdings.length === 0 || pfSharesMode(curPf());
+  curPf().holdings.push(asShares ? { sym, shares: qty, buy, ...(date?{date}:{}) }
+                                 : { sym, weight: qty, buy, ...(date?{date}:{}) });
+  savePortfolios();
   ['pf-sym','pf-weight','pf-buy','pf-date'].forEach(id=>document.getElementById(id).value='');
   renderPortfolio();
+}
+function setPortfolioCashDollars(v){   // dollar-mode portfolios: cash is entered in $
+  if (!pfSharesMode(curPf())) return;
+  curPf().cash = Math.max(0, parseFloat(v) || 0); savePortfolios(); renderPortfolio();
 }
 function removeHolding(i){ curPf().holdings.splice(i,1); savePortfolios(); renderPortfolio(); }
 
@@ -2099,6 +2122,7 @@ function closePfImport(){ document.getElementById('pf-import-modal').style.displ
 function doPfImport(){
   const name = (document.getElementById('pf-import-name').value || '').trim() || 'Imported';
   const raw  = document.getElementById('pf-import-text').value || '';
+  const asShares = (document.querySelector('input[name="pf-import-mode"]:checked')||{}).value !== 'weights';
   const holdings = []; let cash = 0;
   for (let line of raw.split('\n')) {
     line = line.trim();
@@ -2106,13 +2130,15 @@ function doPfImport(){
     // comma-separated (keeps M/D/YYYY dates intact); fall back to whitespace
     const parts = (line.includes(',') ? line.split(',') : line.split(/\s+/)).map(s => s.trim()).filter(Boolean);
     const sym = (parts[0] || '').toUpperCase();
-    if (sym === 'CASH') { cash = parseFloat(parts[1]) || 0; continue; }
-    const weight = parseFloat(parts[1]), buy = parseFloat(parts[2]);
+    if (sym === 'CASH') { cash = parseFloat(parts[1]) || 0; continue; }   // $ in shares mode, % in weights mode
+    const qty = parseFloat(parts[1]), buy = parseFloat(parts[2]);
     const date = normDate(parts[3] || '');
-    if (!sym || !(weight > 0) || !(buy > 0)) continue;   // need weight + buy
-    if (!holdings.some(h => h.sym === sym)) holdings.push({ sym, weight, buy, ...(date?{date}:{}) });
+    if (!sym || !(qty > 0) || !(buy > 0)) continue;   // need qty + buy
+    if (!holdings.some(h => h.sym === sym))
+      holdings.push(asShares ? { sym, shares: qty, buy, ...(date?{date}:{}) }
+                             : { sym, weight: qty, buy, ...(date?{date}:{}) });
   }
-  if (!holdings.length) { alert('No valid rows found.\nUse one per line:  TICKER, weight%, buyPrice, buyDate'); return; }
+  if (!holdings.length) { alert('No valid rows found.\nUse one per line:  TICKER, shares (or weight%), buyPrice, buyDate'); return; }
   let idx = portfolios.findIndex(p => p.name === name);
   if (idx >= 0) {
     if (!confirm(`Replace the ${portfolios[idx].holdings.length} holding(s) in "${name}" with these ${holdings.length}?`)) return;
@@ -2128,7 +2154,10 @@ function doPfImport(){
 // ── Export: copy the current portfolio in the same paste format (cross-device) ──
 function openPfExport(){
   const pf = curPf();
-  const lines = pf.holdings.map(h => `${h.sym}, ${h.weight}, ${h.buy}${h.date ? ', ' + h.date : ''}`);
+  const dollar = pfSharesMode(pf);
+  const lines = pf.holdings.map(h => `${h.sym}, ${dollar ? h.shares : h.weight}, ${h.buy}${h.date ? ', ' + h.date : ''}`);
+  if (dollar && pf.cash > 0) lines.push(`CASH, ${(+pf.cash).toFixed(2)}`);
+  if (dollar) lines.unshift('# shares mode — pick "Shares" when importing');
   document.getElementById('pf-export-name').textContent = pf.name;
   document.getElementById('pf-export-text').value = lines.join('\n');
   document.getElementById('pf-export-modal').style.display = 'flex';
@@ -2192,15 +2221,30 @@ function renderPfSelect() {
   const sel = document.getElementById('pf-select');
   sel.innerHTML = portfolios.map((p,i)=>`<option value="${i}"${i===pfActive?' selected':''}>${p.name}</option>`).join('');
   document.getElementById('pf-start').value = curPf().start || '';
-  document.getElementById('pf-cash').value =
-    Math.max(0, 100 - curPf().holdings.reduce((a,h)=>a+(h.weight||0),0)).toFixed(2);
+  const cashEl = document.getElementById('pf-cash'), lbl = document.getElementById('pf-cash-label');
+  if (pfSharesMode(curPf())) {                 // dollar mode: cash is entered, in $
+    cashEl.readOnly = false; cashEl.style.opacity = '1'; cashEl.style.cursor = '';
+    cashEl.value = +(curPf().cash || 0).toFixed(2);
+    cashEl.title = 'Cash in the account, in dollars (editable)';
+    if (lbl) lbl.textContent = 'CASH $';
+  } else {                                     // legacy weight mode: derived leftover %
+    cashEl.readOnly = true; cashEl.style.opacity = '.7'; cashEl.style.cursor = 'not-allowed';
+    cashEl.value = Math.max(0, 100 - curPf().holdings.reduce((a,h)=>a+(h.weight||0),0)).toFixed(2);
+    cashEl.title = 'Auto: whatever’s left after your holding weights';
+    if (lbl) lbl.textContent = 'CASH %';
+  }
 }
 
 async function renderPortfolio() {
   renderPfSelect();
   const pf = curPf(), tb = document.getElementById('pf-table');
-  const weightSum = pf.holdings.reduce((a,h)=>a+(h.weight||0),0);
-  const cashW = Math.max(0, 100 - weightSum);   // cash = whatever's left after holdings
+  // Dollar mode: cost ($ = shares × buy) IS the weight, so all the relative
+  // math below (factors, benchmark, chart, insights) is exact in dollars.
+  const dollar = pfSharesMode(pf);
+  const hs = dollar ? pf.holdings.map(h => ({ ...h, weight: h.shares * h.buy })) : pf.holdings;
+  const weightSum = hs.reduce((a,h)=>a+(h.weight||0),0);
+  const cashW = dollar ? Math.max(0, +pf.cash || 0)             // cash entered in $
+                       : Math.max(0, 100 - weightSum);          // leftover % of weights
   document.getElementById('pf-spy-since').textContent = 'each purchase';
   if (!pf.holdings.length) {
     tb.innerHTML = '<div class="empty-state">Add stocks above with their weight % and your buy price.</div>';
@@ -2212,10 +2256,11 @@ async function renderPortfolio() {
   if (pf.holdings.some(h=>!posOhlcCache[h.sym]) || !posOhlcCache['SPY'])
     tb.innerHTML = '<div class="empty-state">Loading prices…</div>';   // skip flash when re-sorting cached data
   // Current price + dividend history for each holding; SPY for the benchmark.
-  const syms = [...new Set(pf.holdings.map(h=>h.sym))], price = {}, divsBy = {}, lastDt = {};
+  const syms = [...new Set(pf.holdings.map(h=>h.sym))], price = {}, divsBy = {}, lastDt = {}, prevClose = {};
   await Promise.all(syms.map(async s => {
     try { const o = await getOHLC(s); const last = o.ohlc[o.ohlc.length-1];
-      price[s] = last[4]; lastDt[s] = last[0]; divsBy[s] = o.divs; }
+      price[s] = last[4]; lastDt[s] = last[0]; divsBy[s] = o.divs;
+      prevClose[s] = o.ohlc.length > 1 ? o.ohlc[o.ohlc.length-2][4] : null; }
     catch(e){ price[s] = null; divsBy[s] = []; }
   }));
   let spyNow = null, spyOhlc = null, spyDivs = [];
@@ -2230,13 +2275,18 @@ async function renderPortfolio() {
   const divSince = (s, since) => (!since ? 0 : (divsBy[s]||[]).filter(d => d[0] >= since).reduce((a,d)=>a+d[1], 0));
 
   // weight × (cur/buy) = relative current value (price only); weight × (div/buy) = dividend cash.
-  const rows = pf.holdings.map((h,i) => {
+  // (In dollar mode those same expressions equal value-$ and dividend-$ exactly.)
+  const rows = hs.map((h,i) => {
     const cur = price[h.sym];
     const ret = cur != null ? (cur/h.buy - 1) : null;
     const factor = cur != null ? h.weight*(cur/h.buy) : null;
     const divPerSh = divSince(h.sym, h.date || pf.start);
     const divFrac = cur != null ? h.weight*(divPerSh/h.buy) : 0;
-    return { ...h, _idx:i, cur, ret, factor, divPerSh, divFrac };
+    const val    = (dollar && cur != null) ? h.shares*cur : null;
+    const pc     = prevClose[h.sym];
+    const dayUsd = (dollar && cur != null && pc != null) ? h.shares*(cur-pc) : null;
+    const dayPct = (cur != null && pc != null) ? (cur/pc - 1)*100 : null;
+    return { ...h, _idx:i, cur, ret, factor, divPerSh, divFrac, val, dayUsd, dayPct };
   });
   const stockFactor = rows.reduce((a,r)=>a+(r.factor||0),0);
   const divCash = rows.reduce((a,r)=>a+(r.divFrac||0),0);         // total dividends → cash
@@ -2276,21 +2326,29 @@ async function renderPortfolio() {
     return pfSort.d * (x - y);
   });
   const body = rows.map(r => {
-    const divNote = r.divPerSh>0 ? ` <span class="c-green" style="font-size:9px" title="$${r.divPerSh.toFixed(2)}/share in dividends since ${fmtBought(r.date)||pf.start} → cash">+div</span>` : '';
+    // plain-text "bought" label for title attributes (fmtBought returns HTML for
+    // missing dates — a quoted span inside title="…" breaks out of the attribute)
+    const bLbl = r.date ? fmtBought(r.date) : (pf.start || 'start');
+    const divNote = r.divPerSh>0 ? ` <span class="c-green" style="font-size:9px" title="$${r.divPerSh.toFixed(2)}/share in dividends since ${bLbl} → cash">+div</span>` : '';
     // per-holding S&P-since-purchase comparison (tooltip on the Return cell)
     let retTitle = '';
     const bd = r.date || pf.start;
     if (spyOhlc && spyNow!=null && bd && r.ret!=null) {
       const sThen = closeOnOrBefore(spyOhlc, bd);
       if (sThen) { const spyH = (spyNow + spyDivSince(bd))/sThen-1, aH = r.ret-spyH;
-        retTitle = `S&P ${(spyH*100>=0?'+':'')}${(spyH*100).toFixed(1)}% since ${fmtBought(r.date)} · you ${aH>=0?'beat it +':'trail it '}${(aH*100).toFixed(1)}pp`; }
+        retTitle = `S&P ${(spyH*100>=0?'+':'')}${(spyH*100).toFixed(1)}% since ${bLbl} · you ${aH>=0?'beat it +':'trail it '}${(aH*100).toFixed(1)}pp`; }
     }
+    const priceTd = `<td class="r"${r.cur!=null&&lastDt[r.sym]?` title="close ${lastDt[r.sym]}"`:''}>${r.cur!=null ? '$'+r.cur.toFixed(2) + (asOf && lastDt[r.sym] && lastDt[r.sym] < asOf ? ` <span title="stale — last close ${lastDt[r.sym]}, newer data exists" style="color:var(--amber)">&#9888;</span>` : '') : '<span class="c-muted" title="no price data from Yahoo">n/a</span>'}</td>`;
+    const dollarTds = dollar ? `
+      <td class="r c-muted">${(+r.shares.toFixed(3)).toLocaleString()}</td>
+      <td class="r">${r.val!=null ? fmtUsd(r.val) : '&#8212;'}</td>
+      <td class="r ${r.dayUsd==null?'c-muted':r.dayUsd>=0?'c-green':'c-red'}"${r.dayPct!=null?` title="vs previous close"`:''}>${r.dayUsd!=null ? `${r.dayUsd>=0?'+':''}${fmtUsd(r.dayUsd).replace('$-','-$')} (${r.dayPct>=0?'+':''}${r.dayPct.toFixed(2)}%)` : '&#8212;'}</td>` : '';
     return `<tr>
       <td class="ticker-cell">${r.sym}</td>
-      <td class="r c-muted" style="white-space:nowrap">${fmtBought(r.date)}</td>
+      <td class="r c-muted" style="white-space:nowrap">${fmtBought(r.date)}</td>${dollarTds}
       <td class="r">${r.curPct!=null ? r.curPct.toFixed(2)+'%' : '&#8212;'}</td>
       <td class="r c-muted">$${r.buy.toFixed(2)}</td>
-      <td class="r"${r.cur!=null&&lastDt[r.sym]?` title="close ${lastDt[r.sym]}"`:''}>${r.cur!=null ? '$'+r.cur.toFixed(2) + (asOf && lastDt[r.sym] && lastDt[r.sym] < asOf ? ` <span title="stale — last close ${lastDt[r.sym]}, newer data exists" style="color:var(--amber)">&#9888;</span>` : '') : '<span class="c-muted" title="no price data from Yahoo">n/a</span>'}</td>
+      ${priceTd}
       <td class="r ${r.ret==null?'c-muted':r.ret>=0?'c-green':'c-red'}"${retTitle?` title="${retTitle}"`:''}>${r.ret!=null ? (r.ret>=0?'+':'')+(r.ret*100).toFixed(2)+'%'+divNote : '&#8212;'}</td>
       <td class="r"><button onclick="removeHolding(${r._idx})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px">&times;</button></td>
     </tr>`;
@@ -2298,31 +2356,49 @@ async function renderPortfolio() {
   let cashRow = '';
   if (cashW>0 || divCash>0) {
     const cashPct = totFactor>0 ? (cashFactor/totFactor*100) : null;
+    const divCell = `<td class="r ${divCash>0?'c-green':'c-muted'}" title="dividends collected since ${pf.start||'start'}${dollar?' (dollars)':''}">${divCash>0 ? (dollar ? '+'+fmtUsd(divCash)+' div' : '+'+divPctOfPort.toFixed(2)+'% div') : '&#8212;'}</td>`;
     cashRow = `<tr style="border-top:1px solid var(--border)">
       <td class="ticker-cell">&#128181; Cash</td>
       <td class="r c-muted">&#8212;</td>
+      ${dollar ? `<td class="r c-muted">&#8212;</td><td class="r">${fmtUsd(cashFactor)}</td><td class="r c-muted">&#8212;</td>` : ''}
       <td class="r">${cashPct!=null ? cashPct.toFixed(2)+'%' : '&#8212;'}</td>
       <td class="r c-muted">&#8212;</td>
       <td class="r c-muted">&#8212;</td>
-      <td class="r ${divCash>0?'c-green':'c-muted'}" title="dividends collected since ${pf.start||'start'}">${divCash>0 ? '+'+divPctOfPort.toFixed(2)+'% div' : '&#8212;'}</td>
+      ${divCell}
       <td></td>
     </tr>`;
   }
-  const wnote = Math.abs(totW-100) > 0.5 ? ` &middot; <span class="c-amber">weights sum to ${totW.toFixed(0)}%</span>` : '';
-  const head = '<thead><tr>' + PF_COLS.map(([k,lbl,al]) => {
+  const wnote = (!dollar && Math.abs(totW-100) > 0.5) ? ` &middot; <span class="c-amber">weights sum to ${totW.toFixed(0)}%</span>` : '';
+  const head = '<thead><tr>' + pfCols(dollar).map(([k,lbl,al]) => {
     const ar = pfSort.k===k ? (pfSort.d<0?' ▾':' ▴') : '';
     return `<th class="${al}" style="cursor:pointer;white-space:nowrap" onclick="sortPf('${k}')">${lbl}${ar}</th>`;
   }).join('') + '<th></th></tr></thead>';
   tb.innerHTML = `<table>${head}<tbody>${body}${cashRow}</tbody></table>
-  <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px">Current % drifts with price · returns from your buy price · hover a Return to see it vs S&amp;P since you bought · dividends accrue to cash${wnote}</div>`;
+  <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:6px">${dollar ? 'Day = vs previous close · returns from your avg cost · hover a Return to see it vs S&amp;P since you bought · dividends accrue to cash' : 'Current % drifts with price · returns from your buy price · hover a Return to see it vs S&amp;P since you bought · dividends accrue to cash'}${wnote}</div>`;
 
   document.getElementById('pf-summary').style.display = '';
+  document.getElementById('pf-total-label').innerHTML = dollar
+    ? 'Account value <span style="font-size:9px;color:var(--muted)">shares × price + cash, dividends included</span>'
+    : 'Portfolio return <span style="font-size:9px;color:var(--muted)">weighted, from your buy prices</span>';
   const tEl = document.getElementById('pf-total');
-  tEl.textContent = overall!=null ? (overall>=0?'+':'')+(overall*100).toFixed(2)+'%' : '&#8212;';
-  if (overall!=null) tEl.style.color = overall>=0 ? 'var(--green)' : 'var(--red)';
-  document.getElementById('pf-total-sub').textContent =
-    `${valid} of ${pf.holdings.length} holdings priced` + (divCash>0 ? ` · +${divPctOfPort.toFixed(2)}% from dividends` : '')
-    + (failedSyms.length ? ` · ⚠ no price: ${failedSyms.join(', ')}` : '');
+  if (dollar) {
+    // headline = account value in dollars; sub = P/L $ + today's move
+    const dayTot = rows.reduce((a,r)=>a+(r.dayUsd||0),0);
+    const prevVal = totFactor - dayTot;
+    const dayPctTot = prevVal > 0 ? dayTot/prevVal*100 : 0;
+    const plUsd = totFactor - totW;
+    tEl.textContent = fmtUsd(totFactor);
+    tEl.style.color = (overall??0) >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('pf-total-sub').textContent =
+      `${plUsd>=0?'+':''}${fmtUsd(plUsd)} (${overall>=0?'+':''}${(overall*100).toFixed(2)}%) all-time · today ${dayTot>=0?'+':''}${fmtUsd(dayTot)} (${dayPctTot>=0?'+':''}${dayPctTot.toFixed(2)}%)`
+      + ` · ${valid}/${pf.holdings.length} priced` + (failedSyms.length ? ` · ⚠ no price: ${failedSyms.join(', ')}` : '');
+  } else {
+    tEl.textContent = overall!=null ? (overall>=0?'+':'')+(overall*100).toFixed(2)+'%' : '&#8212;';
+    if (overall!=null) tEl.style.color = overall>=0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('pf-total-sub').textContent =
+      `${valid} of ${pf.holdings.length} holdings priced` + (divCash>0 ? ` · +${divPctOfPort.toFixed(2)}% from dividends` : '')
+      + (failedSyms.length ? ` · ⚠ no price: ${failedSyms.join(', ')}` : '');
+  }
   const aEl = document.getElementById('pf-alpha');
   if (alpha!=null) {
     aEl.textContent = (alpha>=0?'+':'')+(alpha*100).toFixed(2)+'pp';
@@ -2377,7 +2453,10 @@ function renderPfInsights(rows, totW) {
 let pfChart = null;
 let pfPeriod = '1Y';   // selected comparison window
 const PF_PERIODS = ['1M','3M','6M','YTD','1Y','3Y','ALL'];
-function cashWeight(pf){ return Math.max(0, 100 - pf.holdings.reduce((a,h)=>a+(h.weight||0),0)); }
+function cashWeight(pf){
+  if (pfSharesMode(pf)) return Math.max(0, +pf.cash || 0);   // dollar mode: cash in $
+  return Math.max(0, 100 - pf.holdings.reduce((a,h)=>a+(h.weight||0),0));
+}
 function setPfPeriod(c){ pfPeriod = c; renderPfChart(curPf(), cashWeight(curPf())); }
 // First axis date for a window code, measured back from the latest data date.
 function pfWindowStart(code, axis){
@@ -2392,7 +2471,8 @@ function renderPfChart(pf, cashW) {
   const wrap = document.getElementById('pf-chart-wrap');
   const spy = posOhlcCache['SPY'] && posOhlcCache['SPY'].ohlc;
   const items = pf.holdings.map(h => ({
-    w: h.weight, d: h.date || pf.start,
+    w: h.shares ? h.shares * h.buy : h.weight,   // dollar mode: cost $ as weight
+    d: h.date || pf.start,
     ohlc: posOhlcCache[h.sym] && posOhlcCache[h.sym].ohlc,
     divs: (posOhlcCache[h.sym] && posOhlcCache[h.sym].divs) || []
   })).filter(it => it.ohlc && it.ohlc.length && it.d);
