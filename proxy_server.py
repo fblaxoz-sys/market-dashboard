@@ -58,31 +58,110 @@ def cached_ml(key, fn, ttl=_ML_TTL):
         _ML_CACHE[key] = (time.time(), result)
         return result
 
-# ── Cache pre-warming ─────────────────────────────────────────────────────────
-# The inflation nowcast takes 1-2 min cold, and the in-memory cache dies with
-# every restart/spin-down — so users kept eating the full compute. The keep-alive
-# cron pings /healthz every 10 min during market hours; piggyback on it: if a
-# FRED_KEY env var is set on the server and either inflation cache entry is
-# stale, recompute both in a background thread. The ping itself stays instant,
-# and by the time a user opens the tab the result is already cached.
-_WARM_BUSY = threading.Lock()
+# ── Release-day freshness ─────────────────────────────────────────────────────
+# The 6h cache can straddle a data release: on CPI morning the tab would keep
+# serving the PRE-release nowcast for hours. Cheap check (one 1-obs FRED call,
+# memoized 15 min per series): has the source series grown a newer month than
+# the cached result was built on?
+_FRESH_MEMO = {}   # series_id -> (checked_at, 'YYYY-MM' of FRED's latest obs)
 
-def _maybe_warm_inflation():
+def _release_stale(series_id, fred_key, cached_last_month):
+    if not cached_last_month or not fred_key:
+        return False
+    now = time.time()
+    hit = _FRESH_MEMO.get(series_id)
+    if not hit or now - hit[0] > 900:
+        latest = None
+        try:
+            u = (f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}"
+                 f"&api_key={fred_key}&sort_order=desc&limit=1&file_type=json")
+            with urllib.request.urlopen(u, timeout=10) as r:
+                obs = json.loads(r.read()).get('observations', [])
+            latest = obs[0]['date'][:7] if obs else None
+        except Exception:
+            pass
+        _FRESH_MEMO[series_id] = (now, latest)
+        hit = _FRESH_MEMO[series_id]
+    return bool(hit[1] and hit[1] > str(cached_last_month))
+
+# ── Cleveland Fed nowcast vintages ────────────────────────────────────────────
+# Public chart JSON behind clevelandfed.org/indicators-and-data/inflation-nowcasting:
+# one entry per month back to 2013, each holding that month's DAILY nowcast path.
+# End-of-month vintage per completed month = the same information timing as our
+# converged intramonth-oil design, so it can be scored in the walk-forward like
+# any other member. Memoized 3h; returns None on any failure.
+_CLEV_MEMO = {'t': 0.0, 'data': None}
+
+def _cleveland_nowcasts():
+    if _CLEV_MEMO['data'] is not None and time.time() - _CLEV_MEMO['t'] < 3*3600:
+        return _CLEV_MEMO['data']
+    try:
+        u = ('https://www.clevelandfed.org/-/media/files/webcharts/'
+             'inflationnowcasting/nowcast_year.json?sc_lang=en')
+        req = urllib.request.Request(u, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=45) as r:
+            entries = json.loads(r.read())
+        names = {'CPI Inflation': 'CPIAUCSL', 'Core CPI Inflation': 'CPILFESL'}
+        out = {'CPIAUCSL': {}, 'CPILFESL': {}, 'live': {}}
+        for e in entries:
+            sub = (e.get('chart', {}).get('subcaption') or '').strip()   # e.g. '2026-7'
+            if '-' not in sub: continue
+            y, m = sub.split('-')
+            ym = f"{y}-{int(m):02d}"
+            for ds in e.get('dataset', []):
+                sid = names.get(ds.get('seriesname'))
+                if not sid: continue
+                nn = [float(v['value']) for v in ds.get('data', []) if v.get('value') not in (None, '')]
+                if nn: out[sid][ym] = nn[-1]      # last daily value = latest vintage for that month
+        for sid in names.values():
+            if out[sid]:
+                last = max(out[sid])
+                out['live'][sid] = (last, out[sid][last])
+        _CLEV_MEMO.update(t=time.time(), data=out)
+        print(f"  [clev] {len(out['CPIAUCSL'])} months of Cleveland vintages, live: {out['live']}")
+        return out
+    except Exception as e:
+        print(f"  [clev] fetch failed: {e}")
+        return None
+
+# ── Cache pre-warming ─────────────────────────────────────────────────────────
+# The nowcasts take 1-2 min cold, and the in-memory cache dies with every
+# restart/spin-down — so users kept eating the full compute. The keep-alive cron
+# pings /healthz every 10 min during market hours; piggyback on it: if a
+# FRED_KEY env var is set on the server and any model cache entry is TTL-stale
+# OR built before a newer data print (release-stale), recompute it in a
+# background thread. The ping itself stays instant.
+_WARM_BUSY = threading.Lock()
+# cache_key -> (source series to freshness-check, compute fn factory)
+_WARM_JOBS = {
+    'inf:CPIAUCSL:24': ('CPIAUCSL', lambda k: run_inflation_nowcast(k, 24, target_id='CPIAUCSL')),
+    'inf:CPILFESL:24': ('CPILFESL', lambda k: run_inflation_nowcast(k, 24, target_id='CPILFESL')),
+    'gdp:12':          ('GDPC1',    lambda k: run_gdp_nowcast(k, 12)),
+}
+
+def _maybe_warm_models():
     key = os.environ.get('FRED_KEY') or ''
     if not key:
         return
     now = time.time()
-    stale = [t for t in ('CPIAUCSL', 'CPILFESL')
-             if not (h := _ML_CACHE.get(f"inf:{t}:24")) or now - h[0] >= _ML_TTL]
+    stale = []
+    for ck, (sid, fn) in _WARM_JOBS.items():
+        hit = _ML_CACHE.get(ck)
+        if not hit or now - hit[0] >= _ML_TTL:
+            stale.append(ck)
+        elif _release_stale(sid, key, hit[1].get('last_actual_month')):
+            print(f"[fresh] new {sid} print — invalidating {ck}")
+            with _ML_LOCK: _ML_CACHE.pop(ck, None)
+            stale.append(ck)
     if not stale or not _WARM_BUSY.acquire(blocking=False):
         return
     def go():
         try:
-            for t in stale:
-                cached_ml(f"inf:{t}:24", lambda t=t: run_inflation_nowcast(key, 24, target_id=t))
-                print(f"[warm] inflation {t} ready")
+            for ck in stale:
+                cached_ml(ck, lambda ck=ck: _WARM_JOBS[ck][1](key))
+                print(f"[warm] {ck} ready")
         except Exception as e:
-            print(f"[warm] inflation failed: {e}")
+            print(f"[warm] failed: {e}")
         finally:
             _WARM_BUSY.release()
     threading.Thread(target=go, daemon=True).start()
@@ -155,25 +234,28 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
             name=sid
         )
 
-    def fetch_safe(sid, limit, freq=None, delay=1.2):
-        try:
-            time.sleep(delay)
-            return fetch(sid, limit, freq)
-        except Exception as e:
-            print(f"  Warning: skipping {sid}: {e}")
-            return None
-
     # ── Fetch all ────────────────────────────────────────────────────────
+    # Concurrent (was sequential with a 1.2s courtesy sleep per series ≈ 16s+
+    # of pure waiting). FRED allows 120 req/min; a small pool is well within it.
     print("  Fetching GDPC1 …")
     gdpc1 = fetch('GDPC1', 110)   # ~27 yrs of quarterly GDP
 
     raw = {}
-    for sid, (freq, limit) in ALL_SERIES.items():
-        print(f"  Fetching {sid} …")
-        s = fetch_safe(sid, limit, freq)
-        if s is not None:
-            # All are now monthly; resample just in case
-            raw[sid] = s.resample('MS').last()
+    from concurrent.futures import ThreadPoolExecutor
+    def _load(item):
+        sid, (freq, limit) = item
+        try:
+            return sid, fetch(sid, limit, freq)
+        except Exception as e:
+            print(f"  Warning: skipping {sid}: {e}")
+            return sid, None
+    _t0 = time.time()
+    with ThreadPoolExecutor(max_workers=7) as ex:
+        for sid, s in ex.map(_load, ALL_SERIES.items()):
+            if s is not None:
+                # All are now monthly; resample just in case
+                raw[sid] = s.resample('MS').last()
+    print(f"  [gdp] fetched {len(raw)}/{len(ALL_SERIES)} series in {time.time()-_t0:.1f}s")
 
     # ── GDP YoY % ────────────────────────────────────────────────────────
     gdp_yoy = ((gdpc1 / gdpc1.shift(4)) - 1) * 100
@@ -580,6 +662,7 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
     return {
         'nowcast': {'quarter': nowcast_label, 'value': round(nowcast_val, 2),
                     'last_actual': round(last_known_gdp, 2)},
+        'last_actual_month': last_gdp_date.strftime('%Y-%m'),   # for release-freshness checks
         'history': history,
         'factor':  factor_display,
         'bt_rows': bt_rows,
@@ -891,6 +974,22 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
     if _has_ar and not all(p != p for p in arima_pred):
         mem_pred['ARIMA'] = arima_pred; mem_names.append('ARIMA')
 
+    # ── Cleveland Fed nowcast as an ensemble member ────────────────────────
+    # Their published vintages join the blend like any model: scored month-by-
+    # month in the walk-forward, weight earned via the same trailing-RMSE gate.
+    # No hand-tuned blend factor; if the fetch fails the member is just absent.
+    clev_now = None
+    clev_all = _cleveland_nowcasts() if target_id in ('CPIAUCSL', 'CPILFESL') else None
+    if clev_all and clev_all.get(target_id):
+        cmap = clev_all[target_id]
+        cpreds = [cmap.get(d.strftime('%Y-%m'), float('nan')) for (d, a, pv) in wf_meta]
+        if sum(p == p for p in cpreds) >= 24:   # need enough history to score fairly
+            mem_pred['Cleveland'] = cpreds; mem_names.append('Cleveland')
+        lv = clev_all['live'].get(target_id)
+        fc_month = (df.index[-1] + pd.DateOffset(months=1)).strftime('%Y-%m')
+        if lv and lv[0] == fc_month:
+            clev_now = float(lv[1])             # their current nowcast for OUR forecast month
+
     # Per-member overall RMSE (for display + final-forecast eligibility)
     _act = np.array([a for (_, a, _) in wf_meta])
     mem_rmse = {}
@@ -910,7 +1009,7 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
     # on core). So the blend is restricted to {MoM·*, ARIMA}. Every member's RMSE
     # is still computed above for the leaderboard; excluded ones just get 0 weight.
     # Falls back to all members if the preferred ones aren't available.
-    ALLOWED = set(n for n in mem_names if n.startswith('MoM') or n == 'ARIMA') or set(mem_names)
+    ALLOWED = set(n for n in mem_names if n.startswith('MoM') or n in ('ARIMA', 'Cleveland')) or set(mem_names)
 
     # ── QUALITY GATE: bench any allowed model running worse than 0.50pp ────
     # Applied per-month using only each model's track record SO FAR (no
@@ -995,6 +1094,8 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
             num += mem_wt[n]*v; den += mem_wt[n]
         if arima_fc is not None and 'ARIMA' in mem_wt:
             num += mem_wt['ARIMA']*float(arima_fc[h]); den += mem_wt['ARIMA']
+        if h == 0 and clev_now is not None and mem_wt.get('Cleveland', 0) > 0:
+            num += mem_wt['Cleveland']*clev_now; den += mem_wt['Cleveland']
         if h == 0 and mom_fitted:                  # MoM members (next month only)
             for n, (kind, est) in mom_fitted.items():
                 if mem_wt.get(n, 0) <= 0: continue
@@ -1064,6 +1165,9 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
         'series': 'core' if target_id == 'CPILFESL' else 'headline',
         'drivers': drivers,                     # signed pp pull of each indicator
         'oil_watch': oil_watch,                 # rolling intramonth WTI read (updates thru the month)
+        'consensus': ({'source': 'Cleveland Fed', 'value': round(clev_now, 2),
+                       'weight': round(mem_wt.get('Cleveland', 0), 3)}
+                      if clev_now is not None else None),
         'history': history,
         'bt_rows': bt_rows,
         'metrics': {
@@ -1912,7 +2016,7 @@ class Handler(SimpleHTTPRequestHandler):
         # or serving the 126KB page just to keep the free instance warm). Also
         # opportunistically pre-warms the inflation cache in the background.
         if parsed.path == '/healthz':
-            try: _maybe_warm_inflation()
+            try: _maybe_warm_models()
             except Exception: pass
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -1955,7 +2059,13 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error(400, 'fred_key required'); return
             try:
                 print(f"\n[nowcast] Request ({quarters} quarters backtest) …")
-                result  = cached_ml(f"gdp:{quarters}", lambda: run_gdp_nowcast(fred_key, quarters))
+                ck = f"gdp:{quarters}"
+                result = cached_ml(ck, lambda: run_gdp_nowcast(fred_key, quarters))
+                # release-day freshness: recompute if a newer GDP print has landed
+                if _release_stale('GDPC1', fred_key, result.get('last_actual_month')):
+                    print(f"[fresh] new GDPC1 print — recomputing {ck}")
+                    with _ML_LOCK: _ML_CACHE.pop(ck, None)
+                    result = cached_ml(ck, lambda: run_gdp_nowcast(fred_key, quarters))
                 payload = json.dumps(result).encode()
                 print(f"[nowcast] Done → {result['nowcast']['value']}%")
                 self.send_response(200)
@@ -1982,8 +2092,13 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error(400, 'fred_key required'); return
             try:
                 print(f"\n[inflation] Request ({series}, {months} months backtest) …")
-                result  = cached_ml(f"inf:{tgt}:{months}",
-                                    lambda: run_inflation_nowcast(fred_key, months, target_id=tgt))
+                ck = f"inf:{tgt}:{months}"
+                result = cached_ml(ck, lambda: run_inflation_nowcast(fred_key, months, target_id=tgt))
+                # release-day freshness: never serve a pre-release nowcast after the print
+                if _release_stale(tgt, fred_key, result.get('last_actual_month')):
+                    print(f"[fresh] new {tgt} print — recomputing {ck}")
+                    with _ML_LOCK: _ML_CACHE.pop(ck, None)
+                    result = cached_ml(ck, lambda: run_inflation_nowcast(fred_key, months, target_id=tgt))
                 payload = json.dumps(result).encode()
                 print(f"[inflation] Done → {result['nowcast']['value']}%")
                 self.send_response(200)

@@ -1254,11 +1254,14 @@ async function runInflationML() {
     document.getElementById('inf-main-v2').style.color = 'var(--accent2)';
     document.getElementById('inf-main-s2').textContent = 'Latest published CPI reading';
     document.getElementById('inf-main-d2').innerHTML = '';
+    // Cleveland Fed consensus reference — an ensemble member with earned weight
+    const cv = d.consensus;
+    const cvHtml = cv ? ` · <span title="Cleveland Fed's nowcast for the same month — blended into ours as an ensemble member at ${(cv.weight*100).toFixed(0)}% weight (earned by trailing accuracy, not hand-set)" style="color:var(--blue)">Cleveland Fed ${cv.value}% (w ${(cv.weight*100).toFixed(0)}%)</span>` : '';
     // rolling intramonth oil read — updates through the month as daily data lands
     const ow = d.oil_watch;
     const owHtml = ow ? ` · <span style="color:${Math.abs(ow.mtd_pct)>=5?'var(--amber)':'var(--muted)'}" title="WTI ${ow.month} month-to-date vs prior month, from ${ow.days} day(s) of daily data${ow.rt_days?` (${ow.rt_days} same-day from futures)`:''} — feeds the nowcast and refreshes as the month progresses">🛢 WTI ${ow.mtd_pct>0?'+':''}${ow.mtd_pct}% MTD (${ow.days}d${ow.rt_days?`, ${ow.rt_days} live`:''})</span>` : '';
     document.getElementById('inf-ml-sub').innerHTML =
-      `Last actual (${d.last_actual_month || '—'}): ${d.nowcast.last_actual}% · Change ${diff>0?'+':''}${diff}pp${owHtml}`;
+      `Last actual (${d.last_actual_month || '—'}): ${d.nowcast.last_actual}% · Change ${diff>0?'+':''}${diff}pp${cvHtml}${owHtml}`;
     document.getElementById('inf-ml-dir').innerHTML = Math.abs(diff) < 0.05
       ? `<span class="pred-dir dir-flat">&#8594; Flat</span>`
       : diff > 0
