@@ -1427,8 +1427,11 @@ async function runMLNowcast() {
     document.getElementById('gdp-ml-quarter').textContent = d.nowcast.quarter;
     document.getElementById('gdp-ml-val').textContent     = d.nowcast.value + '%';
     const diff = (d.nowcast.value - d.nowcast.last_actual).toFixed(2);
-    document.getElementById('gdp-ml-sub').textContent =
-      `Last actual: ${d.nowcast.last_actual}% | Change: ${diff > 0 ? '+' : ''}${diff}pp`;
+    // Atlanta Fed GDPNow reference — an ensemble member with earned weight
+    const gcv = d.consensus;
+    const gcvHtml = gcv ? ` · <span title="Atlanta Fed GDPNow's estimate for the same quarter (converted to YoY) — blended into ours as an ensemble member at ${(gcv.weight*100).toFixed(0)}% weight (earned by trailing accuracy, not hand-set)" style="color:var(--blue)">GDPNow ${gcv.value}% (w ${(gcv.weight*100).toFixed(0)}%)</span>` : '';
+    document.getElementById('gdp-ml-sub').innerHTML =
+      `Last actual: ${d.nowcast.last_actual}% | Change: ${diff > 0 ? '+' : ''}${diff}pp${gcvHtml}`;
     const absDiff = Math.abs(diff);
     document.getElementById('gdp-ml-dir').innerHTML = absDiff < 0.05
       ? `<span class="pred-dir dir-flat">&#8594; Flat</span>`

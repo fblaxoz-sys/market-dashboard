@@ -124,6 +124,39 @@ def _cleveland_nowcasts():
         print(f"  [clev] fetch failed: {e}")
         return None
 
+# ── Atlanta Fed GDPNow vintages ───────────────────────────────────────────────
+# Same idea as the Cleveland member, for the GDP model. ALFRED output_type=2
+# returns one row per quarter with one column per vintage date (GDPNOW_YYYYMMDD);
+# the newest non-empty column is Atlanta's FINAL pre-release estimate for that
+# quarter — the same information timing as our own nowcast, so it can be scored
+# in the walk-forward like any member. Values are QoQ SAAR; the model converts
+# to YoY off known GDP levels. Memoized 3h; None on failure.
+_GDPNOW_MEMO = {'t': 0.0, 'data': None}
+
+def _gdpnow_vintages(fred_key):
+    if _GDPNOW_MEMO['data'] is not None and time.time() - _GDPNOW_MEMO['t'] < 3*3600:
+        return _GDPNOW_MEMO['data']
+    try:
+        u = (f"https://api.stlouisfed.org/fred/series/observations?series_id=GDPNOW"
+             f"&api_key={fred_key}&file_type=json&output_type=2"
+             f"&realtime_start=1776-07-04&realtime_end=9999-12-31&limit=100000")
+        with urllib.request.urlopen(u, timeout=30) as r:
+            rows = json.loads(r.read()).get('observations', [])
+        final = {}
+        for row in rows:
+            vs = [(k[7:], row[k]) for k in row
+                  if k.startswith('GDPNOW_') and row[k] not in ('', '.')]
+            if vs:
+                final[row['date'][:7]] = float(max(vs)[1])   # newest vintage = final estimate
+        data = {'final': final,
+                'live': (max(final), final[max(final)]) if final else None}
+        _GDPNOW_MEMO.update(t=time.time(), data=data)
+        print(f"  [gdpnow] {len(final)} quarters of final vintages, live: {data['live']}")
+        return data
+    except Exception as e:
+        print(f"  [gdpnow] fetch failed: {e}")
+        return None
+
 # ── Cache pre-warming ─────────────────────────────────────────────────────────
 # The nowcasts take 1-2 min cold, and the in-memory cache dies with every
 # restart/spin-down — so users kept eating the full compute. The keep-alive cron
@@ -580,6 +613,32 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
     if _has_ar and not all(p != p for p in arima_pred):
         mem_pred['ARIMA'] = arima_pred; mem_names.append('ARIMA')
 
+    # ── Atlanta Fed GDPNow as an ensemble member (the Cleveland pattern) ───
+    # Final pre-release SAAR per quarter → YoY via known GDP levels: only the
+    # target quarter's QoQ is unknown, the three prior levels are published.
+    # Scored in the walk-forward like any member; NaN where GDPNow didn't exist.
+    gdpnow_now = None
+    gn = _gdpnow_vintages(fred_key)
+    if gn and gn.get('final'):
+        def _saar_to_yoy(q, saar):
+            try:
+                prev = float(gdpc1.loc[q - pd.DateOffset(months=3)])
+                base = float(gdpc1.loc[q - pd.DateOffset(months=12)])
+                return (prev * (1.0 + saar/100.0) ** 0.25 / base - 1.0) * 100.0
+            except Exception:
+                return float('nan')
+        gpreds = []
+        for (d, a, pv) in wf_meta:
+            s = gn['final'].get(d.strftime('%Y-%m'))
+            gpreds.append(_saar_to_yoy(d, s) if s is not None else float('nan'))
+        if sum(p == p for p in gpreds) >= 12:      # ≥3y of scoreable quarters
+            mem_pred['GDPNow'] = gpreds; mem_names.append('GDPNow')
+        lv = gn.get('live')
+        nc_q = gdpc1.index[-1] + pd.DateOffset(months=3)
+        if lv and lv[0] == nc_q.strftime('%Y-%m'):
+            v = _saar_to_yoy(nc_q, lv[1])
+            gdpnow_now = float(v) if v == v else None
+
     # Per-member out-of-sample RMSE → inverse-RMSE² weights (best model dominates)
     actuals = np.array([a for (_, a, _) in wf_meta])
     mem_rmse = {}
@@ -625,6 +684,8 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
     if 'ARIMA' in mem_names:
         try: nc_vals['ARIMA'] = float(np.asarray(_AR(yall, order=(1,1,1)).fit().forecast(1), float)[0])
         except Exception: nc_vals['ARIMA'] = float('nan')
+    if gdpnow_now is not None and 'GDPNow' in mem_names:
+        nc_vals['GDPNow'] = gdpnow_now          # Atlanta's live estimate, YoY-converted
     num = den = 0.0
     for n in mem_names:
         v = nc_vals.get(n, float('nan'))
@@ -663,6 +724,9 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
         'nowcast': {'quarter': nowcast_label, 'value': round(nowcast_val, 2),
                     'last_actual': round(last_known_gdp, 2)},
         'last_actual_month': last_gdp_date.strftime('%Y-%m'),   # for release-freshness checks
+        'consensus': ({'source': 'Atlanta Fed GDPNow', 'value': round(gdpnow_now, 2),
+                       'weight': round(mem_wt.get('GDPNow', 0), 3)}
+                      if gdpnow_now is not None else None),
         'history': history,
         'factor':  factor_display,
         'bt_rows': bt_rows,

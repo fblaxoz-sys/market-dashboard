@@ -31,6 +31,7 @@ const required = [
   "switchTab('inflation')", "switchTab('gdp')",       // tabs wired
   'inf-scenarios', 'gdp-scenarios',                   // scenario ranges on both predictors
   'GDP SCENARIO RANGE',                               // GDP scenario strip populated
+  'Cleveland Fed', 'GDPNow',                          // external nowcast consensus chips
 ];
 for (const marker of required) {
   assert.ok(html.includes(marker), `missing required feature marker: ${marker}`);
