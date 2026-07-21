@@ -414,16 +414,29 @@ async function mutate(fn) {
   if (outcome === 'error') { doc = JSON.parse(backup); }   // roll back our edit
   // 'conflict' → keep the server's version that save() adopted; don't roll back
   render();
+  if (outcome === 'ok') prefetchSoon();   // warm any tickers this edit introduced
 }
 
 // ── prices ───────────────────────────────────────────────────────────────────
-async function fetchPrice(sym) {
-  const res = await fetch('/etf-chart?sym=' + encodeURIComponent(sym));
-  const d = await res.json();
-  if (d.error || !d.ohlc || !d.ohlc.length) throw new Error(d.error || 'no data');
-  const o = d.ohlc;
-  series[sym] = o.map(b => [b[0], b[4]]);   // cache full [date, close] history for the chart
-  return { cur: o[o.length - 1][4], prev: o.length > 1 ? o[o.length - 2][4] : o[o.length - 1][4] };
+// One promise per in-flight URL, so the background prefetcher and a visible
+// chart asking for the same data share a single request instead of racing.
+const _inflight = {};
+function _once(key, fn) {
+  if (_inflight[key]) return _inflight[key];
+  const p = fn().finally(() => { delete _inflight[key]; });
+  _inflight[key] = p;
+  return p;
+}
+
+function fetchPrice(sym) {
+  return _once('1d:' + sym, async () => {
+    const res = await fetch('/etf-chart?sym=' + encodeURIComponent(sym));
+    const d = await res.json();
+    if (d.error || !d.ohlc || !d.ohlc.length) throw new Error(d.error || 'no data');
+    const o = d.ohlc;
+    series[sym] = o.map(b => [b[0], b[4]]);   // cache full [date, close] history for the chart
+    return { cur: o[o.length - 1][4], prev: o.length > 1 ? o[o.length - 2][4] : o[o.length - 1][4] };
+  });
 }
 
 async function loadPrices() {
@@ -443,7 +456,7 @@ async function refreshAll() {
   const ico = $('ref-ico');
   ico.innerHTML = '<span class="spin"></span>';
   prices = {}; series = {}; intraday = { '15m': {}, '60m': {} }; spxSym = null;
-  try { await load(); await loadPrices(); render(); say('Up to date.', 'ok'); }
+  try { await load(); await loadPrices(); render(); say('Up to date.', 'ok'); prefetchSoon(); }
   catch (e) { say('Refresh failed: ' + e.message, 'err'); }
   finally { ico.textContent = '↻'; }
 }
@@ -994,12 +1007,41 @@ const CANDLE_OK  = { '1D': ['1H'], '1W': ['1H', '1D'], '1M': ['1H', '1D', '1W'],
 
 const getBars = (api, sym) => api === '1d' ? series[sym] : intraday[api][sym];
 
-async function fetchBars(api, sym) {
-  const res = await fetch(`/etf-chart?sym=${encodeURIComponent(sym)}&interval=${api}`);
-  const d = await res.json();
-  if (d.error || !d.ohlc || !d.ohlc.length) throw new Error(d.error || 'no data');
-  intraday[api][sym] = d.ohlc.map(b => [b[0], b[4]]);
+function fetchBars(api, sym) {
+  return _once(api + ':' + sym, async () => {
+    const res = await fetch(`/etf-chart?sym=${encodeURIComponent(sym)}&interval=${api}`);
+    const d = await res.json();
+    if (d.error || !d.ohlc || !d.ohlc.length) throw new Error(d.error || 'no data');
+    intraday[api][sym] = d.ohlc.map(b => [b[0], b[4]]);
+  });
 }
+
+// ── background prefetch ──────────────────────────────────────────────────────
+// Warm every portfolio's symbols at every candle interval, plus the benchmark,
+// after the visible page is up. The initial load does a little more work so that
+// every later action — candle size, period, portfolio switch, comparison toggle
+// — comes straight from memory. Three workers keep it from starving whatever the
+// visible chart is fetching; _once() dedupes any overlap with it. Idempotent and
+// cheap when warm, so it simply re-runs after refreshes and trades.
+async function prefetchAll() {
+  const syms = new Set();
+  doc.portfolios.forEach(p => p.trades.forEach(t => syms.add(t.sym)));
+  const jobs = [];
+  for (const api of ['60m', '1d', '15m'])                 // visible chart's interval first
+    for (const s of [...syms, spxSym || '^GSPC'])
+      if (s && !getBars(api, s)) jobs.push([api, s]);
+  const worker = async () => {
+    while (jobs.length) {
+      const [api, s] = jobs.shift();
+      try {
+        if (api === '1d') { const p = await fetchPrice(s); if (!prices[s]) prices[s] = p; }
+        else await fetchBars(api, s);
+      } catch (e) {}    // a symbol with no history warns when actually viewed, not here
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+}
+const prefetchSoon = () => setTimeout(() => { prefetchAll(); }, 400);
 
 async function ensureBars(api, syms) {
   const need = [...new Set(syms)].filter(s => s && !getBars(api, s));
@@ -1296,6 +1338,7 @@ async function unlock() {
     render();
     await loadPrices();
     render();
+    prefetchSoon();
   } catch (e) {
     pass = '';
     const b = $('gate-err');
