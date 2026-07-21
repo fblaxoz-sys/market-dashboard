@@ -152,3 +152,41 @@ market-dashboard/
   doesn't touch the database.
 - The GitHub token in use **cannot push `.github/workflows/*`** (no `workflow`
   scope). Those must go through the GitHub web UI.
+
+## Importing a portfolio from a brokerage export
+
+`tools/portfolio_import.py` converts an .xlsx/.csv statement into the paste block
+for **"+ From what I own"**:
+
+```bash
+python3 tools/portfolio_import.py statement.xlsx
+python3 tools/portfolio_import.py statement.csv --sheet "Positions"
+```
+
+Output is `TICKER, percent-now, avg-cost` lines plus a summary and warnings.
+Needs `openpyxl` for .xlsx (`uv run --with openpyxl python3 tools/...` if absent).
+
+What it handles, because brokerage exports reliably contain all of it:
+
+- junk rows above the header and disclaimers below it; the header is found by
+  scanning for a Symbol column next to something numeric
+- fuzzy column names across brokers (`Mkt Val` / `Market Value` /
+  `Current Market Value`; `Avg Cost Per Share` / `Cost Basis` / `Total Cost`)
+- `"$1,234.56"`, `"(123.45)"`, `"12.3%"` strings
+- cost basis given as a **total** → divided by quantity for per-share
+- the same ticker in **multiple lots** → merged, cost value-weighted
+- money-market funds and cash lines → folded into cash and **excluded** from the
+  output, because the tracker derives cash as whatever the weights leave short
+  of 100%
+- **totals rows** → ignored (one slipping through inflates the account and skews
+  every percentage — this was a real bug caught in testing)
+- broker ticker spellings Yahoo rejects (`BRK.B`/`BRKB` → `BRK-B`, see
+  `TICKER_ALIASES`)
+
+**The cross-check that matters:** when the file has its own "% of account"
+column, every computed percentage is compared against it, and any gap over
+0.5pt prints `DO NOT PASTE until this is resolved`. That is the guard against
+the one dangerous failure — a missed row producing output that looks fine and
+is wrong. Verified by deleting a cash row from a fixture and confirming it trips.
+
+Missing cost basis is not an error: that holding starts flat at today's price.
