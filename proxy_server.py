@@ -6,8 +6,10 @@ Local dev server for Market Dashboard.
   Everything else                             — static files from Downloads/
 """
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-import urllib.request, urllib.parse, json, os, traceback, time, threading, collections
+import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
+
+_CHART_CACHE = {}   # "chart:SYM:interval" -> (fetched_at, payload_bytes) — see /etf-chart
 
 # ── Per-IP rate limiting on the expensive endpoints ───────────────────────────
 # The compute-heavy routes are unauthenticated, so a burst of hits (or a bot
@@ -1375,19 +1377,26 @@ QUAD_PLAYBOOK = {
         'etfs': ['TLT','IEF','AGG','BND','LQD','VCIT','VCSH','MUB','XLU','VPU','XLP','VDC','XLV','VHT','USMV','SPLV','QUAL','SCHD','VYM','VIG','HDV','DVY','SDY','NOBL','DGRO','SPHD','GLD','GLDM','IAU','SGOL']},
 }
 
-def _yahoo_ohlc(sym, rng="2y", divs=False):
+def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d"):
     import urllib.request, json as _json, datetime as _dt
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym.replace('^','%5E')}"
-           f"?range={rng}&interval=1d" + ("&events=div" if divs else ""))
+           f"?range={rng}&interval={interval}" + ("&events=div" if divs else ""))
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     with urllib.request.urlopen(req, timeout=20) as r:
         d = _json.load(r)
     res = d['chart']['result'][0]; q = res['indicators']['quote'][0]
     ts = res['timestamp']
+    # Daily bars key by date; intraday bars need the time too. UTC keeps the
+    # strings sortable and, for the US regular session, on the same calendar
+    # date as Eastern time.
+    if interval == '1d':
+        stamp = lambda t: _dt.date.fromtimestamp(t).isoformat()
+    else:
+        stamp = lambda t: _dt.datetime.fromtimestamp(t, _dt.timezone.utc).strftime('%Y-%m-%dT%H:%M')
     rows = []
     for t, o, h, l, c, v in zip(ts, q['open'], q['high'], q['low'], q['close'], q['volume']):
         if None in (o, h, l, c, v): continue
-        rows.append((_dt.date.fromtimestamp(t).isoformat(), o, h, l, c, v))
+        rows.append((stamp(t), o, h, l, c, v))
     if not divs:
         return rows
     dv = []                                   # [(ex-date, amount/share)] — for portfolio cash
@@ -2397,17 +2406,47 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == '/etf-chart':
             qs  = urllib.parse.parse_qs(parsed.query)
             sym = (qs.get('sym', [''])[0] or '').upper()
+            iv  = (qs.get('interval', ['1d'])[0] or '1d')
+            # Yahoo caps intraday history hard: ~60 days of 15m bars, ~2 years of
+            # hourly. The ranges below stay inside that; anything else is a 400.
+            IV = {'15m': ('60d', 1600), '60m': ('400d', 2000), '1d': ('5y', 1300)}
+            if iv not in IV:
+                self.send_error(400, 'interval must be 15m, 60m or 1d'); return
             if not sym:
                 self.send_error(400, 'sym required'); return
             try:
-                rows, divs = _yahoo_ohlc(sym, '5y', divs=True)   # multi-year entries + dividends
-                ohlc = [[r[0], round(r[1],2), round(r[2],2), round(r[3],2), round(r[4],2)] for r in rows[-1300:]]
-                payload = json.dumps({'sym': sym, 'ohlc': ohlc,
-                                      'divs': [[d, round(a, 4)] for d, a in divs]}).encode()
+                # Short server-side cache: every tracker session asks for the same
+                # symbols, so the second viewer (and every toggle) should not pay a
+                # fresh Yahoo round-trip. 120s keeps quotes fresh enough for a
+                # tracker with a Refresh button.
+                key = f"chart:{sym}:{iv}"
+                now = time.time()
+                hit = _CHART_CACHE.get(key)
+                if hit and now - hit[0] < 120:
+                    payload = hit[1]
+                else:
+                    rng, cap = IV[iv]
+                    if iv == '1d':
+                        rows, divs = _yahoo_ohlc(sym, rng, divs=True)   # multi-year entries + dividends
+                    else:
+                        rows, divs = _yahoo_ohlc(sym, rng, divs=False, interval=iv), []
+                    ohlc = [[r[0], round(r[1],2), round(r[2],2), round(r[3],2), round(r[4],2)] for r in rows[-cap:]]
+                    payload = json.dumps({'sym': sym, 'interval': iv, 'ohlc': ohlc,
+                                          'divs': [[d, round(a, 4)] for d, a in divs]}).encode()
+                    _CHART_CACHE[key] = (now, payload)
+                    if len(_CHART_CACHE) > 300:          # bound memory on the 512MB tier
+                        for k, _ in sorted(_CHART_CACHE.items(), key=lambda x: x[1][0])[:150]:
+                            _CHART_CACHE.pop(k, None)    # tolerate concurrent evictors
+                body, enc = payload, None
+                if 'gzip' in (self.headers.get('Accept-Encoding') or ''):
+                    body, enc = gzip.compress(payload, 6), 'gzip'    # ~7x smaller intraday
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers(); self.wfile.write(payload)
+                self.send_header('Cache-Control', 'public, max-age=120')
+                if enc: self.send_header('Content-Encoding', enc)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers(); self.wfile.write(body)
             except Exception as e:
                 self.send_response(500)
                 self.send_header('Content-Type', 'application/json')
