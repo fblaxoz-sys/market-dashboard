@@ -377,10 +377,13 @@ function renderSavedNote(state) {
   n.innerHTML = `Last saved ${esc(when)}${who} &middot; <span class="pill">v${state.version}</span>`;
 }
 
+let lastSync = 0;   // when we last pulled the doc — drives auto-refresh on tab return
+
 async function load() {
   const r = await api('GET');
   if (!r.ok) throw new Error(r.data.error || ('Server error ' + r.status));
   adopt(r.data);
+  lastSync = Date.now();
 }
 
 /** 'ok' | 'conflict' | 'error' — the caller must tell these apart. On a conflict
@@ -466,14 +469,31 @@ async function loadPrices() {
   if (failed.length) say('No price data for: ' + failed.join(', '), 'warn');
 }
 
-async function refreshAll() {
+async function refreshAll(auto) {
   const ico = $('ref-ico');
   ico.innerHTML = '<span class="spin"></span>';
   prices = {}; series = {}; intraday = { '15m': {}, '60m': {} }; spxSym = null;
-  try { await load(); await loadPrices(); render(); say('Up to date.', 'ok'); prefetchSoon(); }
+  try {
+    await load(); await loadPrices(); render();
+    if (!auto) say('Up to date.', 'ok');   // the quiet path: coming back to the tab
+    prefetchSoon();
+  }
   catch (e) { say('Refresh failed: ' + e.message, 'err'); }
   finally { ico.textContent = '↻'; }
 }
+
+// Auto-refresh on return. A fresh page load always fetches live data, but a
+// browser-restored or long-idle tab wakes up with yesterday's session — the one
+// case where the owner had to press Refresh by hand. When the tab becomes
+// visible again and the last sync is older than 90s (matching the server
+// cache's freshness window), refresh quietly. Quick tab flips stay free.
+function maybeAutoRefresh() {
+  if (!pass || $('app').classList.contains('hide')) return;   // locked or gated
+  if (Date.now() - lastSync < 90_000) return;
+  refreshAll(true);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) maybeAutoRefresh(); });
+window.addEventListener('pageshow', e => { if (e.persisted) maybeAutoRefresh(); });
 
 // ── the engine ───────────────────────────────────────────────────────────────
 // Replay the log in time order. The book is 100 units, all cash at the start; a
