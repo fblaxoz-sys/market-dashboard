@@ -93,6 +93,11 @@ tr:last-child td{border-bottom:none}
 .hide{display:none!important}
 .foot{font-family:var(--mono);font-size:10.5px;color:var(--muted);
       line-height:1.7;border-top:1px solid var(--border);padding-top:14px;margin-top:8px}
+#gate-progress{display:none;margin-top:16px}
+#gate-progress.show{display:block}
+.gp-track{height:4px;border-radius:3px;background:var(--surface2);overflow:hidden}
+.gp-fill{height:100%;width:0;background:var(--accent);border-radius:3px;
+         transition:width .25s ease}
 th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
 th.sortable:hover{color:var(--accent)}
 .chip{font-family:var(--mono);font-size:11px;padding:5px 11px;border-radius:20px;
@@ -120,6 +125,10 @@ th.sortable:hover{color:var(--accent)}
     <button class="btn btn-primary" style="width:100%;margin-top:14px" onclick="unlock()">
       <span id="gate-ico"></span> Unlock
     </button>
+    <div id="gate-progress">
+      <div class="gp-track"><div id="gate-progress-fill" class="gp-fill"></div></div>
+      <p id="gate-progress-lbl" class="sub" style="text-align:center;margin-top:7px"></p>
+    </div>
   </div>
 </div>
 
@@ -1055,13 +1064,16 @@ function fetchBars(api, sym) {
 // — comes straight from memory. Three workers keep it from starving whatever the
 // visible chart is fetching; _once() dedupes any overlap with it. Idempotent and
 // cheap when warm, so it simply re-runs after refreshes and trades.
-async function prefetchAll() {
+async function prefetchAll(onProgress) {
   const syms = new Set();
   doc.portfolios.forEach(p => p.trades.forEach(t => syms.add(t.sym)));
   const jobs = [];
   for (const api of ['60m', '1d', '15m'])                 // visible chart's interval first
     for (const s of [...syms, spxSym || '^GSPC'])
       if (s && !getBars(api, s)) jobs.push([api, s]);
+  const total = jobs.length;
+  let done = 0;
+  if (onProgress) onProgress(0, total);
   const worker = async () => {
     while (jobs.length) {
       const [api, s] = jobs.shift();
@@ -1069,9 +1081,12 @@ async function prefetchAll() {
         if (api === '1d') { const p = await fetchPrice(s); if (!prices[s]) prices[s] = p; }
         else await fetchBars(api, s);
       } catch (e) {}    // a symbol with no history warns when actually viewed, not here
+      if (onProgress) onProgress(++done, total);
     }
   };
-  await Promise.all([worker(), worker(), worker()]);
+  // 6 workers: the server caps its own Yahoo concurrency at 4, so this saturates
+  // that without the client ever being the bottleneck.
+  await Promise.all(Array.from({ length: 6 }, worker));
 }
 const prefetchSoon = () => setTimeout(() => { prefetchAll(); }, 400);
 
@@ -1363,14 +1378,25 @@ async function unlock() {
       const who = (prompt('Your name? (shown to others as who logged the trade)', '') || '').trim();
       if (who) localStorage.setItem('pf_who', who.slice(0, 60));
     }
+    // Warm EVERYTHING before showing the app — every symbol at every candle
+    // interval, plus the benchmark. Deliberately front-loaded (owner's call):
+    // once the page appears, no click ever waits on the network again.
+    const bar = $('gate-progress');
+    bar.classList.add('show');
+    await prefetchAll((done, total) => {
+      $('gate-progress-fill').style.width = (total ? (done / total * 100) : 100) + '%';
+      $('gate-progress-lbl').textContent =
+        total ? `Loading market data… ${done} of ${total}` : 'Loading market data…';
+    });
+    bar.classList.remove('show');
+
     $('gate').classList.add('hide');
     $('app').classList.remove('hide');
     $('t-when').value = localNow();
     onSideChange();
     render();
-    await loadPrices();
+    await loadPrices();      // no-op now; everything is already cached
     render();
-    prefetchSoon();
   } catch (e) {
     pass = '';
     const b = $('gate-err');
