@@ -94,6 +94,14 @@ tr:last-child td{border-bottom:none}
 .foot{font-family:var(--mono);font-size:10.5px;color:var(--muted);
       line-height:1.7;border-top:1px solid var(--border);padding-top:14px;margin-top:8px}
 .tgt-input{width:74px;padding:4px 7px;font-size:12px;text-align:right}
+.chip{font-family:var(--mono);font-size:11px;padding:5px 11px;border-radius:20px;
+      border:1px solid var(--border2);background:var(--surface2);color:var(--muted);
+      cursor:pointer;user-select:none;white-space:nowrap}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.chip.off{opacity:.45}
+.legdot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+#perf-chart{width:100%;overflow:hidden;min-height:120px}
 </style>
 </head>
 <body>
@@ -155,6 +163,17 @@ tr:last-child td{border-bottom:none}
   <!-- totals -->
   <div class="row" style="margin-bottom:16px" id="stats"></div>
 
+  <!-- performance -->
+  <div class="card">
+    <div class="spread" style="margin-bottom:12px">
+      <div><h2 style="margin-bottom:0">Performance</h2>
+        <p class="sub">Current holdings priced back over time &middot; compare portfolios &amp; the S&amp;P 500</p></div>
+      <div class="row" id="perf-periods"></div>
+    </div>
+    <div id="perf-chart"><div class="empty">Unlock to load the chart.</div></div>
+    <div class="row" id="perf-legend" style="margin-top:12px"></div>
+  </div>
+
   <!-- log a trade -->
   <div class="card">
     <h2>Log a trade</h2>
@@ -202,7 +221,7 @@ tr:last-child td{border-bottom:none}
   <!-- positions -->
   <div class="card" style="padding:0;overflow:hidden">
     <div style="padding:16px 18px 0"><h2 style="margin-bottom:0">Positions</h2>
-      <p class="sub" style="margin-bottom:12px">Built from your trade log &mdash; not typed in directly</p></div>
+      <p class="sub" style="margin-bottom:12px">Everything you hold &mdash; owned holdings and logged trades. Use &times; to remove one.</p></div>
     <div class="table-wrap"><table id="pos-tbl">
       <tbody><tr><td class="empty">No trades yet — log one above.</td></tr></tbody>
     </table></div>
@@ -283,7 +302,11 @@ let doc        = { portfolios: [] };
 let version    = 0;
 let active     = 0;
 let prices     = {};      // sym -> {cur, prev}
+let series     = {};      // sym -> [[dateStr, close], ...]  full daily history for the chart
 let persistent = true;
+let chart      = { period: '1Y', spx: true, compare: {} };  // compare: { pfIndex: true }
+let spxSym     = null;    // resolved S&P symbol (^GSPC, or SPY fallback)
+let chartSeq   = 0;       // guards against a stale async chart redraw landing late
 
 const esc = s => String(s).replace(/[&<>"']/g, c =>
   ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -394,6 +417,7 @@ async function fetchPrice(sym) {
   const d = await res.json();
   if (d.error || !d.ohlc || !d.ohlc.length) throw new Error(d.error || 'no data');
   const o = d.ohlc;
+  series[sym] = o.map(b => [b[0], b[4]]);   // cache full [date, close] history for the chart
   return { cur: o[o.length - 1][4], prev: o.length > 1 ? o[o.length - 2][4] : o[o.length - 1][4] };
 }
 
@@ -413,7 +437,7 @@ async function loadPrices() {
 async function refreshAll() {
   const ico = $('ref-ico');
   ico.innerHTML = '<span class="spin"></span>';
-  prices = {};
+  prices = {}; series = {}; spxSym = null;
   try { await load(); await loadPrices(); render(); say('Up to date.', 'ok'); }
   catch (e) { say('Refresh failed: ' + e.message, 'err'); }
   finally { ico.textContent = '↻'; }
@@ -524,7 +548,7 @@ function render() {
     <div class="stat"><div class="stat-label">Cash</div>
       <div class="stat-value ${st.cash < 0 ? 'down' : 'dim'}">${u(st.cash)}</div></div>
     <div class="stat"><div class="stat-label">Trades</div>
-      <div class="stat-value">${pf().trades.length}</div></div>`;
+      <div class="stat-value">${pf().trades.filter(t => !t.opening).length}</div></div>`;
 
   if (st.cash < -0.005)
     say('Cash is negative — logged buys exceed the 100% base by ' +
@@ -539,7 +563,7 @@ function render() {
       <thead><tr>
         <th>Ticker</th><th class="r">Current %</th><th class="r">Target %</th>
         <th class="r">Drift</th><th class="r">Avg cost</th><th class="r">Price</th>
-        <th class="r">Day</th><th class="r">Return</th><th class="r">Unrealized</th>
+        <th class="r">Day</th><th class="r">Return</th><th class="r">Unrealized</th><th></th>
       </tr></thead>
       <tbody>${st.rows.map(r => `
         <tr>
@@ -554,6 +578,8 @@ function render() {
           <td class="r ${sgn(r.day)}">${pct(r.day)}</td>
           <td class="r ${sgn(r.ret)}">${pct(r.ret)}</td>
           <td class="r ${sgn(r.unreal)}">${u(r.unreal)}</td>
+          <td class="r"><button class="btn btn-sm btn-danger" title="Remove ${esc(r.sym)}"
+              onclick="delHolding('${esc(r.sym)}')">&times;</button></td>
         </tr>`).join('')}
         <tr>
           <td class="sym dim">CASH</td>
@@ -561,15 +587,17 @@ function render() {
           <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
           <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
           <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
-          <td class="r dim">${u(st.cash)}</td>
+          <td class="r dim">${u(st.cash)}</td><td class="r dim"></td>
         </tr>
       </tbody>`;
   }
 
-  // trade log — newest first
-  const log = st.ordered.slice().reverse();
+  // trade log — newest first. Opening/owned holdings are NOT trades, so they're kept
+  // out of here; they show only in Positions. This log is buys and sells you log.
+  const log = st.ordered.filter(t => !t.opening).reverse();
   if (!log.length) {
-    $('log-tbl').innerHTML = '<tbody><tr><td class="empty">Nothing logged yet.</td></tr></tbody>';
+    $('log-tbl').innerHTML = '<tbody><tr><td class="empty">' +
+      'No buys or sells logged yet — your holdings are in Positions above.</td></tr></tbody>';
   } else {
     $('log-tbl').innerHTML = `
       <thead><tr>
@@ -602,6 +630,8 @@ function render() {
         </tr>`; }).join('')}
       </tbody>`;
   }
+
+  renderChart();   // async; recomputes from cached history, fetches only what's new
 }
 
 // ── trade entry ──────────────────────────────────────────────────────────────
@@ -670,6 +700,20 @@ async function delTrade(id) {
   if (!t) return;
   if (!confirm(`Delete this ${t.side} of ${t.sym}? The portfolio will be recalculated without it.`)) return;
   await mutate(() => { pf().trades = pf().trades.filter(x => x.id !== id); });
+}
+
+// Remove a whole holding from the Positions table — deletes every entry for that
+// ticker (its opening seed and any logged trades). This is how owned holdings get
+// removed now that they're not shown in the trade log.
+async function delHolding(sym) {
+  const n = pf().trades.filter(t => t.sym === sym).length;
+  if (!n) return;
+  if (!confirm(`Remove ${sym} from “${pf().name}”? This deletes its ${n} ` +
+               `entr${n === 1 ? 'y' : 'ies'} and recomputes the portfolio.`)) return;
+  await mutate(() => {
+    pf().trades = pf().trades.filter(t => t.sym !== sym);
+    if (pf().targets) delete pf().targets[sym];
+  });
 }
 
 async function setTarget(sym, v) {
@@ -842,16 +886,14 @@ async function doExisting() {
     }));
 
     closeExisting();
+    // No targets on upload — the stated % is just your live allocation, tracked as
+    // it moves with prices, not a plan to drift against.
     await mutate(() => {
       if (toExisting) {
-        const p = doc.portfolios[+targetVal];
-        p.trades.push(...trades);
-        if (!p.targets) p.targets = {};
-        solved.forEach(r => { p.targets[r.sym] = r.pctNow; });
+        doc.portfolios[+targetVal].trades.push(...trades);
         active = +targetVal;
       } else {
-        doc.portfolios.push({ name: name.slice(0, 60), trades,
-                              targets: Object.fromEntries(solved.map(r => [r.sym, r.pctNow])) });
+        doc.portfolios.push({ name: name.slice(0, 60), trades, targets: {} });
         active = doc.portfolios.length - 1;
       }
     });
@@ -918,6 +960,171 @@ function exportTrades() {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// ── performance chart ────────────────────────────────────────────────────────
+// Each line is a book's % change over the chosen period, computed by taking that
+// book's CURRENT holdings (shares from the replay) and re-pricing them at every past
+// daily close — a current-composition backtest. It's the only honest option here:
+// opening/owned positions carry no real historical entry date, so replaying by trade
+// date would show the book as empty until the seed. Cash is held flat. The benchmark
+// is ^GSPC (falls back to SPY) over the same window. All prices are daily closes, so
+// "1D" is the last close-to-close move.
+const CHART_PERIODS = ['1D', '1W', '1M', 'YTD', '1Y', '5Y'];
+const LINE_COLORS   = ['#1c3765', '#6ca8c6', '#b45309', '#0f9d6b', '#8f4fbf', '#d64545'];
+
+async function ensureSeries(syms) {
+  const need = [...new Set(syms)].filter(s => s && !series[s]);
+  if (!need.length) return [];
+  const res = await Promise.allSettled(need.map(fetchPrice));
+  const failed = [];
+  res.forEach((r, i) => {
+    if (r.status === 'fulfilled') { if (!prices[need[i]]) prices[need[i]] = r.value; }
+    else failed.push(need[i]);
+  });
+  return failed;   // silently; loadPrices already surfaces missing quotes
+}
+
+async function ensureSpx() {
+  for (const s of ['^GSPC', 'SPY']) {
+    if (series[s]) return (spxSym = s);
+    await ensureSeries([s]);
+    if (series[s]) return (spxSym = s);
+  }
+  return (spxSym = null);
+}
+
+// Carry-forward a symbol's closes onto a master date axis (both ascending by date).
+function alignTo(masterDates, sym) {
+  const s = series[sym];
+  if (!s || !s.length) return null;
+  const out = new Array(masterDates.length);
+  let j = 0, last = s[0][1];
+  for (let i = 0; i < masterDates.length; i++) {
+    while (j < s.length && s[j][0] <= masterDates[i]) { last = s[j][1]; j++; }
+    out[i] = last;
+  }
+  return out;
+}
+
+function periodStartIdx(masterDates, period) {
+  const n = masterDates.length;
+  if (n < 2) return 0;
+  if (period === '1D') return n - 2;
+  if (period === '5Y') return 0;
+  const last = new Date(masterDates[n - 1] + 'T00:00');
+  const d = new Date(last);
+  if (period === '1W')       d.setDate(d.getDate() - 7);
+  else if (period === '1M')  d.setMonth(d.getMonth() - 1);
+  else if (period === 'YTD') d.setMonth(0, 1);
+  else if (period === '1Y')  d.setFullYear(d.getFullYear() - 1);
+  const cut = d.toISOString().slice(0, 10);
+  const idx = masterDates.findIndex(x => x >= cut);
+  return idx <= 0 ? 0 : idx;
+}
+
+// Current-composition book value across the master dates.
+function bookValueSeries(pfIndex, masterDates) {
+  const st = replay(doc.portfolios[pfIndex].trades);
+  const holds = st.rows.map(r => ({ shares: r.shares, a: alignTo(masterDates, r.sym) }))
+                       .filter(h => h.a);
+  return masterDates.map((_, i) => {
+    let v = st.cash;
+    for (const h of holds) v += h.shares * h.a[i];
+    return v;
+  });
+}
+
+const normLine = vals => { const b = vals[0]; return b > 0 ? vals.map(v => (v / b - 1) * 100) : vals.map(() => 0); };
+
+async function renderChart() {
+  const host = $('perf-chart');
+  if (!host) return;
+  const my = ++chartSeq;
+
+  // portfolios on the chart: the active one, plus any toggled on for comparison
+  const pfIdx = [active, ...Object.keys(chart.compare).map(Number)
+    .filter(i => chart.compare[i] && i !== active && doc.portfolios[i])];
+  const syms = new Set();
+  pfIdx.forEach(i => doc.portfolios[i].trades.forEach(t => syms.add(t.sym)));
+
+  const needFetch = [...syms].some(s => !series[s]) || (chart.spx && !(spxSym && series[spxSym]));
+  if (needFetch) host.innerHTML = '<div class="empty"><span class="spin"></span> Loading chart…</div>';
+  renderChartControls();
+
+  await ensureSeries([...syms]);
+  if (chart.spx) await ensureSpx();
+  if (my !== chartSeq) return;                       // superseded by a newer redraw
+
+  const cand = [...syms, chart.spx ? spxSym : null].filter(s => s && series[s]);
+  if (!cand.length) { host.innerHTML = '<div class="empty">No price history to chart yet.</div>'; return; }
+  let master = series[cand[0]].map(p => p[0]);
+  for (const s of cand) if (series[s].length > master.length) master = series[s].map(p => p[0]);
+
+  const startIdx = periodStartIdx(master, chart.period);
+  const dates = master.slice(startIdx);
+  if (dates.length < 2) { host.innerHTML = '<div class="empty">Not enough history for this range.</div>'; return; }
+
+  const lines = [];
+  pfIdx.forEach((i, k) => lines.push({
+    label: doc.portfolios[i].name, color: LINE_COLORS[k % LINE_COLORS.length],
+    vals: normLine(bookValueSeries(i, master).slice(startIdx)),
+  }));
+  if (chart.spx && spxSym && series[spxSym])
+    lines.push({ label: 'S&P 500', color: '#9aa7bd', dash: true,
+                 vals: normLine(alignTo(master, spxSym).slice(startIdx)) });
+
+  host.innerHTML = svgChart(dates, lines);
+  const colorMap = {}; lines.forEach(l => colorMap[l.label] = l.color);
+  renderChartControls(colorMap);
+}
+
+function svgChart(dates, lines) {
+  const W = 720, H = 260, padL = 46, padR = 14, padT = 12, padB = 26, n = dates.length;
+  let lo = Infinity, hi = -Infinity;
+  lines.forEach(l => l.vals.forEach(v => { if (v < lo) lo = v; if (v > hi) hi = v; }));
+  if (!isFinite(lo)) { lo = -1; hi = 1; }
+  if (lo === hi) { lo -= 1; hi += 1; }
+  lo -= (hi - lo) * 0.08; hi += (hi - lo) * 0.08;
+  const x = i => padL + (W - padL - padR) * (n === 1 ? 0 : i / (n - 1));
+  const y = v => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
+  const yLbl = v => `<text x="${padL - 7}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end" font-size="10" ` +
+    `fill="var(--muted)" font-family="var(--mono)">${(v > 0 ? '+' : '') + v.toFixed(1)}%</text>`;
+  const zero = (lo <= 0 && hi >= 0)
+    ? `<line x1="${padL}" y1="${y(0).toFixed(1)}" x2="${W - padR}" y2="${y(0).toFixed(1)}" ` +
+      `stroke="var(--border2)" stroke-width="1"/>${yLbl(0)}` : '';
+  const paths = lines.map(l => {
+    const d = l.vals.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)).join(' ');
+    return `<path d="${d}" fill="none" stroke="${l.color}" stroke-width="2" ` +
+           `${l.dash ? 'stroke-dasharray="4 3"' : ''} stroke-linejoin="round" stroke-linecap="round"/>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block">
+    ${zero}${yLbl(hi)}${yLbl(lo)}${paths}
+    <text x="${padL}" y="${H - 7}" font-size="10" fill="var(--muted)" font-family="var(--mono)">${dates[0]}</text>
+    <text x="${W - padR}" y="${H - 7}" text-anchor="end" font-size="10" fill="var(--muted)" font-family="var(--mono)">${dates[n - 1]}</text>
+  </svg>`;
+}
+
+function renderChartControls(colorMap) {
+  colorMap = colorMap || {};
+  const per = $('perf-periods');
+  if (per) per.innerHTML = CHART_PERIODS.map(p =>
+    `<span class="chip ${p === chart.period ? 'on' : ''}" onclick="setPeriod('${p}')">${p}</span>`).join('');
+  const leg = $('perf-legend');
+  if (!leg) return;
+  let html = doc.portfolios.map((p, i) => {
+    const on = i === active || !!chart.compare[i], lock = i === active;
+    const col = colorMap[p.name] || (on ? 'var(--muted)' : 'var(--border2)');
+    return `<span class="chip ${on ? '' : 'off'}" ${lock ? 'style="cursor:default"' : `onclick="toggleCompare(${i})"`}>
+      <span class="legdot" style="background:${on ? col : 'var(--border2)'}"></span>${esc(p.name)}${lock ? ' · this one' : ''}</span>`;
+  }).join('');
+  html += `<span class="chip ${chart.spx ? '' : 'off'}" onclick="toggleSpx()">
+    <span class="legdot" style="background:${chart.spx ? (colorMap['S&P 500'] || '#9aa7bd') : 'var(--border2)'}"></span>S&amp;P 500</span>`;
+  leg.innerHTML = html;
+}
+
+function setPeriod(p)     { chart.period = p; renderChart(); }
+function toggleSpx()      { chart.spx = !chart.spx; renderChart(); }
+function toggleCompare(i) { chart.compare[i] = !chart.compare[i]; renderChart(); }
 
 // ── gate ─────────────────────────────────────────────────────────────────────
 async function unlock() {
