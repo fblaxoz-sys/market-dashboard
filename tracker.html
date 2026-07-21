@@ -20,8 +20,10 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);
      font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
-.wrap{max-width:1080px;margin:0 auto;padding:24px 20px 80px}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 20px 80px}
 h1{font-size:22px;font-weight:800;letter-spacing:-.3px}
+h2{font-size:13px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;
+   color:var(--muted);margin-bottom:12px}
 .sub{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
       padding:18px;margin-bottom:16px}
@@ -48,18 +50,22 @@ textarea:focus{outline:none;border-color:var(--accent)}
 table{width:100%;border-collapse:collapse}
 th{padding:10px 12px;text-align:left;font-size:10px;color:var(--muted);letter-spacing:1px;
    text-transform:uppercase;font-weight:400;border-bottom:1px solid var(--border2);white-space:nowrap}
-td{padding:11px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);
+td{padding:10px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);
    font-size:13px;white-space:nowrap}
 tr:last-child td{border-bottom:none}
 .r{text-align:right}
 .sym{font-weight:700;color:#fff;letter-spacing:.5px;font-family:var(--mono)}
 .up{color:var(--green)}.down{color:var(--red)}.dim{color:var(--muted)}
 .table-wrap{overflow-x:auto}
+.tag{font-family:var(--mono);font-size:9.5px;padding:2px 7px;border-radius:5px;
+     letter-spacing:.5px;font-weight:700}
+.tag-buy{background:var(--green-dim);color:var(--green);border:1px solid #2dd4a044}
+.tag-sell{background:var(--red-dim);color:var(--red);border:1px solid #f0526a44}
 .stat{background:var(--surface2);border:1px solid var(--border);border-radius:10px;
-      padding:14px 16px;flex:1;min-width:150px}
+      padding:14px 16px;flex:1;min-width:145px}
 .stat-label{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase}
-.stat-value{font-size:24px;font-weight:800;margin-top:5px;letter-spacing:-.5px}
-.empty{padding:40px 20px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12px}
+.stat-value{font-size:23px;font-weight:800;margin-top:5px;letter-spacing:-.5px}
+.empty{padding:36px 20px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12px}
 .banner{border-radius:8px;padding:11px 14px;font-size:12.5px;margin-bottom:14px;
         border:1px solid;display:none}
 .banner.show{display:block}
@@ -70,7 +76,7 @@ tr:last-child td{border-bottom:none}
        align-items:center;justify-content:center;padding:20px}
 .modal.show{display:flex}
 .modal-box{background:var(--surface);border:1px solid var(--border2);border-radius:12px;
-           padding:22px;max-width:520px;width:100%}
+           padding:22px;max-width:540px;width:100%}
 .gate{max-width:380px;margin:14vh auto 0}
 .pill{font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:20px;
       background:var(--surface2);border:1px solid var(--border2);color:var(--muted)}
@@ -80,6 +86,7 @@ tr:last-child td{border-bottom:none}
 .hide{display:none!important}
 .foot{font-family:var(--mono);font-size:10.5px;color:var(--muted);
       line-height:1.7;border-top:1px solid var(--border);padding-top:14px;margin-top:8px}
+.tgt-input{width:74px;padding:4px 7px;font-size:12px;text-align:right}
 </style>
 </head>
 <body>
@@ -105,7 +112,7 @@ tr:last-child td{border-bottom:none}
   <div class="spread" style="margin-bottom:18px">
     <div>
       <h1>Shared Portfolio Tracker</h1>
-      <p class="sub">Everyone with the passcode sees the same holdings &middot; live prices from Yahoo</p>
+      <p class="sub">Log a trade &mdash; the portfolio updates itself &middot; everyone with the passcode sees the same book</p>
     </div>
     <div class="row">
       <button class="btn" onclick="refreshAll()"><span id="ref-ico">&#8635;</span> Refresh</button>
@@ -138,53 +145,91 @@ tr:last-child td{border-bottom:none}
   <!-- totals -->
   <div class="row" style="margin-bottom:16px" id="stats"></div>
 
-  <!-- add holding -->
+  <!-- log a trade -->
   <div class="card">
+    <h2>Log a trade</h2>
     <div class="row" style="align-items:flex-end">
-      <div style="flex:1;min-width:110px">
-        <label for="in-sym">Ticker</label>
-        <input id="in-sym" placeholder="AAPL" maxlength="12"
-               onkeydown="if(event.key==='Enter')addHolding()" />
+      <div style="flex:0 0 105px">
+        <label for="t-side">Action</label>
+        <select id="t-side" onchange="onSideChange()">
+          <option value="buy">Buy</option>
+          <option value="sell">Sell</option>
+        </select>
       </div>
-      <div style="flex:1;min-width:110px">
-        <label for="in-target">Target %</label>
-        <input id="in-target" type="number" step="0.01" min="0" placeholder="15"
-               onkeydown="if(event.key==='Enter')addHolding()" />
+      <div style="flex:1;min-width:100px">
+        <label for="t-sym">Ticker</label>
+        <input id="t-sym" placeholder="AAPL" maxlength="12"
+               onkeydown="if(event.key==='Enter')logTrade()" />
       </div>
-      <div style="flex:1;min-width:110px">
-        <label for="in-buy">Buy price</label>
-        <input id="in-buy" type="number" step="0.0001" min="0" placeholder="182.50"
-               onkeydown="if(event.key==='Enter')addHolding()" />
+      <div id="wrap-mode" style="flex:0 0 168px" class="hide">
+        <label for="t-mode">How much</label>
+        <select id="t-mode" onchange="onModeChange()">
+          <option value="pct">% of book</option>
+          <option value="frac">Part of position</option>
+          <option value="all">Close it out</option>
+        </select>
       </div>
-      <button class="btn btn-primary" onclick="addHolding()">Add</button>
+      <div id="wrap-amt" style="flex:1;min-width:100px">
+        <label for="t-amt" id="lbl-amt">Percent of book</label>
+        <input id="t-amt" type="number" step="0.01" min="0" placeholder="2"
+               onkeydown="if(event.key==='Enter')logTrade()" />
+      </div>
+      <div style="flex:1;min-width:100px">
+        <label for="t-price">Price</label>
+        <input id="t-price" type="number" step="0.0001" min="0" placeholder="182.50"
+               onkeydown="if(event.key==='Enter')logTrade()" />
+      </div>
+      <div style="flex:1.3;min-width:190px">
+        <label for="t-when">When</label>
+        <input id="t-when" type="datetime-local" />
+      </div>
+      <button class="btn btn-primary" onclick="logTrade()">Log it</button>
       <button class="btn" onclick="openImport()">Paste list</button>
     </div>
+    <p class="sub" id="t-hint" style="margin-top:10px"></p>
   </div>
 
-  <!-- holdings -->
+  <!-- positions -->
   <div class="card" style="padding:0;overflow:hidden">
-    <div class="table-wrap"><table id="tbl">
-      <tbody><tr><td class="empty">No holdings yet — add one above, or paste a list.</td></tr></tbody>
+    <div style="padding:16px 18px 0"><h2 style="margin-bottom:0">Positions</h2>
+      <p class="sub" style="margin-bottom:12px">Built from your trade log &mdash; not typed in directly</p></div>
+    <div class="table-wrap"><table id="pos-tbl">
+      <tbody><tr><td class="empty">No trades yet — log one above.</td></tr></tbody>
+    </table></div>
+  </div>
+
+  <!-- trade log -->
+  <div class="card" style="padding:0;overflow:hidden">
+    <div class="spread" style="padding:16px 18px 12px">
+      <div><h2 style="margin-bottom:0">Trade log</h2>
+        <p class="sub">Every trade, newest first</p></div>
+      <button class="btn btn-sm" onclick="exportTrades()">Export CSV</button>
+    </div>
+    <div class="table-wrap"><table id="log-tbl">
+      <tbody><tr><td class="empty">Nothing logged yet.</td></tr></tbody>
     </table></div>
   </div>
 
   <p class="foot">
-    Target % is what you set. Current % is where each position has drifted to as prices moved
-    &mdash; a position that outran the others grows past its target. Drift is the gap between them.<br />
-    Prices are delayed daily closes from Yahoo Finance. This is a tracking tool, not investment
-    advice, and nothing here is a recommendation to buy or sell anything.
+    Everything runs off a base of 100 units. A 2% buy spends 2 units of cash, so
+    &ldquo;2%&rdquo; is the same size whichever year you trade it. Positions, cash and
+    weights are all replayed from the log, so correcting a trade corrects the portfolio.
+    Cost basis is the weighted average across your buys; realized P&amp;L is booked against
+    it when you sell.<br />
+    Prices are delayed daily closes from Yahoo Finance. This is a tracking tool, not
+    investment advice, and nothing here is a recommendation to buy or sell anything.
   </p>
 </div>
 
 <!-- ── paste-import modal ────────────────────────────────────────────────── -->
 <div id="imp" class="modal">
   <div class="modal-box">
-    <div style="font-size:16px;font-weight:800;margin-bottom:4px">Paste holdings</div>
+    <div style="font-size:16px;font-weight:800;margin-bottom:4px">Paste opening trades</div>
     <p class="sub" style="margin-bottom:14px">
-      One per line: <code>TICKER, target%, buyPrice</code> &mdash; commas, tabs or spaces.
-      Pasting <strong>replaces</strong> everything in this portfolio.
+      One per line: <code>TICKER, percent, price</code> &mdash; optionally a date at the end.
+      Each becomes a <strong>buy</strong> in the log. Added to what's already there.
     </p>
-    <textarea id="imp-text" placeholder="AAPL, 15, 182.50&#10;MSFT, 12, 410.00&#10;VOO, 40, 505.10"></textarea>
+    <textarea id="imp-text" placeholder="AAPL, 15, 182.50, 2025-03-14&#10;MSFT, 12, 410.00&#10;VOO, 40, 505.10"></textarea>
     <div id="imp-err" class="banner banner-err" style="margin-top:12px"></div>
     <div class="row" style="margin-top:14px;justify-content:flex-end">
       <button class="btn" onclick="closeImport()">Cancel</button>
@@ -197,16 +242,16 @@ tr:last-child td{border-bottom:none}
 'use strict';
 
 // ── state ────────────────────────────────────────────────────────────────────
-let pass      = localStorage.getItem('pf_pass') || '';
-let doc       = { portfolios: [] };   // the shared document
-let version   = 0;                    // version we loaded — sent back on save
-let active    = 0;                    // index into doc.portfolios
-let prices    = {};                   // sym -> {cur, prev}
+let pass       = localStorage.getItem('pf_pass') || '';
+let doc        = { portfolios: [] };
+let version    = 0;
+let active     = 0;
+let prices     = {};      // sym -> {cur, prev}
 let persistent = true;
 
 const esc = s => String(s).replace(/[&<>"']/g, c =>
   ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
-const $ = id => document.getElementById(id);
+const $  = id => document.getElementById(id);
 const pf = () => doc.portfolios[active];
 
 function say(text, kind) {
@@ -229,13 +274,33 @@ async function api(method, body) {
   return { ok: res.ok, status: res.status, data };
 }
 
+/** Older books stored typed-in holdings. Replay them as opening buys so nothing
+ *  is stranded when the shape changes underneath a portfolio. */
+function migrate(p) {
+  if (!Array.isArray(p.trades)) p.trades = [];
+  if (!p.targets || typeof p.targets !== 'object') p.targets = {};
+  if (Array.isArray(p.holdings) && p.holdings.length && !p.trades.length) {
+    p.holdings.forEach((h, i) => {
+      if (!h || !h.sym || !(h.buy > 0)) return;
+      const wt = h.target > 0 ? h.target : (h.weight > 0 ? h.weight : 0);
+      if (!(wt > 0)) return;
+      p.trades.push({ id: 'm' + i + '-' + Date.now().toString(36),
+                      ts: (h.date ? h.date + 'T00:00' : '2000-01-01T00:00'),
+                      side: 'buy', sym: h.sym, mode: 'pct', amt: wt, price: h.buy });
+      p.targets[h.sym] = wt;
+    });
+  }
+  delete p.holdings;
+  return p;
+}
+
 function adopt(state) {
   doc        = state.doc && Array.isArray(state.doc.portfolios) ? state.doc : { portfolios: [] };
   version    = state.version || 0;
   persistent = state.persistent !== false;
   $('mem-warn').classList.toggle('show', !persistent);
-  if (!doc.portfolios.length)
-    doc.portfolios = [{ name: 'Main', holdings: [] }];
+  if (!doc.portfolios.length) doc.portfolios = [{ name: 'Main', trades: [], targets: {} }];
+  doc.portfolios.forEach(migrate);
   active = Math.min(active, doc.portfolios.length - 1);
   renderSavedNote(state);
 }
@@ -254,30 +319,37 @@ async function load() {
   adopt(r.data);
 }
 
+/** 'ok' | 'conflict' | 'error' — the caller must tell these apart. On a conflict
+ *  we have already replaced doc with the server's newer version, so reverting to
+ *  a local backup would both show stale data AND re-arm it to overwrite the other
+ *  person on the next save. Only a transport/server error should roll back. */
 async function save() {
   const who = (localStorage.getItem('pf_who') || '').trim();
-  const r = await api('POST', { doc, version, who });
-  if (r.status === 409) {
-    // Someone else saved first. Take their version so nothing is lost, and say so.
-    adopt(r.data);
-    render();
-    say(r.data.error || 'Someone else saved first — showing their version.', 'warn');
-    return false;
+  let r;
+  try {
+    r = await api('POST', { doc, version, who });
+  } catch (e) {
+    say('Could not reach the server — your change was not saved.', 'err');
+    return 'error';
   }
-  if (!r.ok) { say(r.data.error || ('Could not save (' + r.status + ')'), 'err'); return false; }
+  if (r.status === 409) {
+    adopt(r.data); render();
+    say(r.data.error || 'Someone else saved first — showing their version.', 'warn');
+    return 'conflict';
+  }
+  if (!r.ok) { say(r.data.error || ('Could not save (' + r.status + ')'), 'err'); return 'error'; }
   adopt(r.data);
-  return true;
+  return 'ok';
 }
 
-/** Apply a local mutation, then persist it. Reverts the UI if the save fails. */
 async function mutate(fn) {
   const backup = JSON.stringify(doc);
   fn();
   render();
-  const ok = await save();
-  if (!ok && JSON.stringify(doc) === JSON.stringify(JSON.parse(backup))) return;
-  if (!ok) { doc = JSON.parse(backup); render(); }
-  else render();
+  const outcome = await save();
+  if (outcome === 'error') { doc = JSON.parse(backup); }   // roll back our edit
+  // 'conflict' → keep the server's version that save() adopted; don't roll back
+  render();
 }
 
 // ── prices ───────────────────────────────────────────────────────────────────
@@ -290,7 +362,7 @@ async function fetchPrice(sym) {
 }
 
 async function loadPrices() {
-  const syms = [...new Set(pf().holdings.map(h => h.sym))];
+  const syms = [...new Set(pf().trades.map(t => t.sym))];
   const missing = syms.filter(s => !prices[s]);
   if (!missing.length) return;
   const results = await Promise.allSettled(missing.map(fetchPrice));
@@ -306,155 +378,280 @@ async function refreshAll() {
   const ico = $('ref-ico');
   ico.innerHTML = '<span class="spin"></span>';
   prices = {};
-  try {
-    await load();
-    await loadPrices();
-    render();
-    say('Up to date.', 'ok');
-  } catch (e) {
-    say('Refresh failed: ' + e.message, 'err');
-  } finally { ico.textContent = '↻'; }
+  try { await load(); await loadPrices(); render(); say('Up to date.', 'ok'); }
+  catch (e) { say('Refresh failed: ' + e.message, 'err'); }
+  finally { ico.textContent = '↻'; }
 }
 
-// ── math ─────────────────────────────────────────────────────────────────────
-// Each position starts at its target weight and grows by cur/buy. Current % is
-// that grown value as a share of the whole book, so weights drift apart exactly
-// as the prices move. Whatever the targets leave short of 100% is cash, flat.
-function compute() {
-  const hs = pf().holdings;
-  const sumTarget = hs.reduce((a, h) => a + h.target, 0);
-  const cash = Math.max(0, 100 - sumTarget);
-  const rows = hs.map(h => {
-    const p = prices[h.sym];
-    const cur = p ? p.cur : null;
-    const growth = (cur && h.buy > 0) ? cur / h.buy : 1;
-    return {
-      sym: h.sym, target: h.target, buy: h.buy, cur,
-      ret: cur ? (cur / h.buy - 1) * 100 : null,
-      day: (p && p.prev) ? (p.cur / p.prev - 1) * 100 : null,
-      value: h.target * growth,
-    };
+// ── the engine ───────────────────────────────────────────────────────────────
+// Replay the log in time order. The book is 100 units, all cash at the start; a
+// 2% buy spends 2 units regardless of what the book is worth by then — the
+// fixed-base rule. Sells return proceeds to cash and book realized P&L against
+// weighted-average cost.
+function replay(trades) {
+  const pos = {};            // sym -> {shares, cost}
+  let cash = 100, realized = 0;
+  const notes = [];          // per-trade warnings, keyed by trade id
+
+  const ordered = trades.slice().sort((a, b) =>
+    (a.ts || '').localeCompare(b.ts || '') || (a.id || '').localeCompare(b.id || ''));
+
+  for (const t of ordered) {
+    const price = +t.price;
+    if (!(price > 0)) { notes.push([t.id, 'bad price']); continue; }
+    const p = pos[t.sym] || (pos[t.sym] = { shares: 0, cost: 0 });
+
+    if (t.side === 'buy') {
+      const units = +t.amt;
+      if (!(units > 0)) { notes.push([t.id, 'bad size']); continue; }
+      p.shares += units / price;
+      p.cost   += units;
+      cash     -= units;
+      t._units = units;
+      continue;
+    }
+
+    // sell — resolve however it was expressed into a share count
+    let shares;
+    if (t.mode === 'all')       shares = p.shares;
+    else if (t.mode === 'frac') shares = p.shares * (+t.amt / 100);
+    else                        shares = (+t.amt) / price;
+
+    if (!(shares > 0)) { notes.push([t.id, 'nothing to sell']); t._units = 0; continue; }
+    if (shares > p.shares + 1e-12) {
+      notes.push([t.id, 'more than held — capped']);
+      shares = p.shares;
+    }
+    const avg      = p.shares > 0 ? p.cost / p.shares : 0;
+    const proceeds = shares * price;
+    realized += shares * (price - avg);
+    p.cost   -= shares * avg;
+    p.shares -= shares;
+    cash     += proceeds;
+    t._units  = proceeds;
+    t._gain   = shares * (price - avg);
+  }
+
+  const rows = [];
+  let invested = 0;
+  for (const sym in pos) {
+    const p = pos[sym];
+    if (p.shares <= 1e-9) continue;                  // fully closed out
+    const q     = prices[sym];
+    const cur   = q ? q.cur : null;
+    const avg   = p.cost / p.shares;
+    const value = cur != null ? p.shares * cur : p.cost;
+    invested += value;
+    rows.push({ sym, shares: p.shares, avg, cur, value,
+                ret: cur != null ? (cur / avg - 1) * 100 : null,
+                day: (q && q.prev) ? (q.cur / q.prev - 1) * 100 : null,
+                unreal: cur != null ? p.shares * (cur - avg) : 0 });
+  }
+  const total = invested + cash;
+  rows.forEach(r => {
+    r.curPct = total > 0 ? r.value / total * 100 : 0;
+    const tgt = +(pf().targets || {})[r.sym];
+    r.target  = tgt > 0 ? tgt : null;
+    r.drift   = r.target != null ? r.curPct - r.target : null;
   });
-  const total = rows.reduce((a, r) => a + r.value, 0) + cash;
-  rows.forEach(r => { r.curPct = total > 0 ? r.value / total * 100 : 0;
-                      r.drift  = r.curPct - r.target; });
-  const base = sumTarget + cash;
-  return { rows, cash, total, sumTarget,
-           ret: base > 0 ? (total / base - 1) * 100 : 0 };
+  rows.sort((a, b) => b.curPct - a.curPct);
+  return { rows, cash, total, realized, ordered, notes: Object.fromEntries(notes),
+           ret: (total / 100 - 1) * 100 };
 }
 
 // ── render ───────────────────────────────────────────────────────────────────
-const sgn  = v => (v > 0 ? 'up' : v < 0 ? 'down' : 'dim');
-const pct  = v => (v == null ? '&mdash;' : (v > 0 ? '+' : '') + v.toFixed(2) + '%');
-const usd  = v => (v == null ? '&mdash;' : '$' + v.toLocaleString(undefined,
-                   { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const sgn = v => (v > 0 ? 'up' : v < 0 ? 'down' : 'dim');
+const pct = v => (v == null ? '&mdash;' : (v > 0 ? '+' : '') + v.toFixed(2) + '%');
+const usd = v => (v == null ? '&mdash;' : '$' + v.toLocaleString(undefined,
+                  { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const u   = v => (v == null ? '&mdash;' : v.toFixed(2) + '%');
+const fmtTs = ts => { const d = new Date(ts); return isNaN(d) ? String(ts || '—')
+                      : d.toLocaleString(undefined, { year:'2-digit', month:'short', day:'numeric',
+                                                      hour:'numeric', minute:'2-digit' }); };
 
 function render() {
-  // portfolio picker
   $('pf-pick').innerHTML = doc.portfolios.map((p, i) =>
     `<option value="${i}"${i === active ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
 
-  const { rows, cash, ret, sumTarget } = compute();
+  const st = replay(pf().trades);
 
   $('stats').innerHTML = `
-    <div class="stat"><div class="stat-label">Portfolio return</div>
-      <div class="stat-value ${sgn(ret)}">${pct(ret)}</div></div>
+    <div class="stat"><div class="stat-label">Total return</div>
+      <div class="stat-value ${sgn(st.ret)}">${pct(st.ret)}</div></div>
+    <div class="stat"><div class="stat-label">Realized P&L</div>
+      <div class="stat-value ${sgn(st.realized)}">${pct(st.realized)}</div></div>
     <div class="stat"><div class="stat-label">Positions</div>
-      <div class="stat-value">${rows.length}</div></div>
-    <div class="stat"><div class="stat-label">Targets total</div>
-      <div class="stat-value ${sumTarget > 100 ? 'down' : ''}">${sumTarget.toFixed(1)}%</div></div>
+      <div class="stat-value">${st.rows.length}</div></div>
     <div class="stat"><div class="stat-label">Cash</div>
-      <div class="stat-value dim">${cash.toFixed(1)}%</div></div>`;
+      <div class="stat-value ${st.cash < 0 ? 'down' : 'dim'}">${u(st.cash)}</div></div>
+    <div class="stat"><div class="stat-label">Trades</div>
+      <div class="stat-value">${pf().trades.length}</div></div>`;
 
-  if (!rows.length) {
-    $('tbl').innerHTML = '<tbody><tr><td class="empty">' +
-      'No holdings yet — add one above, or paste a list.</td></tr></tbody>';
-    return;
+  if (st.cash < -0.005)
+    say('Cash is negative — logged buys exceed the 100% base by ' +
+        Math.abs(st.cash).toFixed(2) + '%.', 'warn');
+
+  // positions
+  if (!st.rows.length) {
+    $('pos-tbl').innerHTML = '<tbody><tr><td class="empty">' +
+      'No open positions — log a trade above.</td></tr></tbody>';
+  } else {
+    $('pos-tbl').innerHTML = `
+      <thead><tr>
+        <th>Ticker</th><th class="r">Current %</th><th class="r">Target %</th>
+        <th class="r">Drift</th><th class="r">Avg cost</th><th class="r">Price</th>
+        <th class="r">Day</th><th class="r">Return</th><th class="r">Unrealized</th>
+      </tr></thead>
+      <tbody>${st.rows.map(r => `
+        <tr>
+          <td class="sym">${esc(r.sym)}</td>
+          <td class="r"><strong>${r.curPct.toFixed(2)}%</strong></td>
+          <td class="r"><input class="tgt-input" type="number" step="0.01" min="0"
+                 value="${r.target != null ? r.target : ''}" placeholder="—"
+                 onchange="setTarget('${esc(r.sym)}', this.value)" /></td>
+          <td class="r ${r.drift == null ? 'dim' : sgn(r.drift)}">${r.drift == null ? '&mdash;' : pct(r.drift)}</td>
+          <td class="r dim">${usd(r.avg)}</td>
+          <td class="r">${usd(r.cur)}</td>
+          <td class="r ${sgn(r.day)}">${pct(r.day)}</td>
+          <td class="r ${sgn(r.ret)}">${pct(r.ret)}</td>
+          <td class="r ${sgn(r.unreal)}">${u(r.unreal)}</td>
+        </tr>`).join('')}
+        <tr>
+          <td class="sym dim">CASH</td>
+          <td class="r dim">${st.total > 0 ? (st.cash / st.total * 100).toFixed(2) : '0.00'}%</td>
+          <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
+          <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
+          <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
+          <td class="r dim">${u(st.cash)}</td>
+        </tr>
+      </tbody>`;
   }
 
-  rows.sort((a, b) => b.curPct - a.curPct);
-  $('tbl').innerHTML = `
-    <thead><tr>
-      <th>Ticker</th><th class="r">Target %</th><th class="r">Current %</th>
-      <th class="r">Drift</th><th class="r">Buy</th><th class="r">Price</th>
-      <th class="r">Day</th><th class="r">Return</th><th></th>
-    </tr></thead>
-    <tbody>${rows.map(r => `
-      <tr>
-        <td class="sym">${esc(r.sym)}</td>
-        <td class="r dim">${r.target.toFixed(2)}%</td>
-        <td class="r"><strong>${r.curPct.toFixed(2)}%</strong></td>
-        <td class="r ${sgn(r.drift)}">${pct(r.drift)}</td>
-        <td class="r dim">${usd(r.buy)}</td>
-        <td class="r">${usd(r.cur)}</td>
-        <td class="r ${sgn(r.day)}">${pct(r.day)}</td>
-        <td class="r ${sgn(r.ret)}">${pct(r.ret)}</td>
-        <td class="r"><button class="btn btn-sm btn-danger"
-            onclick="removeHolding('${esc(r.sym)}')">&times;</button></td>
-      </tr>`).join('')}
-      <tr>
-        <td class="sym dim">CASH</td>
-        <td class="r dim">${cash.toFixed(2)}%</td>
-        <td class="r dim">${cash.toFixed(2)}%</td>
-        <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
-        <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
-        <td class="r dim">&mdash;</td><td></td>
-      </tr>
-    </tbody>`;
+  // trade log — newest first
+  const log = st.ordered.slice().reverse();
+  if (!log.length) {
+    $('log-tbl').innerHTML = '<tbody><tr><td class="empty">Nothing logged yet.</td></tr></tbody>';
+  } else {
+    $('log-tbl').innerHTML = `
+      <thead><tr>
+        <th>When</th><th>Action</th><th>Ticker</th><th class="r">Size</th>
+        <th class="r">Price</th><th class="r">Value</th><th class="r">Realized</th><th></th>
+      </tr></thead>
+      <tbody>${log.map(t => {
+        const warn = st.notes[t.id];
+        const size = t.side === 'buy' ? (+t.amt).toFixed(2) + '% of book'
+                   : t.mode === 'all'  ? 'closed out'
+                   : t.mode === 'frac' ? (+t.amt).toFixed(0) + '% of position'
+                   :                     (+t.amt).toFixed(2) + '% of book';
+        return `
+        <tr>
+          <td class="dim">${esc(fmtTs(t.ts))}</td>
+          <td><span class="tag tag-${t.side === 'buy' ? 'buy' : 'sell'}">${t.side === 'buy' ? 'BUY' : 'SELL'}</span>${
+              warn ? ` <span class="dim" title="${esc(warn)}">⚠</span>` : ''}</td>
+          <td class="sym">${esc(t.sym)}</td>
+          <td class="r dim">${esc(size)}</td>
+          <td class="r">${usd(+t.price)}</td>
+          <td class="r dim">${t._units != null ? u(t._units) : '&mdash;'}</td>
+          <td class="r ${t._gain != null ? sgn(t._gain) : 'dim'}">${t._gain != null ? pct(t._gain) : '&mdash;'}</td>
+          <td class="r"><button class="btn btn-sm btn-danger"
+              onclick="delTrade('${esc(t.id)}')">&times;</button></td>
+        </tr>`; }).join('')}
+      </tbody>`;
+  }
 }
 
-// ── actions ──────────────────────────────────────────────────────────────────
+// ── trade entry ──────────────────────────────────────────────────────────────
 const cleanSym = s => String(s).toUpperCase().replace(/[^A-Z0-9.\-^]/g, '').slice(0, 12);
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
-async function addHolding() {
-  const sym    = cleanSym($('in-sym').value);
-  const target = parseFloat($('in-target').value);
-  const buy    = parseFloat($('in-buy').value);
-  if (!sym)                    return say('Enter a ticker.', 'err');
-  if (!(target > 0))           return say('Enter a target % above 0.', 'err');
-  if (!(buy > 0))              return say('Enter the price you bought at.', 'err');
-  if (pf().holdings.some(h => h.sym === sym))
-    return say(sym + ' is already in this portfolio.', 'err');
+function localNow() {
+  const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
 
-  ['in-sym', 'in-target', 'in-buy'].forEach(id => $(id).value = '');
-  await mutate(() => pf().holdings.push({ sym, target, buy }));
+function onSideChange() {
+  const sell = $('t-side').value === 'sell';
+  $('wrap-mode').classList.toggle('hide', !sell);
+  if (!sell) $('t-mode').value = 'pct';
+  onModeChange();
+}
+
+function onModeChange() {
+  const sell = $('t-side').value === 'sell';
+  const mode = $('t-mode').value;
+  $('wrap-amt').classList.toggle('hide', sell && mode === 'all');
+  $('lbl-amt').textContent = (sell && mode === 'frac') ? 'Percent of position' : 'Percent of book';
+  $('t-hint').textContent =
+    !sell                ? 'Spends that % of the 100% base. Buying 2% at $180 costs 2 units.'
+    : mode === 'all'     ? 'Sells the entire position at the price you enter.'
+    : mode === 'frac'    ? 'Sells that share of the position — 50 means half of what you hold.'
+    :                      'Sells that % of the base out of the position.';
+}
+
+async function logTrade() {
+  const side  = $('t-side').value;
+  const sym   = cleanSym($('t-sym').value);
+  const mode  = side === 'sell' ? $('t-mode').value : 'pct';
+  const amt   = parseFloat($('t-amt').value);
+  const price = parseFloat($('t-price').value);
+  const when  = $('t-when').value || localNow();
+
+  if (!sym)          return say('Enter a ticker.', 'err');
+  if (!(price > 0))  return say('Enter the price you traded at.', 'err');
+  if (mode !== 'all' && !(amt > 0)) return say('Enter how much.', 'err');
+  if (mode === 'frac' && amt > 100) return say("Can't sell more than 100% of a position.", 'err');
+
+  if (side === 'sell') {
+    const held = replay(pf().trades).rows.find(r => r.sym === sym);
+    if (!held) return say("You don't hold " + sym + " — nothing to sell.", 'err');
+  }
+
+  const t = { id: newId(), ts: when, side, sym, mode, price,
+              amt: mode === 'all' ? 0 : amt };
+  ['t-sym', 't-amt', 't-price'].forEach(id => $(id).value = '');
+  $('t-when').value = localNow();
+
+  await mutate(() => { pf().trades.push(t); });
   await loadPrices();
   render();
+  say((side === 'buy' ? 'Bought ' : 'Sold ') + sym + ' — logged.', 'ok');
 }
 
-async function removeHolding(sym) {
+async function delTrade(id) {
+  const t = pf().trades.find(x => x.id === id);
+  if (!t) return;
+  if (!confirm(`Delete this ${t.side} of ${t.sym}? The portfolio will be recalculated without it.`)) return;
+  await mutate(() => { pf().trades = pf().trades.filter(x => x.id !== id); });
+}
+
+async function setTarget(sym, v) {
+  const n = parseFloat(v);
   await mutate(() => {
-    pf().holdings = pf().holdings.filter(h => h.sym !== sym);
+    if (!pf().targets) pf().targets = {};
+    if (n > 0) pf().targets[sym] = n; else delete pf().targets[sym];
   });
 }
 
+// ── portfolios ───────────────────────────────────────────────────────────────
 async function newPf() {
   const n = (prompt('Name the new portfolio:', 'Portfolio ' + (doc.portfolios.length + 1)) || '').trim();
   if (!n) return;
-  await mutate(() => { doc.portfolios.push({ name: n.slice(0, 60), holdings: [] });
+  await mutate(() => { doc.portfolios.push({ name: n.slice(0, 60), trades: [], targets: {} });
                        active = doc.portfolios.length - 1; });
 }
-
 async function renamePf() {
   const n = (prompt('Rename portfolio:', pf().name) || '').trim();
   if (!n) return;
   await mutate(() => { pf().name = n.slice(0, 60); });
 }
-
 async function delPf() {
   if (doc.portfolios.length === 1) return say('Keep at least one portfolio.', 'err');
-  if (!confirm('Delete "' + pf().name + '" for everyone?')) return;
+  if (!confirm(`Delete "${pf().name}" and its ${pf().trades.length} trades, for everyone?`)) return;
   await mutate(() => { doc.portfolios.splice(active, 1); active = Math.max(0, active - 1); });
 }
+async function pickPf(i) { active = +i; render(); await loadPrices(); render(); }
 
-async function pickPf(i) {
-  active = +i;
-  render();
-  await loadPrices();
-  render();
-}
-
-// paste import
+// ── paste import → opening buys ──────────────────────────────────────────────
 function openImport() { $('imp').classList.add('show'); $('imp-err').className = 'banner banner-err';
                         $('imp-text').value = ''; $('imp-text').focus(); }
 function closeImport(){ $('imp').classList.remove('show'); }
@@ -464,10 +661,10 @@ async function doImport() {
   const out = [], bad = [];
   for (const line of lines) {
     const p = line.split(/[,\t]+|\s{2,}|\s+/).map(s => s.trim()).filter(Boolean);
-    const sym = cleanSym(p[0] || ''), target = parseFloat(p[1]), buy = parseFloat(p[2]);
-    if (!sym || !(target > 0) || !(buy > 0)) { bad.push(line); continue; }
-    if (out.some(h => h.sym === sym)) { bad.push(line + '  (duplicate)'); continue; }
-    out.push({ sym, target, buy });
+    const sym = cleanSym(p[0] || ''), amt = parseFloat(p[1]), price = parseFloat(p[2]);
+    const date = (p[3] && /^\d{4}-\d{2}-\d{2}/.test(p[3])) ? p[3].slice(0, 10) + 'T00:00' : localNow();
+    if (!sym || !(amt > 0) || !(price > 0)) { bad.push(line); continue; }
+    out.push({ id: newId(), ts: date, side: 'buy', sym, mode: 'pct', amt, price });
   }
   if (bad.length) {
     const e = $('imp-err');
@@ -479,10 +676,27 @@ async function doImport() {
   if (!out.length) { $('imp-err').className = 'banner show banner-err';
                      $('imp-err').textContent = 'Nothing to import.'; return; }
   closeImport();
-  await mutate(() => { pf().holdings = out; });
+  await mutate(() => { pf().trades.push(...out); });
   await loadPrices();
   render();
-  say('Imported ' + out.length + ' holdings.', 'ok');
+  say('Logged ' + out.length + ' opening buys.', 'ok');
+}
+
+function exportTrades() {
+  const st = replay(pf().trades);
+  const rows = [['when','action','ticker','size_mode','size','price','value_pct','realized_pct']];
+  st.ordered.forEach(t => rows.push([t.ts, t.side, t.sym, t.mode, t.amt, t.price,
+    t._units != null ? t._units.toFixed(4) : '', t._gain != null ? t._gain.toFixed(4) : '']));
+  const csv = rows.map(r => r.map(c => {
+    const s = String(c ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }).join(',')).join('\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = pf().name.replace(/[^\w.-]+/g, '_') + '-trades.csv';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ── gate ─────────────────────────────────────────────────────────────────────
@@ -496,11 +710,13 @@ async function unlock() {
     await load();
     localStorage.setItem('pf_pass', pass);
     if (!localStorage.getItem('pf_who')) {
-      const who = (prompt('Your name? (shown to others as who edited last)', '') || '').trim();
+      const who = (prompt('Your name? (shown to others as who logged the trade)', '') || '').trim();
       if (who) localStorage.setItem('pf_who', who.slice(0, 60));
     }
     $('gate').classList.add('hide');
     $('app').classList.remove('hide');
+    $('t-when').value = localNow();
+    onSideChange();
     render();
     await loadPrices();
     render();
@@ -520,11 +736,7 @@ function lock() {
   $('pass').value = '';
 }
 
-// auto-unlock if the passcode is remembered
-if (pass) {
-  $('pass').value = pass;
-  unlock();
-}
+if (pass) { $('pass').value = pass; unlock(); }
 </script>
 </body>
 </html>
