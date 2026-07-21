@@ -7,6 +7,7 @@ Local dev server for Market Dashboard.
 """
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections
+import shared_store
 
 # ── Per-IP rate limiting on the expensive endpoints ───────────────────────────
 # The compute-heavy routes are unauthenticated, so a burst of hits (or a bot
@@ -2089,6 +2090,96 @@ def run_factor_beta(sym):
 # ── HTTP SERVER ──────────────────────────────────────────────────────────────
 
 class Handler(SimpleHTTPRequestHandler):
+
+    # ── shared portfolio tracker ─────────────────────────────────────────────
+    # Deliberately no Access-Control-Allow-Origin here: tracker.html is served
+    # from this same origin, and omitting CORS stops any other site from reading
+    # the holdings out of a logged-in visitor's browser.
+    def _pf_json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _pf_guard(self):
+        """Shared checks for both verbs. Returns True if the request may proceed."""
+        ok, msg = shared_store.configured()
+        if not ok:
+            self._pf_json(503, {'error': msg})
+            return False
+        # Passcode travels in a header, never the query string — URLs end up in
+        # logs, history and referrers.
+        if not shared_store.check_passcode(self.headers.get('X-PF-Pass', '')):
+            self._pf_json(401, {'error': 'Wrong or missing passcode.'})
+            return False
+        if not _rate_ok(_client_ip(self)):
+            self._pf_json(429, {'error': 'Too many requests — slow down.'})
+            return False
+        return True
+
+    def _pf_shared_get(self):
+        if not self._pf_guard():
+            return
+        try:
+            state = shared_store.load()
+        except shared_store.StoreError as e:
+            self._pf_json(503, {'error': str(e)})
+            return
+        except Exception:
+            print('[pf] load failed:\n' + traceback.format_exc())
+            self._pf_json(500, {'error': 'Could not load the shared portfolio.'})
+            return
+        state['persistent'] = shared_store.persistent()
+        self._pf_json(200, state)
+
+    def _pf_shared_post(self):
+        if not self._pf_guard():
+            return
+        try:
+            n = int(self.headers.get('Content-Length') or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 2_000_000:            # a few KB in practice; cap abuse
+            self._pf_json(413, {'error': 'Payload missing or too large.'})
+            return
+        try:
+            req = json.loads(self.rfile.read(n) or b'{}')
+        except Exception:
+            self._pf_json(400, {'error': 'Malformed JSON.'})
+            return
+
+        try:
+            state = shared_store.save(req.get('doc'),
+                                      req.get('version', 0),
+                                      req.get('who', ''))
+        except shared_store.Conflict as c:
+            # Someone saved between this editor's load and save. Hand back the
+            # winning version so the client can show it rather than overwrite.
+            payload = dict(c.current)
+            payload['error'] = ('Someone else saved changes first. '
+                                'Refresh to see them, then re-apply yours.')
+            self._pf_json(409, payload)
+            return
+        except shared_store.StoreError as e:
+            self._pf_json(400, {'error': str(e)})
+            return
+        except Exception:
+            print('[pf] save failed:\n' + traceback.format_exc())
+            self._pf_json(500, {'error': 'Could not save the shared portfolio.'})
+            return
+        state['persistent'] = shared_store.persistent()
+        self._pf_json(200, state)
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == '/pf-shared':
+            self._pf_shared_post()
+            return
+        self.send_error(404, 'Not Found')
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
@@ -2103,6 +2194,11 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
+            return
+
+        # Shared portfolio tracker (tracker.html) — read the shared document.
+        if parsed.path == '/pf-shared':
+            self._pf_shared_get()
             return
 
         # Throttle the expensive endpoints per client IP.

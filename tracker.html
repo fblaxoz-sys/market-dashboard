@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Shared Portfolio Tracker</title>
+<style>
+:root{
+  --bg:#0a0a0f;--surface:#111118;--surface2:#18181f;
+  --border:#ffffff0f;--border2:#ffffff18;
+  --text:#e8e8f0;--muted:#6b6b80;
+  --accent:#7c6af7;--accent2:#a594f9;
+  --green:#2dd4a0;--green-dim:#2dd4a015;
+  --red:#f0526a;--red-dim:#f0526a15;
+  --amber:#f5a623;--amber-dim:#f5a62315;
+  --mono:ui-monospace,SFMono-Regular,'SF Mono',Menlo,monospace;
+  --sans:system-ui,-apple-system,'Segoe UI',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);
+     font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:24px 20px 80px}
+h1{font-size:22px;font-weight:800;letter-spacing:-.3px}
+.sub{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:4px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+      padding:18px;margin-bottom:16px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.spread{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+label{display:block;font-size:10px;color:var(--muted);letter-spacing:1px;
+      text-transform:uppercase;margin-bottom:5px}
+input,select{background:var(--surface2);border:1px solid var(--border2);color:var(--text);
+      border-radius:8px;padding:9px 11px;font-family:var(--mono);font-size:13px;width:100%}
+input:focus,select:focus{outline:none;border-color:var(--accent)}
+textarea{background:var(--surface2);border:1px solid var(--border2);color:var(--text);
+      border-radius:8px;padding:11px;font-family:var(--mono);font-size:12px;width:100%;
+      min-height:150px;resize:vertical}
+textarea:focus{outline:none;border-color:var(--accent)}
+.btn{background:var(--surface2);border:1px solid var(--border2);color:var(--text);
+     border-radius:8px;padding:9px 15px;font-family:var(--sans);font-size:13px;
+     font-weight:600;cursor:pointer;white-space:nowrap}
+.btn:hover:not(:disabled){border-color:var(--accent);color:#fff}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-primary:hover:not(:disabled){background:var(--accent2);border-color:var(--accent2)}
+.btn-sm{padding:5px 9px;font-size:11px}
+.btn-danger{color:var(--red);border-color:#f0526a44}
+table{width:100%;border-collapse:collapse}
+th{padding:10px 12px;text-align:left;font-size:10px;color:var(--muted);letter-spacing:1px;
+   text-transform:uppercase;font-weight:400;border-bottom:1px solid var(--border2);white-space:nowrap}
+td{padding:11px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);
+   font-size:13px;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+.r{text-align:right}
+.sym{font-weight:700;color:#fff;letter-spacing:.5px;font-family:var(--mono)}
+.up{color:var(--green)}.down{color:var(--red)}.dim{color:var(--muted)}
+.table-wrap{overflow-x:auto}
+.stat{background:var(--surface2);border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;flex:1;min-width:150px}
+.stat-label{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase}
+.stat-value{font-size:24px;font-weight:800;margin-top:5px;letter-spacing:-.5px}
+.empty{padding:40px 20px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12px}
+.banner{border-radius:8px;padding:11px 14px;font-size:12.5px;margin-bottom:14px;
+        border:1px solid;display:none}
+.banner.show{display:block}
+.banner-warn{background:var(--amber-dim);border-color:#f5a62344;color:var(--amber)}
+.banner-err{background:var(--red-dim);border-color:#f0526a44;color:var(--red)}
+.banner-ok{background:var(--green-dim);border-color:#2dd4a044;color:var(--green)}
+.modal{display:none;position:fixed;inset:0;background:#000c;z-index:50;
+       align-items:center;justify-content:center;padding:20px}
+.modal.show{display:flex}
+.modal-box{background:var(--surface);border:1px solid var(--border2);border-radius:12px;
+           padding:22px;max-width:520px;width:100%}
+.gate{max-width:380px;margin:14vh auto 0}
+.pill{font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:20px;
+      background:var(--surface2);border:1px solid var(--border2);color:var(--muted)}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid #fff3;
+      border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.hide{display:none!important}
+.foot{font-family:var(--mono);font-size:10.5px;color:var(--muted);
+      line-height:1.7;border-top:1px solid var(--border);padding-top:14px;margin-top:8px}
+</style>
+</head>
+<body>
+
+<!-- ── passcode gate ─────────────────────────────────────────────────────── -->
+<div id="gate" class="wrap gate">
+  <div class="card">
+    <h1>Shared Portfolio</h1>
+    <p class="sub" style="margin-bottom:18px">Enter the passcode to view and edit.</p>
+    <div id="gate-err" class="banner banner-err"></div>
+    <label for="pass">Passcode</label>
+    <input id="pass" type="password" autocomplete="current-password"
+           onkeydown="if(event.key==='Enter')unlock()" />
+    <button class="btn btn-primary" style="width:100%;margin-top:14px" onclick="unlock()">
+      <span id="gate-ico"></span> Unlock
+    </button>
+  </div>
+</div>
+
+<!-- ── app ──────────────────────────────────────────────────────────────── -->
+<div id="app" class="wrap hide">
+
+  <div class="spread" style="margin-bottom:18px">
+    <div>
+      <h1>Shared Portfolio Tracker</h1>
+      <p class="sub">Everyone with the passcode sees the same holdings &middot; live prices from Yahoo</p>
+    </div>
+    <div class="row">
+      <button class="btn" onclick="refreshAll()"><span id="ref-ico">&#8635;</span> Refresh</button>
+      <button class="btn" onclick="lock()">Lock</button>
+    </div>
+  </div>
+
+  <div id="msg" class="banner"></div>
+  <div id="mem-warn" class="banner banner-warn">
+    <strong>Not saving permanently.</strong> The server has no database configured
+    (<code>DATABASE_URL</code>), so changes are lost when it restarts.
+  </div>
+
+  <!-- portfolio picker -->
+  <div class="card">
+    <div class="row">
+      <div style="flex:1;min-width:200px">
+        <label for="pf-pick">Portfolio</label>
+        <select id="pf-pick" onchange="pickPf(this.value)"></select>
+      </div>
+      <div style="align-self:flex-end" class="row">
+        <button class="btn btn-sm" onclick="newPf()">+ New</button>
+        <button class="btn btn-sm" onclick="renamePf()">Rename</button>
+        <button class="btn btn-sm btn-danger" onclick="delPf()">Delete</button>
+      </div>
+    </div>
+    <div id="saved-note" class="sub" style="margin-top:12px"></div>
+  </div>
+
+  <!-- totals -->
+  <div class="row" style="margin-bottom:16px" id="stats"></div>
+
+  <!-- add holding -->
+  <div class="card">
+    <div class="row" style="align-items:flex-end">
+      <div style="flex:1;min-width:110px">
+        <label for="in-sym">Ticker</label>
+        <input id="in-sym" placeholder="AAPL" maxlength="12"
+               onkeydown="if(event.key==='Enter')addHolding()" />
+      </div>
+      <div style="flex:1;min-width:110px">
+        <label for="in-target">Target %</label>
+        <input id="in-target" type="number" step="0.01" min="0" placeholder="15"
+               onkeydown="if(event.key==='Enter')addHolding()" />
+      </div>
+      <div style="flex:1;min-width:110px">
+        <label for="in-buy">Buy price</label>
+        <input id="in-buy" type="number" step="0.0001" min="0" placeholder="182.50"
+               onkeydown="if(event.key==='Enter')addHolding()" />
+      </div>
+      <button class="btn btn-primary" onclick="addHolding()">Add</button>
+      <button class="btn" onclick="openImport()">Paste list</button>
+    </div>
+  </div>
+
+  <!-- holdings -->
+  <div class="card" style="padding:0;overflow:hidden">
+    <div class="table-wrap"><table id="tbl">
+      <tbody><tr><td class="empty">No holdings yet — add one above, or paste a list.</td></tr></tbody>
+    </table></div>
+  </div>
+
+  <p class="foot">
+    Target % is what you set. Current % is where each position has drifted to as prices moved
+    &mdash; a position that outran the others grows past its target. Drift is the gap between them.<br />
+    Prices are delayed daily closes from Yahoo Finance. This is a tracking tool, not investment
+    advice, and nothing here is a recommendation to buy or sell anything.
+  </p>
+</div>
+
+<!-- ── paste-import modal ────────────────────────────────────────────────── -->
+<div id="imp" class="modal">
+  <div class="modal-box">
+    <div style="font-size:16px;font-weight:800;margin-bottom:4px">Paste holdings</div>
+    <p class="sub" style="margin-bottom:14px">
+      One per line: <code>TICKER, target%, buyPrice</code> &mdash; commas, tabs or spaces.
+      Pasting <strong>replaces</strong> everything in this portfolio.
+    </p>
+    <textarea id="imp-text" placeholder="AAPL, 15, 182.50&#10;MSFT, 12, 410.00&#10;VOO, 40, 505.10"></textarea>
+    <div id="imp-err" class="banner banner-err" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:14px;justify-content:flex-end">
+      <button class="btn" onclick="closeImport()">Cancel</button>
+      <button class="btn btn-primary" onclick="doImport()">Import</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ── state ────────────────────────────────────────────────────────────────────
+let pass      = localStorage.getItem('pf_pass') || '';
+let doc       = { portfolios: [] };   // the shared document
+let version   = 0;                    // version we loaded — sent back on save
+let active    = 0;                    // index into doc.portfolios
+let prices    = {};                   // sym -> {cur, prev}
+let persistent = true;
+
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const $ = id => document.getElementById(id);
+const pf = () => doc.portfolios[active];
+
+function say(text, kind) {
+  const b = $('msg');
+  if (!text) { b.className = 'banner'; return; }
+  b.className = 'banner show banner-' + (kind || 'ok');
+  b.textContent = text;
+  if (kind === 'ok') setTimeout(() => { if (b.textContent === text) b.className = 'banner'; }, 3500);
+}
+
+// ── server ───────────────────────────────────────────────────────────────────
+async function api(method, body) {
+  const res = await fetch('/pf-shared', {
+    method,
+    headers: { 'X-PF-Pass': pass, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  return { ok: res.ok, status: res.status, data };
+}
+
+function adopt(state) {
+  doc        = state.doc && Array.isArray(state.doc.portfolios) ? state.doc : { portfolios: [] };
+  version    = state.version || 0;
+  persistent = state.persistent !== false;
+  $('mem-warn').classList.toggle('show', !persistent);
+  if (!doc.portfolios.length)
+    doc.portfolios = [{ name: 'Main', holdings: [] }];
+  active = Math.min(active, doc.portfolios.length - 1);
+  renderSavedNote(state);
+}
+
+function renderSavedNote(state) {
+  const n = $('saved-note');
+  if (!state || !state.version) { n.textContent = 'Not saved to the server yet.'; return; }
+  const when = state.updated_at ? new Date(state.updated_at * 1000).toLocaleString() : 'unknown time';
+  const who  = state.updated_by ? ' by ' + esc(state.updated_by) : '';
+  n.innerHTML = `Last saved ${esc(when)}${who} &middot; <span class="pill">v${state.version}</span>`;
+}
+
+async function load() {
+  const r = await api('GET');
+  if (!r.ok) throw new Error(r.data.error || ('Server error ' + r.status));
+  adopt(r.data);
+}
+
+async function save() {
+  const who = (localStorage.getItem('pf_who') || '').trim();
+  const r = await api('POST', { doc, version, who });
+  if (r.status === 409) {
+    // Someone else saved first. Take their version so nothing is lost, and say so.
+    adopt(r.data);
+    render();
+    say(r.data.error || 'Someone else saved first — showing their version.', 'warn');
+    return false;
+  }
+  if (!r.ok) { say(r.data.error || ('Could not save (' + r.status + ')'), 'err'); return false; }
+  adopt(r.data);
+  return true;
+}
+
+/** Apply a local mutation, then persist it. Reverts the UI if the save fails. */
+async function mutate(fn) {
+  const backup = JSON.stringify(doc);
+  fn();
+  render();
+  const ok = await save();
+  if (!ok && JSON.stringify(doc) === JSON.stringify(JSON.parse(backup))) return;
+  if (!ok) { doc = JSON.parse(backup); render(); }
+  else render();
+}
+
+// ── prices ───────────────────────────────────────────────────────────────────
+async function fetchPrice(sym) {
+  const res = await fetch('/etf-chart?sym=' + encodeURIComponent(sym));
+  const d = await res.json();
+  if (d.error || !d.ohlc || !d.ohlc.length) throw new Error(d.error || 'no data');
+  const o = d.ohlc;
+  return { cur: o[o.length - 1][4], prev: o.length > 1 ? o[o.length - 2][4] : o[o.length - 1][4] };
+}
+
+async function loadPrices() {
+  const syms = [...new Set(pf().holdings.map(h => h.sym))];
+  const missing = syms.filter(s => !prices[s]);
+  if (!missing.length) return;
+  const results = await Promise.allSettled(missing.map(fetchPrice));
+  const failed = [];
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled') prices[missing[i]] = r.value;
+    else failed.push(missing[i]);
+  });
+  if (failed.length) say('No price data for: ' + failed.join(', '), 'warn');
+}
+
+async function refreshAll() {
+  const ico = $('ref-ico');
+  ico.innerHTML = '<span class="spin"></span>';
+  prices = {};
+  try {
+    await load();
+    await loadPrices();
+    render();
+    say('Up to date.', 'ok');
+  } catch (e) {
+    say('Refresh failed: ' + e.message, 'err');
+  } finally { ico.textContent = '↻'; }
+}
+
+// ── math ─────────────────────────────────────────────────────────────────────
+// Each position starts at its target weight and grows by cur/buy. Current % is
+// that grown value as a share of the whole book, so weights drift apart exactly
+// as the prices move. Whatever the targets leave short of 100% is cash, flat.
+function compute() {
+  const hs = pf().holdings;
+  const sumTarget = hs.reduce((a, h) => a + h.target, 0);
+  const cash = Math.max(0, 100 - sumTarget);
+  const rows = hs.map(h => {
+    const p = prices[h.sym];
+    const cur = p ? p.cur : null;
+    const growth = (cur && h.buy > 0) ? cur / h.buy : 1;
+    return {
+      sym: h.sym, target: h.target, buy: h.buy, cur,
+      ret: cur ? (cur / h.buy - 1) * 100 : null,
+      day: (p && p.prev) ? (p.cur / p.prev - 1) * 100 : null,
+      value: h.target * growth,
+    };
+  });
+  const total = rows.reduce((a, r) => a + r.value, 0) + cash;
+  rows.forEach(r => { r.curPct = total > 0 ? r.value / total * 100 : 0;
+                      r.drift  = r.curPct - r.target; });
+  const base = sumTarget + cash;
+  return { rows, cash, total, sumTarget,
+           ret: base > 0 ? (total / base - 1) * 100 : 0 };
+}
+
+// ── render ───────────────────────────────────────────────────────────────────
+const sgn  = v => (v > 0 ? 'up' : v < 0 ? 'down' : 'dim');
+const pct  = v => (v == null ? '&mdash;' : (v > 0 ? '+' : '') + v.toFixed(2) + '%');
+const usd  = v => (v == null ? '&mdash;' : '$' + v.toLocaleString(undefined,
+                   { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+
+function render() {
+  // portfolio picker
+  $('pf-pick').innerHTML = doc.portfolios.map((p, i) =>
+    `<option value="${i}"${i === active ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+
+  const { rows, cash, ret, sumTarget } = compute();
+
+  $('stats').innerHTML = `
+    <div class="stat"><div class="stat-label">Portfolio return</div>
+      <div class="stat-value ${sgn(ret)}">${pct(ret)}</div></div>
+    <div class="stat"><div class="stat-label">Positions</div>
+      <div class="stat-value">${rows.length}</div></div>
+    <div class="stat"><div class="stat-label">Targets total</div>
+      <div class="stat-value ${sumTarget > 100 ? 'down' : ''}">${sumTarget.toFixed(1)}%</div></div>
+    <div class="stat"><div class="stat-label">Cash</div>
+      <div class="stat-value dim">${cash.toFixed(1)}%</div></div>`;
+
+  if (!rows.length) {
+    $('tbl').innerHTML = '<tbody><tr><td class="empty">' +
+      'No holdings yet — add one above, or paste a list.</td></tr></tbody>';
+    return;
+  }
+
+  rows.sort((a, b) => b.curPct - a.curPct);
+  $('tbl').innerHTML = `
+    <thead><tr>
+      <th>Ticker</th><th class="r">Target %</th><th class="r">Current %</th>
+      <th class="r">Drift</th><th class="r">Buy</th><th class="r">Price</th>
+      <th class="r">Day</th><th class="r">Return</th><th></th>
+    </tr></thead>
+    <tbody>${rows.map(r => `
+      <tr>
+        <td class="sym">${esc(r.sym)}</td>
+        <td class="r dim">${r.target.toFixed(2)}%</td>
+        <td class="r"><strong>${r.curPct.toFixed(2)}%</strong></td>
+        <td class="r ${sgn(r.drift)}">${pct(r.drift)}</td>
+        <td class="r dim">${usd(r.buy)}</td>
+        <td class="r">${usd(r.cur)}</td>
+        <td class="r ${sgn(r.day)}">${pct(r.day)}</td>
+        <td class="r ${sgn(r.ret)}">${pct(r.ret)}</td>
+        <td class="r"><button class="btn btn-sm btn-danger"
+            onclick="removeHolding('${esc(r.sym)}')">&times;</button></td>
+      </tr>`).join('')}
+      <tr>
+        <td class="sym dim">CASH</td>
+        <td class="r dim">${cash.toFixed(2)}%</td>
+        <td class="r dim">${cash.toFixed(2)}%</td>
+        <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
+        <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
+        <td class="r dim">&mdash;</td><td></td>
+      </tr>
+    </tbody>`;
+}
+
+// ── actions ──────────────────────────────────────────────────────────────────
+const cleanSym = s => String(s).toUpperCase().replace(/[^A-Z0-9.\-^]/g, '').slice(0, 12);
+
+async function addHolding() {
+  const sym    = cleanSym($('in-sym').value);
+  const target = parseFloat($('in-target').value);
+  const buy    = parseFloat($('in-buy').value);
+  if (!sym)                    return say('Enter a ticker.', 'err');
+  if (!(target > 0))           return say('Enter a target % above 0.', 'err');
+  if (!(buy > 0))              return say('Enter the price you bought at.', 'err');
+  if (pf().holdings.some(h => h.sym === sym))
+    return say(sym + ' is already in this portfolio.', 'err');
+
+  ['in-sym', 'in-target', 'in-buy'].forEach(id => $(id).value = '');
+  await mutate(() => pf().holdings.push({ sym, target, buy }));
+  await loadPrices();
+  render();
+}
+
+async function removeHolding(sym) {
+  await mutate(() => {
+    pf().holdings = pf().holdings.filter(h => h.sym !== sym);
+  });
+}
+
+async function newPf() {
+  const n = (prompt('Name the new portfolio:', 'Portfolio ' + (doc.portfolios.length + 1)) || '').trim();
+  if (!n) return;
+  await mutate(() => { doc.portfolios.push({ name: n.slice(0, 60), holdings: [] });
+                       active = doc.portfolios.length - 1; });
+}
+
+async function renamePf() {
+  const n = (prompt('Rename portfolio:', pf().name) || '').trim();
+  if (!n) return;
+  await mutate(() => { pf().name = n.slice(0, 60); });
+}
+
+async function delPf() {
+  if (doc.portfolios.length === 1) return say('Keep at least one portfolio.', 'err');
+  if (!confirm('Delete "' + pf().name + '" for everyone?')) return;
+  await mutate(() => { doc.portfolios.splice(active, 1); active = Math.max(0, active - 1); });
+}
+
+async function pickPf(i) {
+  active = +i;
+  render();
+  await loadPrices();
+  render();
+}
+
+// paste import
+function openImport() { $('imp').classList.add('show'); $('imp-err').className = 'banner banner-err';
+                        $('imp-text').value = ''; $('imp-text').focus(); }
+function closeImport(){ $('imp').classList.remove('show'); }
+
+async function doImport() {
+  const lines = $('imp-text').value.split('\n').map(l => l.trim()).filter(Boolean);
+  const out = [], bad = [];
+  for (const line of lines) {
+    const p = line.split(/[,\t]+|\s{2,}|\s+/).map(s => s.trim()).filter(Boolean);
+    const sym = cleanSym(p[0] || ''), target = parseFloat(p[1]), buy = parseFloat(p[2]);
+    if (!sym || !(target > 0) || !(buy > 0)) { bad.push(line); continue; }
+    if (out.some(h => h.sym === sym)) { bad.push(line + '  (duplicate)'); continue; }
+    out.push({ sym, target, buy });
+  }
+  if (bad.length) {
+    const e = $('imp-err');
+    e.className = 'banner show banner-err';
+    e.textContent = "Couldn't read " + bad.length + ' line(s): ' + bad.slice(0, 3).join(' · ') +
+                    (bad.length > 3 ? ' …' : '');
+    return;
+  }
+  if (!out.length) { $('imp-err').className = 'banner show banner-err';
+                     $('imp-err').textContent = 'Nothing to import.'; return; }
+  closeImport();
+  await mutate(() => { pf().holdings = out; });
+  await loadPrices();
+  render();
+  say('Imported ' + out.length + ' holdings.', 'ok');
+}
+
+// ── gate ─────────────────────────────────────────────────────────────────────
+async function unlock() {
+  const v = $('pass').value.trim();
+  if (!v) return;
+  pass = v;
+  const ico = $('gate-ico');
+  ico.innerHTML = '<span class="spin"></span>';
+  try {
+    await load();
+    localStorage.setItem('pf_pass', pass);
+    if (!localStorage.getItem('pf_who')) {
+      const who = (prompt('Your name? (shown to others as who edited last)', '') || '').trim();
+      if (who) localStorage.setItem('pf_who', who.slice(0, 60));
+    }
+    $('gate').classList.add('hide');
+    $('app').classList.remove('hide');
+    render();
+    await loadPrices();
+    render();
+  } catch (e) {
+    pass = '';
+    const b = $('gate-err');
+    b.className = 'banner show banner-err';
+    b.textContent = e.message;
+  } finally { ico.textContent = ''; }
+}
+
+function lock() {
+  localStorage.removeItem('pf_pass');
+  pass = '';
+  $('app').classList.add('hide');
+  $('gate').classList.remove('hide');
+  $('pass').value = '';
+}
+
+// auto-unlock if the passcode is remembered
+if (pass) {
+  $('pass').value = pass;
+  unlock();
+}
+</script>
+</body>
+</html>
