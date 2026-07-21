@@ -1040,10 +1040,14 @@ function exportTrades() {
 //
 // The active portfolio draws as candles; comparison portfolios and the S&P 500
 // benchmark (^GSPC, SPY fallback) draw as lines through each bucket's close.
-const CHART_PERIODS = ['1D', '1W', '1M', 'YTD', '1Y', '5Y'];
+const CHART_PERIODS = ['1D', '1W', '1M', '3M', '6M', 'YTD', '1Y', '5Y'];
 const LINE_COLORS   = ['#6ca8c6', '#b45309', '#8f4fbf', '#0f9d6b', '#d64545'];
 const CANDLE_CFG = { '1H': { api: '15m' }, '1D': { api: '60m' }, '1W': { api: '1d' } };
+// 1H candles need 15m bars, and Yahoo keeps only ~60 days of those — so 3M and
+// 6M offer daily and weekly only, or the window would silently show 60 days of
+// data under a "3M" label.
 const CANDLE_OK  = { '1D': ['1H'], '1W': ['1H', '1D'], '1M': ['1H', '1D', '1W'],
+                     '3M': ['1D', '1W'], '6M': ['1D', '1W'],
                      'YTD': ['1D', '1W'], '1Y': ['1D', '1W'], '5Y': ['1W'] };
 
 const getBars = (api, sym) => api === '1d' ? series[sym] : intraday[api][sym];
@@ -1134,6 +1138,8 @@ function periodStartIdx(masterTs, period) {
   const d = new Date(lastTs.length > 10 ? lastTs + 'Z' : lastTs + 'T00:00');
   if (period === '1W')       d.setDate(d.getDate() - 7);
   else if (period === '1M')  d.setMonth(d.getMonth() - 1);
+  else if (period === '3M')  d.setMonth(d.getMonth() - 3);
+  else if (period === '6M')  d.setMonth(d.getMonth() - 6);
   else if (period === 'YTD') { d.setMonth(0, 1); d.setHours(0, 0, 0, 0); }
   else if (period === '1Y')  d.setFullYear(d.getFullYear() - 1);
   const cut = d.toISOString().slice(0, 10);
