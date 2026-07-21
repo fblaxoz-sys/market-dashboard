@@ -61,6 +61,7 @@ tr:last-child td{border-bottom:none}
      letter-spacing:.5px;font-weight:700}
 .tag-buy{background:var(--green-dim);color:var(--green);border:1px solid #2dd4a044}
 .tag-sell{background:var(--red-dim);color:var(--red);border:1px solid #f0526a44}
+.tag-open{background:#7c6af71a;color:var(--accent2);border:1px solid #7c6af744}
 .stat{background:var(--surface2);border:1px solid var(--border);border-radius:10px;
       padding:14px 16px;flex:1;min-width:145px}
 .stat-label{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase}
@@ -134,7 +135,8 @@ tr:last-child td{border-bottom:none}
         <select id="pf-pick" onchange="pickPf(this.value)"></select>
       </div>
       <div style="align-self:flex-end" class="row">
-        <button class="btn btn-sm" onclick="newPf()">+ New</button>
+        <button class="btn btn-sm" onclick="newPf()">+ Empty</button>
+        <button class="btn btn-sm" onclick="openExisting()">+ From what I own</button>
         <button class="btn btn-sm" onclick="renamePf()">Rename</button>
         <button class="btn btn-sm btn-danger" onclick="delPf()">Delete</button>
       </div>
@@ -219,6 +221,28 @@ tr:last-child td{border-bottom:none}
     Prices are delayed daily closes from Yahoo Finance. This is a tracking tool, not
     investment advice, and nothing here is a recommendation to buy or sell anything.
   </p>
+</div>
+
+<!-- ── existing-portfolio modal ──────────────────────────────────────────── -->
+<div id="exi" class="modal">
+  <div class="modal-box">
+    <div style="font-size:16px;font-weight:800;margin-bottom:4px">Set up a portfolio you already own</div>
+    <p class="sub" style="margin-bottom:14px">
+      One holding per line: <code>TICKER, percent now, avg cost</code>.<br />
+      The percent is what it&rsquo;s worth <strong>today</strong> &mdash; entry sizes get worked out
+      backwards so the weights land exactly there. <strong>Avg cost is optional</strong>;
+      leave it off and that holding starts flat at today&rsquo;s price.
+    </p>
+    <label for="exi-name">Portfolio name</label>
+    <input id="exi-name" placeholder="My Account" maxlength="60" style="margin-bottom:12px" />
+    <textarea id="exi-text" placeholder="AAPL, 20, 145.30&#10;MSFT, 15, 380.00&#10;VOO, 35&#10;NVDA, 10, 95.20"></textarea>
+    <div id="exi-err" class="banner banner-err" style="margin-top:12px"></div>
+    <p class="sub" id="exi-note" style="margin-top:10px"></p>
+    <div class="row" style="margin-top:14px;justify-content:flex-end">
+      <button class="btn" onclick="closeExisting()">Cancel</button>
+      <button class="btn btn-primary" id="exi-go" onclick="doExisting()">Create it</button>
+    </div>
+  </div>
 </div>
 
 <!-- ── paste-import modal ────────────────────────────────────────────────── -->
@@ -460,8 +484,11 @@ function replay(trades) {
 }
 
 // ── render ───────────────────────────────────────────────────────────────────
-const sgn = v => (v > 0 ? 'up' : v < 0 ? 'down' : 'dim');
-const pct = v => (v == null ? '&mdash;' : (v > 0 ? '+' : '') + v.toFixed(2) + '%');
+// Values that round to zero are zero — otherwise floating-point dust renders as
+// "-0.00%" in red, which reads as a loss.
+const z   = v => (v == null ? null : Math.abs(v) < 0.005 ? 0 : v);
+const sgn = v => { v = z(v); return v > 0 ? 'up' : v < 0 ? 'down' : 'dim'; };
+const pct = v => { v = z(v); return v == null ? '&mdash;' : (v > 0 ? '+' : '') + v.toFixed(2) + '%'; };
 const usd = v => (v == null ? '&mdash;' : '$' + v.toLocaleString(undefined,
                   { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const u   = v => (v == null ? '&mdash;' : v.toFixed(2) + '%');
@@ -539,14 +566,19 @@ function render() {
       </tr></thead>
       <tbody>${log.map(t => {
         const warn = st.notes[t.id];
-        const size = t.side === 'buy' ? (+t.amt).toFixed(2) + '% of book'
+        // An opening position is a reconstruction of something already owned, not
+        // a trade that happened — say so rather than showing a solved entry weight
+        // the user never typed.
+        const size = t.opening        ? 'opening position'
+                   : t.side === 'buy' ? (+t.amt).toFixed(2) + '% of book'
                    : t.mode === 'all'  ? 'closed out'
                    : t.mode === 'frac' ? (+t.amt).toFixed(0) + '% of position'
                    :                     (+t.amt).toFixed(2) + '% of book';
+        const tag = t.opening ? ['open', 'OPEN'] : t.side === 'buy' ? ['buy', 'BUY'] : ['sell', 'SELL'];
         return `
         <tr>
           <td class="dim">${esc(fmtTs(t.ts))}</td>
-          <td><span class="tag tag-${t.side === 'buy' ? 'buy' : 'sell'}">${t.side === 'buy' ? 'BUY' : 'SELL'}</span>${
+          <td><span class="tag tag-${tag[0]}">${tag[1]}</span>${
               warn ? ` <span class="dim" title="${esc(warn)}">⚠</span>` : ''}</td>
           <td class="sym">${esc(t.sym)}</td>
           <td class="r dim">${esc(size)}</td>
@@ -650,6 +682,106 @@ async function delPf() {
   await mutate(() => { doc.portfolios.splice(active, 1); active = Math.max(0, active - 1); });
 }
 async function pickPf(i) { active = +i; render(); await loadPrices(); render(); }
+
+// ── new portfolio from positions you already hold ────────────────────────────
+// You state what each holding is worth TODAY (as a % of the book) plus what you
+// paid. Entry sizes have to be solved backwards: a holding that has doubled needs
+// a smaller entry weight to sit at the same current %, because the growth is
+// already baked in. With gᵢ = current/cost and pᵢ the target share of the book,
+//
+//     V  = 100 / (1 − P + Σ(pᵢ/gᵢ))        P = Σpᵢ, V = resulting book value
+//     wᵢ = pᵢ · V / gᵢ                     entry weight, in units of the 100 base
+//
+// Leaving cost blank means gᵢ = 1, which collapses to wᵢ = pᵢ — you simply start
+// at today's price with no gain yet.
+function solveOpening(rows) {
+  const P = rows.reduce((a, r) => a + r.p, 0);                 // as a fraction
+  const V = 100 / (1 - P + rows.reduce((a, r) => a + r.p / r.g, 0));
+  return rows.map(r => ({ ...r, w: r.p * V / r.g }));
+}
+
+function openExisting() {
+  $('exi').classList.add('show');
+  $('exi-err').className = 'banner banner-err';
+  $('exi-note').textContent = '';
+  $('exi-name').value = '';
+  $('exi-text').value = '';
+  $('exi-name').focus();
+}
+function closeExisting() { $('exi').classList.remove('show'); }
+
+function exiFail(msg) {
+  const e = $('exi-err');
+  e.className = 'banner show banner-err';
+  e.textContent = msg;
+}
+
+async function doExisting() {
+  const name = $('exi-name').value.trim();
+  if (!name) return exiFail('Give the portfolio a name.');
+
+  const lines = $('exi-text').value.split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return exiFail('Add at least one holding.');
+
+  const parsed = [], bad = [];
+  for (const line of lines) {
+    const c = line.split(/[,\t]+|\s{2,}|\s+/).map(s => s.trim()).filter(Boolean);
+    const sym = cleanSym(c[0] || ''), pctNow = parseFloat(c[1]);
+    const cost = c.length > 2 ? parseFloat(c[2]) : null;        // optional
+    if (!sym || !(pctNow > 0) || (c.length > 2 && !(cost > 0))) { bad.push(line); continue; }
+    if (parsed.some(r => r.sym === sym)) { bad.push(line + '  (duplicate)'); continue; }
+    parsed.push({ sym, pctNow, cost });
+  }
+  if (bad.length)
+    return exiFail("Couldn't read " + bad.length + ' line(s): ' + bad.slice(0, 3).join(' · ') +
+                   (bad.length > 3 ? ' …' : ''));
+
+  const totalPct = parsed.reduce((a, r) => a + r.pctNow, 0);
+  if (totalPct > 100.0001)
+    return exiFail('Those add up to ' + totalPct.toFixed(2) + '% — more than the whole portfolio.');
+
+  // Need live prices to convert "what it's worth now" into an entry size.
+  const btn = $('exi-go');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> Pricing…';
+  try {
+    const results = await Promise.allSettled(parsed.map(r => fetchPrice(r.sym)));
+    const missing = [];
+    results.forEach((res, i) => {
+      if (res.status === 'fulfilled') prices[parsed[i].sym] = res.value;
+      else missing.push(parsed[i].sym);
+    });
+    if (missing.length)
+      return exiFail('No price data for: ' + missing.join(', ') +
+                     '. Check the ticker, or remove that line.');
+
+    const rows = parsed.map(r => {
+      const cur = prices[r.sym].cur;
+      const buy = r.cost != null ? r.cost : cur;    // no cost given → start flat
+      return { sym: r.sym, p: r.pctNow / 100, g: cur / buy, buy, pctNow: r.pctNow };
+    });
+
+    const solved = solveOpening(rows);
+    const ts = localNow();
+    const trades = solved.map(r => ({
+      id: newId(), ts, side: 'buy', sym: r.sym, mode: 'pct',
+      amt: +r.w.toFixed(6), price: r.buy, opening: true,
+    }));
+
+    closeExisting();
+    await mutate(() => {
+      doc.portfolios.push({ name: name.slice(0, 60), trades,
+                            targets: Object.fromEntries(solved.map(r => [r.sym, r.pctNow])) });
+      active = doc.portfolios.length - 1;
+    });
+    await loadPrices();
+    render();
+    say('Created "' + name + '" with ' + trades.length + ' holdings. Log trades from here.', 'ok');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create it';
+  }
+}
 
 // ── paste import → opening buys ──────────────────────────────────────────────
 function openImport() { $('imp').classList.add('show'); $('imp-err').className = 'banner banner-err';
