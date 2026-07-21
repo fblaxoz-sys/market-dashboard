@@ -565,8 +565,7 @@ function replay(trades) {
     invested += value;
     rows.push({ sym, shares: p.shares, avg, cur, value,
                 ret: cur != null ? (cur / avg - 1) * 100 : null,
-                day: (q && q.prev) ? (q.cur / q.prev - 1) * 100 : null,
-                unreal: cur != null ? p.shares * (cur - avg) : 0 });
+                day: (q && q.prev) ? (q.cur / q.prev - 1) * 100 : null });
   }
   const total = invested + cash;
   rows.forEach(r => { r.curPct = total > 0 ? r.value / total * 100 : 0; });
@@ -622,7 +621,7 @@ function render(opts) {
     $('pos-tbl').innerHTML = `
       <thead><tr>
         ${th('sym','Ticker')}${th('curPct','Current %')}${th('avg','Avg cost')}${th('cur','Price')}
-        ${th('day','Day')}${th('ret','Return')}${th('unreal','Unrealized')}<th></th>
+        ${th('day','Day')}${th('ret','Return')}<th></th>
       </tr></thead>
       <tbody>${rows.map(r => `
         <tr>
@@ -632,7 +631,6 @@ function render(opts) {
           <td class="r">${usd(r.cur)}</td>
           <td class="r ${sgn(r.day)}">${pct(r.day)}</td>
           <td class="r ${sgn(r.ret)}">${pct(r.ret)}</td>
-          <td class="r ${sgn(r.unreal)}">${u(r.unreal)}</td>
           <td class="r"><button class="btn btn-sm btn-danger" title="Remove ${esc(r.sym)}"
               onclick="delHolding('${esc(r.sym)}')">&times;</button></td>
         </tr>`).join('')}
@@ -641,7 +639,7 @@ function render(opts) {
           <td class="r dim">${st.total > 0 ? (st.cash / st.total * 100).toFixed(2) : '0.00'}%</td>
           <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
           <td class="r dim">&mdash;</td><td class="r dim">&mdash;</td>
-          <td class="r dim">${u(st.cash)}</td><td class="r dim"></td>
+          <td class="r dim"></td>
         </tr>
       </tbody>`;
   }
