@@ -10,7 +10,9 @@ in `proxy_server.py`, plus `psycopg[binary]` in `requirements.txt`.
 A multi-user portfolio tracker with a trade log, backed by Neon Postgres. One
 shared document; everyone with the passcode sees the same book.
 
-**Full documentation lives in `~/Desktop/portfolio-tracker-handoff/`.** Read
+**Full documentation lives in `docs/portfolio-tracker-handoff/` in this repo**
+(also reachable at `~/Desktop/portfolio-tracker-handoff`, a symlink to it — one
+source of truth, no copy to go stale). Read
 `ARCHITECTURE.md` and `DECISIONS.md` there before changing anything — several
 choices look wrong until you know the reason, notably:
 
@@ -27,7 +29,7 @@ choices look wrong until you know the reason, notably:
 
 ### Keep the handoff folder current
 
-**Whenever you change the tracker, update `~/Desktop/portfolio-tracker-handoff/`
+**Whenever you change the tracker, update `docs/portfolio-tracker-handoff/`
 in the same session.** That folder is what gets handed to collaborators, and it is
 only as accurate as the last person to touch it.
 
@@ -37,8 +39,13 @@ only as accurate as the last person to touch it.
 - a new check worth re-running → `TESTING.md`
 - env vars, deploy or local-dev changes → `SETUP.md`
 
-Never write credentials into that folder — it's meant to be passed around.
-`DATABASE_URL` and `PF_PASSCODE` live only in Render's environment settings.
+Never write credentials into that folder — it's meant to be passed around, and
+it is now **committed to this repo**, so anything written there is permanent and
+visible to everyone with repo access. `DATABASE_URL` and `PF_PASSCODE` live only
+in Render's environment settings.
+
+Commit doc updates alongside the code change they describe, so the two never
+drift apart in history.
 
 ## 2. Market Dashboard (older, unrelated)
 
