@@ -10,6 +10,7 @@ import urllib.request, urllib.parse, json, os, traceback, time, threading, colle
 import shared_store
 
 _CHART_CACHE = {}   # "chart:SYM:interval" -> (fetched_at, payload_bytes) — see /etf-chart
+_YAHOO_SEM = threading.BoundedSemaphore(4)   # cap concurrent Yahoo hits (throttle-avoidance)
 
 # ── Per-IP rate limiting on the expensive endpoints ───────────────────────────
 # The compute-heavy routes are unauthenticated, so a burst of hits (or a bot
@@ -1379,11 +1380,33 @@ QUAD_PLAYBOOK = {
 
 def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d"):
     import urllib.request, json as _json, datetime as _dt
-    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym.replace('^','%5E')}"
-           f"?range={rng}&interval={interval}" + ("&events=div" if divs else ""))
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        d = _json.load(r)
+    # Yahoo intermittently 429s/5xxes bursts from shared datacenter IPs like
+    # Render's — the classic "no price for X, fine on the next load". Retry
+    # across both query hosts with a short backoff, and cap concurrent Yahoo
+    # calls (semaphore) so a prefetch burst doesn't trigger the throttle at all.
+    qs = (f"/v8/finance/chart/{sym.replace('^','%5E')}"
+          f"?range={rng}&interval={interval}" + ("&events=div" if divs else ""))
+    last_err = None
+    d = None
+    for attempt, host in enumerate(['query1.finance.yahoo.com',
+                                    'query2.finance.yahoo.com',
+                                    'query1.finance.yahoo.com']):
+        try:
+            req = urllib.request.Request(f"https://{host}{qs}",
+                                         headers={'User-Agent': 'Mozilla/5.0'})
+            with _YAHOO_SEM:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    d = _json.load(r)
+            if d.get('chart', {}).get('result'):
+                break
+            last_err = RuntimeError(str(d.get('chart', {}).get('error') or 'empty result'))
+            d = None
+        except Exception as e:
+            last_err = e
+            d = None
+        time.sleep(0.4 * (attempt + 1))
+    if d is None:
+        raise last_err or RuntimeError('yahoo fetch failed')
     res = d['chart']['result'][0]; q = res['indicators']['quote'][0]
     ts = res['timestamp']
     # Daily bars key by date; intraday bars need the time too. UTC keeps the
@@ -2104,6 +2127,19 @@ class Handler(SimpleHTTPRequestHandler):
     # Deliberately no Access-Control-Allow-Origin here: tracker.html is served
     # from this same origin, and omitting CORS stops any other site from reading
     # the holdings out of a logged-in visitor's browser.
+    def _send_chart_payload(self, payload, stale=False):
+        body, enc = payload, None
+        if 'gzip' in (self.headers.get('Accept-Encoding') or ''):
+            body, enc = gzip.compress(payload, 6), 'gzip'    # ~7x smaller intraday
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Cache-Control', 'no-store' if stale else 'public, max-age=120')
+        if stale: self.send_header('X-Stale', '1')
+        if enc: self.send_header('Content-Encoding', enc)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+
     def _pf_json(self, code, obj):
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -2437,17 +2473,17 @@ class Handler(SimpleHTTPRequestHandler):
                     if len(_CHART_CACHE) > 300:          # bound memory on the 512MB tier
                         for k, _ in sorted(_CHART_CACHE.items(), key=lambda x: x[1][0])[:150]:
                             _CHART_CACHE.pop(k, None)    # tolerate concurrent evictors
-                body, enc = payload, None
-                if 'gzip' in (self.headers.get('Accept-Encoding') or ''):
-                    body, enc = gzip.compress(payload, 6), 'gzip'    # ~7x smaller intraday
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.send_header('Cache-Control', 'public, max-age=120')
-                if enc: self.send_header('Content-Encoding', enc)
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers(); self.wfile.write(body)
+                self._send_chart_payload(payload)
             except Exception as e:
+                # Yahoo down or throttling: an expired cache entry is still a far
+                # better answer than an error — entries aren't deleted on expiry,
+                # so once ANY viewer has seen a symbol, later hiccups are covered.
+                stale = _CHART_CACHE.get(key)
+                if stale:
+                    print(f"[chart] {sym}/{iv}: yahoo failed ({e}); serving stale "
+                          f"({int(time.time() - stale[0])}s old)")
+                    self._send_chart_payload(stale[1], stale=True)
+                    return
                 self.send_response(500)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')

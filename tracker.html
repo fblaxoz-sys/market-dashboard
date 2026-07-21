@@ -428,11 +428,25 @@ function _once(key, fn) {
   return p;
 }
 
+// Yahoo (via the proxy) fails transiently now and then; one client-side retry
+// after a beat turns most "no price for X this load" moments into a non-event.
+async function fetchChartJson(url) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(url);
+      const d = await res.json();
+      if (d.error || !d.ohlc || !d.ohlc.length) throw new Error(d.error || 'no data');
+      return d;
+    } catch (e) {
+      if (attempt >= 1) throw e;
+      await new Promise(r => setTimeout(r, 800));
+    }
+  }
+}
+
 function fetchPrice(sym) {
   return _once('1d:' + sym, async () => {
-    const res = await fetch('/etf-chart?sym=' + encodeURIComponent(sym));
-    const d = await res.json();
-    if (d.error || !d.ohlc || !d.ohlc.length) throw new Error(d.error || 'no data');
+    const d = await fetchChartJson('/etf-chart?sym=' + encodeURIComponent(sym));
     const o = d.ohlc;
     series[sym] = o.map(b => [b[0], b[4]]);   // cache full [date, close] history for the chart
     return { cur: o[o.length - 1][4], prev: o.length > 1 ? o[o.length - 2][4] : o[o.length - 1][4] };
@@ -1009,9 +1023,7 @@ const getBars = (api, sym) => api === '1d' ? series[sym] : intraday[api][sym];
 
 function fetchBars(api, sym) {
   return _once(api + ':' + sym, async () => {
-    const res = await fetch(`/etf-chart?sym=${encodeURIComponent(sym)}&interval=${api}`);
-    const d = await res.json();
-    if (d.error || !d.ohlc || !d.ohlc.length) throw new Error(d.error || 'no data');
+    const d = await fetchChartJson(`/etf-chart?sym=${encodeURIComponent(sym)}&interval=${api}`);
     intraday[api][sym] = d.ohlc.map(b => [b[0], b[4]]);
   });
 }
