@@ -211,6 +211,10 @@ th.sortable:hover{color:var(--accent)}
       <button class="btn btn-primary" onclick="logTrade()">Log it</button>
       <button class="btn" onclick="openImport()">Paste list</button>
     </div>
+    <div id="t-accts-wrap" class="row hide" style="margin-top:12px;align-items:center;gap:6px">
+      <span class="sub" style="margin-right:2px">ACCOUNTS</span>
+      <span id="t-accts" class="row" style="gap:6px"></span>
+    </div>
     <p class="sub" id="t-hint" style="margin-top:10px"></p>
   </div>
 
@@ -314,6 +318,7 @@ let pass       = localStorage.getItem('pf_pass') || '';
 let doc        = { portfolios: [] };
 let version    = 0;
 let active     = 0;
+let tradeAccts = new Set();   // portfolio indices a new trade is logged into (see the trade form)
 let prices     = {};      // sym -> {cur, prev}
 let series     = {};      // sym -> [[dateStr, close], ...]  full daily history for the chart
 let intraday   = { '15m': {}, '60m': {} };   // interval -> sym -> [[isoTs, close], ...]
@@ -684,6 +689,8 @@ function render(opts) {
       </tbody>`;
   }
 
+  renderTradeAccounts();
+
   // A sort click only reorders table rows — skip the chart recompute for those.
   if (!(opts && opts.skipChart)) renderChart();
 }
@@ -720,6 +727,27 @@ function onModeChange() {
     :                      'Sells that % of the base out of the position.';
 }
 
+// Which accounts a new trade lands in. Chips, one per portfolio — a native
+// multi-select is fiddly and this matches the app's chip pattern. Hidden when
+// there's only one account (nothing to choose). At least one stays selected.
+function renderTradeAccounts() {
+  const wrap = $('t-accts-wrap');
+  if (!wrap) return;
+  if (doc.portfolios.length < 2) { wrap.classList.add('hide'); return; }
+  wrap.classList.remove('hide');
+  tradeAccts = new Set([...tradeAccts].filter(i => doc.portfolios[i]));   // drop deleted
+  if (!tradeAccts.size) tradeAccts.add(active);
+  $('t-accts').innerHTML = doc.portfolios.map((p, i) =>
+    `<span class="chip ${tradeAccts.has(i) ? 'on' : 'off'}" onclick="toggleTradeAccount(${i})"
+       title="${tradeAccts.has(i) ? 'Logging into' : 'Not logging into'} ${esc(p.name)}">${esc(p.name)}</span>`
+  ).join('');
+}
+function toggleTradeAccount(i) {
+  if (tradeAccts.has(i)) { if (tradeAccts.size > 1) tradeAccts.delete(i); }  // keep ≥1
+  else tradeAccts.add(i);
+  renderTradeAccounts();
+}
+
 async function logTrade() {
   const side  = $('t-side').value;
   const sym   = cleanSym($('t-sym').value);
@@ -733,20 +761,35 @@ async function logTrade() {
   if (mode !== 'all' && !(amt > 0)) return say('Enter how much.', 'err');
   if (mode === 'frac' && amt > 100) return say("Can't sell more than 100% of a position.", 'err');
 
+  // targets: the selected accounts (just the active one when there's only one)
+  const targets = doc.portfolios.length < 2
+    ? [active]
+    : [...tradeAccts].filter(i => doc.portfolios[i]).sort((a, b) => a - b);
+  if (!targets.length) return say('Pick at least one account.', 'err');
+
+  // a sell only applies to accounts that actually hold the ticker
+  let applyTo = targets, skipped = [];
   if (side === 'sell') {
-    const held = replay(pf().trades).rows.find(r => r.sym === sym);
-    if (!held) return say("You don't hold " + sym + " — nothing to sell.", 'err');
+    applyTo = targets.filter(i => replay(doc.portfolios[i].trades).rows.some(r => r.sym === sym));
+    if (!applyTo.length)
+      return say('None of the selected accounts hold ' + sym + ' to sell.', 'err');
+    skipped = targets.filter(i => !applyTo.includes(i)).map(i => doc.portfolios[i].name);
   }
 
-  const t = { id: newId(), ts: when, side, sym, mode, price,
-              amt: mode === 'all' ? 0 : amt };
   ['t-sym', 't-amt', 't-price'].forEach(id => $(id).value = '');
   $('t-when').value = localNow();
 
-  await mutate(() => { pf().trades.push(t); });
+  // "% of book" is per-account: 5% into three accounts is 5% of each own base,
+  // not 5% split across them. Each account gets its own trade with a fresh id.
+  await mutate(() => {
+    applyTo.forEach(i => doc.portfolios[i].trades.push({
+      id: newId(), ts: when, side, sym, mode, price, amt: mode === 'all' ? 0 : amt }));
+  });
   await loadPrices();
   render();
-  say((side === 'buy' ? 'Bought ' : 'Sold ') + sym + ' — logged.', 'ok');
+  const names = applyTo.map(i => doc.portfolios[i].name);
+  say((side === 'buy' ? 'Bought ' : 'Sold ') + sym + ' in ' + names.join(', ') +
+      (skipped.length ? ' — skipped (not held): ' + skipped.join(', ') : ''), 'ok');
 }
 
 async function delTrade(id) {
@@ -793,7 +836,7 @@ async function newPf() {
   const n = (prompt('Name the new portfolio:', 'Portfolio ' + (doc.portfolios.length + 1)) || '').trim();
   if (!n) return;
   await mutate(() => { doc.portfolios.push({ name: n.slice(0, 60), trades: [], targets: {} });
-                       active = doc.portfolios.length - 1; });
+                       active = doc.portfolios.length - 1; tradeAccts = new Set([active]); });
 }
 async function renamePf() {
   const n = (prompt('Rename portfolio:', pf().name) || '').trim();
@@ -803,9 +846,10 @@ async function renamePf() {
 async function delPf() {
   if (doc.portfolios.length === 1) return say('Keep at least one portfolio.', 'err');
   if (!confirm(`Delete "${pf().name}" and its ${pf().trades.length} trades, for everyone?`)) return;
-  await mutate(() => { doc.portfolios.splice(active, 1); active = Math.max(0, active - 1); });
+  await mutate(() => { doc.portfolios.splice(active, 1); active = Math.max(0, active - 1);
+                       tradeAccts = new Set([active]); });
 }
-async function pickPf(i) { active = +i; render(); await loadPrices(); render(); }
+async function pickPf(i) { active = +i; tradeAccts = new Set([active]); render(); await loadPrices(); render(); }
 
 // ── new portfolio from positions you already hold ────────────────────────────
 // You state what each holding is worth TODAY (as a % of the book) plus what you
