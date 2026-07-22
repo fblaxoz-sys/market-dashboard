@@ -147,6 +147,16 @@ market-dashboard/
 
 - **Render free tier sleeps when idle.** First request after a quiet period takes
   ~30 seconds. Not a bug; it looks like a hang to a new user, so warn them.
+  Everything else measures fast (warm TTFB ~0.2–0.6s, page 37KB gzipped, chart
+  interactions 1–4ms), so this cold start is *the* load-time bottleneck. The fix
+  is the **Render Starter plan (~$7/mo)** — upgrade the existing service in place
+  (dashboard → market-dashboard → "Upgrade your instance"), which keeps the URL,
+  the database, and every env var. Do **not** change region in that flow: the
+  Neon DB is in Oregon beside the server, so an East-coast server would add
+  ~300ms to every save unless the DB moves too (a separate, bigger migration with
+  a new URL). A free alternative is an external uptime pinger (UptimeRobot /
+  cron-job.org) hitting `/healthz` every 5 min, but it's a workaround with
+  free-tier caps that breaks silently if it lapses.
 - **Neon free tier idles too**, adding a second or two to the first query.
 - There is a keep-alive ping hitting `/healthz`, which is deliberately cheap and
   doesn't touch the database.
