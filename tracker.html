@@ -106,6 +106,15 @@ th.sortable:hover{color:var(--accent)}
 .chip:hover{border-color:var(--accent);color:var(--accent)}
 .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .chip.off{opacity:.45}
+.acct-chip{font-family:var(--sans);font-size:14px;font-weight:600;padding:10px 16px;border-radius:10px;
+      border:1.5px solid var(--border2);background:var(--surface2);color:var(--text);cursor:pointer;
+      user-select:none;white-space:nowrap;display:inline-flex;align-items:center;gap:9px;min-height:42px}
+.acct-chip:hover{border-color:var(--accent)}
+.acct-chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.acct-chip.off{color:var(--muted)}
+.acct-box{width:18px;height:18px;border-radius:5px;border:1.5px solid currentColor;flex:none;
+      display:inline-flex;align-items:center;justify-content:center;font-size:12px;line-height:1}
+.acct-chip.on .acct-box{background:#fff;color:var(--accent);border-color:#fff}
 .legdot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
 #perf-chart{width:100%;overflow:hidden;min-height:120px}
 </style>
@@ -195,7 +204,7 @@ th.sortable:hover{color:var(--accent)}
     </div>
     <div id="t-accts-wrap" class="row hide" style="margin-top:12px;align-items:center;gap:6px">
       <span class="sub" style="margin-right:2px">ACCOUNTS</span>
-      <span id="t-accts" class="row" style="gap:6px"></span>
+      <span id="t-accts" class="row" style="gap:10px"></span>
     </div>
   </div>
 
@@ -722,10 +731,11 @@ function renderTradeAccounts() {
   wrap.classList.remove('hide');
   tradeAccts = new Set([...tradeAccts].filter(i => doc.portfolios[i]));   // drop deleted
   if (!tradeAccts.size) tradeAccts.add(active);
-  $('t-accts').innerHTML = doc.portfolios.map((p, i) =>
-    `<span class="chip ${tradeAccts.has(i) ? 'on' : 'off'}" onclick="toggleTradeAccount(${i})"
-       title="${tradeAccts.has(i) ? 'Logging into' : 'Not logging into'} ${esc(p.name)}">${esc(p.name)}</span>`
-  ).join('');
+  $('t-accts').innerHTML = doc.portfolios.map((p, i) => {
+    const on = tradeAccts.has(i);
+    return `<span class="acct-chip ${on ? 'on' : 'off'}" onclick="toggleTradeAccount(${i})"
+       title="${on ? 'Logging into' : 'Not logging into'} ${esc(p.name)}"><span class="acct-box">${on ? '✓' : ''}</span>${esc(p.name)}</span>`;
+  }).join('');
 }
 function toggleTradeAccount(i) {
   if (tradeAccts.has(i)) { if (tradeAccts.size > 1) tradeAccts.delete(i); }  // keep ≥1
