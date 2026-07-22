@@ -309,6 +309,52 @@ th.sortable:hover{color:var(--accent)}
   </div>
 </div>
 
+<!-- ── edit-trade modal ──────────────────────────────────────────────────── -->
+<div id="edt" class="modal">
+  <div class="modal-box" style="max-width:660px">
+    <div style="font-size:16px;font-weight:800;margin-bottom:4px">Edit trade</div>
+    <p class="sub" id="edt-acct" style="margin-bottom:14px"></p>
+    <div class="row" style="align-items:flex-end">
+      <div style="flex:0 0 105px">
+        <label for="edt-side">Action</label>
+        <select id="edt-side" onchange="onEditMode()">
+          <option value="buy">Buy</option>
+          <option value="sell">Sell</option>
+        </select>
+      </div>
+      <div style="flex:1;min-width:100px">
+        <label for="edt-sym">Ticker</label>
+        <input id="edt-sym" maxlength="12" />
+      </div>
+      <div id="edt-wrap-mode" style="flex:0 0 168px">
+        <label for="edt-mode">How much</label>
+        <select id="edt-mode" onchange="onEditMode()">
+          <option value="pct">% of book</option>
+          <option value="frac">Part of position</option>
+          <option value="all">Close it out</option>
+        </select>
+      </div>
+      <div id="edt-wrap-amt" style="flex:1;min-width:100px">
+        <label for="edt-amt" id="edt-lbl-amt">Percent of book</label>
+        <input id="edt-amt" type="number" step="0.01" min="0" />
+      </div>
+      <div style="flex:1;min-width:100px">
+        <label for="edt-price">Price</label>
+        <input id="edt-price" type="number" step="0.0001" min="0" />
+      </div>
+      <div style="flex:1.3;min-width:190px">
+        <label for="edt-when">When</label>
+        <input id="edt-when" type="datetime-local" />
+      </div>
+    </div>
+    <div id="edt-err" class="banner banner-err" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:14px;justify-content:flex-end">
+      <button class="btn" onclick="closeEdit()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEdit()">Save changes</button>
+    </div>
+  </div>
+</div>
+
 <script>
 'use strict';
 
@@ -698,8 +744,9 @@ function render(opts) {
           <td class="r">${usd(+t.price)}</td>
           <td class="r dim">${t._units != null ? u(t._units) : '&mdash;'}</td>
           <td class="r ${t._gain != null ? sgn(t._gain) : 'dim'}">${t._gain != null ? pct(t._gain) : '&mdash;'}</td>
-          <td class="r"><button class="btn btn-sm btn-danger"
-              onclick="delLogTrade(${pi}, '${esc(t.id)}')">&times;</button></td>
+          <td class="r" style="white-space:nowrap">
+            <button class="btn btn-sm" title="Edit" onclick="openEdit(${pi}, '${esc(t.id)}')">&#9998;</button>
+            <button class="btn btn-sm btn-danger" title="Delete" onclick="delLogTrade(${pi}, '${esc(t.id)}')">&times;</button></td>
         </tr>`; }).join('')}
       </tbody>`;
   }
@@ -828,6 +875,65 @@ async function delLogTrade(pi, id) {
   if (!t) return;
   if (!confirm(`Delete this ${t.side} of ${t.sym} in “${p.name}”? That account will be recalculated without it.`)) return;
   await mutate(() => { p.trades = p.trades.filter(x => x.id !== id); });
+}
+
+// ── editing a logged trade ────────────────────────────────────────────────────
+let editRef = null;   // { pi, id } of the trade open in the edit modal
+
+function openEdit(pi, id) {
+  const p = doc.portfolios[pi]; if (!p) return;
+  const t = p.trades.find(x => x.id === id); if (!t) return;
+  editRef = { pi, id };
+  $('edt-acct').textContent = 'In ' + p.name;
+  $('edt-side').value  = t.side;
+  $('edt-sym').value   = t.sym;
+  $('edt-mode').value  = t.side === 'sell' ? t.mode : 'pct';
+  $('edt-amt').value   = t.mode === 'all' ? '' : t.amt;
+  $('edt-price').value = t.price;
+  $('edt-when').value  = (t.ts && t.ts.length >= 16) ? t.ts.slice(0, 16) : localNow();
+  $('edt-err').className = 'banner banner-err';
+  onEditMode();
+  $('edt').classList.add('show');
+}
+
+function onEditMode() {
+  const sell = $('edt-side').value === 'sell';
+  $('edt-wrap-mode').classList.toggle('hide', !sell);
+  if (!sell) $('edt-mode').value = 'pct';
+  const mode = $('edt-mode').value;
+  $('edt-wrap-amt').classList.toggle('hide', sell && mode === 'all');
+  $('edt-lbl-amt').textContent = (sell && mode === 'frac') ? 'Percent of position' : 'Percent of book';
+}
+
+function closeEdit() { $('edt').classList.remove('show'); editRef = null; }
+
+async function saveEdit() {
+  if (!editRef) return;
+  const p = doc.portfolios[editRef.pi];
+  const t = p && p.trades.find(x => x.id === editRef.id);
+  if (!t) return closeEdit();
+  const side  = $('edt-side').value;
+  const sym   = cleanSym($('edt-sym').value);
+  const mode  = side === 'sell' ? $('edt-mode').value : 'pct';
+  const amt   = money($('edt-amt').value);
+  const price = money($('edt-price').value);
+  const when  = $('edt-when').value || t.ts;
+  const err = m => { const e = $('edt-err'); e.className = 'banner show banner-err'; e.textContent = m; };
+  if (!sym)                          return err('Enter a ticker.');
+  if (!(price > 0))                  return err('Enter the price.');
+  if (mode !== 'all' && !(amt > 0))  return err('Enter how much.');
+  if (mode === 'frac' && amt > 100)  return err("Can't sell more than 100% of a position.");
+
+  closeEdit();
+  // Edit in place. t.base (the book snapshot from when it was first logged) is left
+  // as-is — a correction shouldn't re-price against today's book.
+  await mutate(() => {
+    t.side = side; t.sym = sym; t.mode = mode; t.price = price; t.ts = when;
+    t.amt = mode === 'all' ? 0 : amt;
+  });
+  await loadPrices();
+  render();
+  say('Trade updated.', 'ok');
 }
 
 // Remove a whole holding from the Positions table — deletes every entry for that
