@@ -1038,28 +1038,35 @@ function closeImport(){ $('imp').classList.remove('show'); }
 
 async function doImport() {
   const lines = $('imp-text').value.split('\n').map(l => l.trim()).filter(Boolean);
-  const out = [], bad = [];
+  const parsed = [], bad = [];
   for (const line of lines) {
     const p = line.split(/[,\t]+|\s{2,}|\s+/).map(s => s.trim()).filter(Boolean);
     const sym = cleanSym(p[0] || ''), amt = money(p[1]), price = money(p[2]);
     const date = (p[3] && /^\d{4}-\d{2}-\d{2}/.test(p[3])) ? p[3].slice(0, 10) + 'T00:00' : localNow();
     if (!sym || !(amt > 0) || !(price > 0)) { bad.push(line); continue; }
-    out.push({ id: newId(), ts: date, side: 'buy', sym, mode: 'pct', amt, price });
+    parsed.push({ ts: date, side: 'buy', sym, mode: 'pct', amt, price });
   }
-  if (bad.length) {
-    const e = $('imp-err');
-    e.className = 'banner show banner-err';
-    e.textContent = "Couldn't read " + bad.length + ' line(s): ' + bad.slice(0, 3).join(' · ') +
-                    (bad.length > 3 ? ' …' : '');
-    return;
-  }
-  if (!out.length) { $('imp-err').className = 'banner show banner-err';
-                     $('imp-err').textContent = 'Nothing to import.'; return; }
+  const impErr = msg => { const e = $('imp-err'); e.className = 'banner show banner-err'; e.textContent = msg; };
+  if (bad.length)
+    return impErr("Couldn't read " + bad.length + ' line(s): ' + bad.slice(0, 3).join(' · ') +
+                  (bad.length > 3 ? ' …' : ''));
+  if (!parsed.length) return impErr('Nothing to import.');
+
+  // Import into the accounts marked in Log a trade (the same chips), or the active
+  // one when there's only a single portfolio. Each account gets its own fresh-id copy.
+  const targets = doc.portfolios.length < 2 ? [active]
+    : [...tradeAccts].filter(i => doc.portfolios[i]).sort((a, b) => a - b);
+  if (!targets.length) return impErr('Pick at least one account.');
+
   closeImport();
-  await mutate(() => { pf().trades.push(...out); });
+  await mutate(() => {
+    targets.forEach(i => parsed.forEach(t => doc.portfolios[i].trades.push({ id: newId(), ...t })));
+  });
   await loadPrices();
   render();
-  say('Logged ' + out.length + ' opening buys.', 'ok');
+  const names = targets.map(i => doc.portfolios[i].name);
+  say('Imported ' + parsed.length + ' buy' + (parsed.length > 1 ? 's' : '') +
+      ' into ' + names.join(', ') + '.', 'ok');
 }
 
 function exportTrades() {
