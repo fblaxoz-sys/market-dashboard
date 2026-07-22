@@ -98,6 +98,9 @@ tr:last-child td{border-bottom:none}
 .gp-track{height:4px;border-radius:3px;background:var(--surface2);overflow:hidden}
 .gp-fill{height:100%;width:0;background:var(--accent);border-radius:3px;
          transition:width .25s ease}
+.note-cell{max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+           cursor:pointer;font-family:var(--sans);font-size:12.5px}
+.note-cell:hover{color:var(--accent)}
 th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
 th.sortable:hover{color:var(--accent)}
 .chip{font-family:var(--mono);font-size:11px;padding:5px 11px;border-radius:20px;
@@ -202,6 +205,13 @@ th.sortable:hover{color:var(--accent)}
       <button class="btn btn-primary" onclick="logTrade()">Log it</button>
       <button class="btn" onclick="openImport()">Paste list</button>
     </div>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1;min-width:220px">
+        <label for="t-note">Note <span style="text-transform:none;letter-spacing:0">— optional, why you made this trade</span></label>
+        <input id="t-note" maxlength="280" placeholder="e.g. trimming after the run-up; rebalancing into value"
+               onkeydown="if(event.key==='Enter')logTrade()" />
+      </div>
+    </div>
     <div id="t-accts-wrap" class="row hide" style="margin-top:12px;align-items:center;gap:6px">
       <span class="sub" style="margin-right:2px">ACCOUNTS</span>
       <span id="t-accts" class="row" style="gap:10px"></span>
@@ -211,8 +221,13 @@ th.sortable:hover{color:var(--accent)}
   <!-- trade log -->
   <div class="card" style="padding:0;overflow:hidden">
     <div class="spread" style="padding:16px 18px 12px">
-      <div><h2 style="margin-bottom:0">Trade log</h2></div>
-      <button class="btn btn-sm" onclick="exportTrades()">Export CSV</button>
+      <div><h2 style="margin-bottom:0">Trade log</h2>
+        <p class="sub" id="log-range" style="margin-top:4px"></p></div>
+      <div class="row" style="gap:6px">
+        <span class="chip" id="log-chip-week" onclick="setLogView('week')">This week</span>
+        <span class="chip" id="log-chip-all"  onclick="setLogView('all')">All time</span>
+        <button class="btn btn-sm" onclick="exportTrades()">Export Excel</button>
+      </div>
     </div>
     <div class="table-wrap"><table id="log-tbl">
       <tbody><tr><td class="empty">Nothing logged yet.</td></tr></tbody>
@@ -347,6 +362,12 @@ th.sortable:hover{color:var(--accent)}
         <input id="edt-when" type="datetime-local" />
       </div>
     </div>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1;min-width:220px">
+        <label for="edt-note">Note <span style="text-transform:none;letter-spacing:0">— why you made this trade</span></label>
+        <input id="edt-note" maxlength="280" placeholder="Add a note…" />
+      </div>
+    </div>
     <div id="edt-err" class="banner banner-err" style="margin-top:12px"></div>
     <div class="row" style="margin-top:14px;justify-content:flex-end">
       <button class="btn" onclick="closeEdit()">Cancel</button>
@@ -364,6 +385,7 @@ let doc        = { portfolios: [] };
 let version    = 0;
 let active     = 0;
 let tradeAccts = new Set();   // portfolio indices a new trade is logged into (see the trade form)
+let logView    = 'week';      // trade log scope: 'week' (since Monday) | 'all' (everything ever)
 let prices     = {};      // sym -> {cur, prev}
 let series     = {};      // sym -> [[dateStr, close], ...]  full daily history for the chart
 let intraday   = { '15m': {}, '60m': {} };   // interval -> sym -> [[isoTs, close], ...]
@@ -718,32 +740,47 @@ function render(opts) {
   allLog.sort((a, b) =>
     (b.t.ts || '').localeCompare(a.t.ts || '') || (b.t.id || '').localeCompare(a.t.id || ''));
 
-  if (!allLog.length) {
-    $('log-tbl').innerHTML = '<tbody><tr><td class="empty">' +
-      'No buys or sells logged yet — your holdings are in Positions above.</td></tr></tbody>';
+  // Weekly view is a filter, never a move: the full history always stays in the
+  // document, so switching to "All time" can't have lost anything.
+  const wkStart = weekStartTs();
+  const shown = logView === 'week' ? allLog.filter(e => (e.t.ts || '') >= wkStart) : allLog;
+  renderLogControls(allLog.length, shown.length);
+
+  if (!shown.length) {
+    $('log-tbl').innerHTML = '<tbody><tr><td class="empty">' + (
+      logView === 'week' && allLog.length
+        ? 'Nothing logged since Monday — switch to <strong>All time</strong> for the ' +
+          allLog.length + ' earlier trade' + (allLog.length === 1 ? '' : 's') + '.'
+        : 'No buys or sells logged yet — your holdings are in Positions above.'
+    ) + '</td></tr></tbody>';
   } else {
     $('log-tbl').innerHTML = `
       <thead><tr>
         <th>When</th><th>Account</th><th>Action</th><th>Ticker</th><th class="r">Size</th>
-        <th class="r">Price</th><th class="r">Value</th><th class="r">Realized</th><th></th>
+        <th class="r">Price</th><th class="r">Value</th><th class="r">Realized</th>
+        <th>Note</th><th></th>
       </tr></thead>
-      <tbody>${allLog.map(({ t, pi, pname, note }) => {
+      <tbody>${shown.map(({ t, pi, pname, note: warn }) => {
         // Sells always report both measures; buys are additions, so "% of book" only.
         const size = t.side === 'buy'
           ? (+t.amt).toFixed(2) + '% of book'
           : `${+((t._pctPos ?? 0).toFixed(1))}% of position · ${(t._pctBook ?? 0).toFixed(2)}% of book`;
         const tag = t.side === 'buy' ? ['buy', 'BUY'] : ['sell', 'SELL'];
+        const memo = (t.note || '').trim();
         return `
         <tr>
           <td class="dim">${esc(fmtTs(t.ts))}</td>
           <td>${esc(pname)}</td>
           <td><span class="tag tag-${tag[0]}">${tag[1]}</span>${
-              note ? ` <span class="dim" title="${esc(note)}">⚠</span>` : ''}</td>
+              warn ? ` <span class="dim" title="${esc(warn)}">⚠</span>` : ''}</td>
           <td class="sym">${esc(t.sym)}</td>
           <td class="r dim">${esc(size)}</td>
           <td class="r">${usd(+t.price)}</td>
           <td class="r dim">${t._units != null ? u(t._units) : '&mdash;'}</td>
           <td class="r ${t._gain != null ? sgn(t._gain) : 'dim'}">${t._gain != null ? pct(t._gain) : '&mdash;'}</td>
+          <td class="note-cell" title="${esc(memo || 'Add a note')}"
+              onclick="openEdit(${pi}, '${esc(t.id)}')">${
+              memo ? esc(memo) : '<span class="dim" style="opacity:.5">+ note</span>'}</td>
           <td class="r" style="white-space:nowrap">
             <button class="btn btn-sm" title="Edit" onclick="openEdit(${pi}, '${esc(t.id)}')">&#9998;</button>
             <button class="btn btn-sm btn-danger" title="Delete" onclick="delLogTrade(${pi}, '${esc(t.id)}')">&times;</button></td>
@@ -852,7 +889,8 @@ async function logTrade() {
     skipped = targets.filter(i => !applyTo.includes(i)).map(i => doc.portfolios[i].name);
   }
 
-  ['t-sym', 't-amt', 't-price'].forEach(id => $(id).value = '');
+  const note = $('t-note').value.trim().slice(0, 280);
+  ['t-sym', 't-amt', 't-price', 't-note'].forEach(id => $(id).value = '');
   forceWhenNow();
 
   // Price each target account's holdings so "% of book" is against the real current
@@ -867,6 +905,7 @@ async function logTrade() {
     applyTo.forEach(i => {
       const t = { id: newId(), ts: when, side, sym, mode, price, amt: mode === 'all' ? 0 : amt };
       if (mode === 'pct') t.base = replay(doc.portfolios[i].trades).total;
+      if (note) t.note = note;          // same reason applies to every account it lands in
       doc.portfolios[i].trades.push(t);
     });
   });
@@ -909,6 +948,7 @@ function openEdit(pi, id) {
   $('edt-amt').value   = t.mode === 'all' ? '' : t.amt;
   $('edt-price').value = t.price;
   $('edt-when').value  = (t.ts && t.ts.length >= 16) ? t.ts.slice(0, 16) : localNow();
+  $('edt-note').value  = t.note || '';
   $('edt-err').className = 'banner banner-err';
   onEditMode();
   $('edt').classList.add('show');
@@ -936,6 +976,7 @@ async function saveEdit() {
   const amt   = money($('edt-amt').value);
   const price = money($('edt-price').value);
   const when  = $('edt-when').value || t.ts;
+  const note  = $('edt-note').value.trim().slice(0, 280);   // read before closeEdit()
   const err = m => { const e = $('edt-err'); e.className = 'banner show banner-err'; e.textContent = m; };
   if (!sym)                          return err('Enter a ticker.');
   if (!(price > 0))                  return err('Enter the price.');
@@ -948,6 +989,7 @@ async function saveEdit() {
   await mutate(() => {
     t.side = side; t.sym = sym; t.mode = mode; t.price = price; t.ts = when;
     t.amt = mode === 'all' ? 0 : amt;
+    if (note) t.note = note; else delete t.note;   // clearing the box removes the note
   });
   await loadPrices();
   render();
@@ -1220,25 +1262,203 @@ async function doImport() {
       ' into ' + names.join(', ') + '.', 'ok');
 }
 
+// ── weekly log view ──────────────────────────────────────────────────────────
+// The week runs Monday 00:00 → now, in your local time. Trade timestamps are
+// stored as local wall-clock strings ('YYYY-MM-DDTHH:MM'), so a cutoff in the
+// same shape compares correctly with a plain string compare.
+function weekStartTs(d) {
+  const x = d ? new Date(d) : new Date();
+  x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));   // back up to Monday
+  const p = n => String(n).padStart(2, '0');
+  return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}T00:00`;
+}
+
+function renderLogControls(totalCount, shownCount) {
+  const wk = $('log-chip-week'), all = $('log-chip-all'), lbl = $('log-range');
+  if (!wk || !all) return;
+  wk.className  = 'chip ' + (logView === 'week' ? 'on' : 'off');
+  all.className = 'chip ' + (logView === 'all'  ? 'on' : 'off');
+  if (!lbl) return;
+  if (logView === 'week') {
+    const mon = new Date(weekStartTs() + ':00');
+    lbl.textContent = 'Week of ' + mon.toLocaleDateString('en-US',
+      { weekday: 'short', month: 'short', day: 'numeric' }) +
+      ` · ${shownCount} trade${shownCount === 1 ? '' : 's'} (${totalCount} all time)`;
+  } else {
+    lbl.textContent = `Every trade ever logged · ${totalCount} total`;
+  }
+}
+
+function setLogView(v) { logView = v; render({ skipChart: true }); }
+
+// ── Excel (.xlsx) export ─────────────────────────────────────────────────────
+// A real xlsx is a ZIP of XML parts. The page ships no external libraries, so
+// this writes one directly: store-only (uncompressed) ZIP entries, inline
+// strings (no sharedStrings part), and one date number-format so the When
+// column lands in Excel as a true date — sortable and filterable, not text.
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function zipStore(files) {                    // files: [{name, bytes}]
+  const chunks = [], central = [];
+  let offset = 0;
+  const u16 = n => [n & 0xFF, (n >>> 8) & 0xFF];
+  const u32 = n => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
+  const enc = new TextEncoder();
+  for (const f of files) {
+    const nameB = enc.encode(f.name), crc = crc32(f.bytes), sz = f.bytes.length;
+    const local = [...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0),
+                   ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz),
+                   ...u16(nameB.length), ...u16(0)];
+    chunks.push(new Uint8Array(local), nameB, f.bytes);
+    central.push([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(0),
+                  ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz),
+                  ...u16(nameB.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+                  ...u32(0), ...u32(offset), ...Array.from(nameB)]);
+    offset += local.length + nameB.length + sz;
+  }
+  const cd = central.flat();
+  const eocd = [...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length),
+                ...u16(files.length), ...u32(cd.length), ...u32(offset), ...u16(0)];
+  return new Blob([...chunks, new Uint8Array(cd), new Uint8Array(eocd)],
+                  { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+
+// Excel serial date: days since 1899-12-30. Built from the wall-clock parts so
+// no timezone shift can move a trade to the previous day.
+function excelSerial(ts) {
+  const m = String(ts || '').match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/);
+  if (!m) return null;
+  const ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0));
+  return ms / 86400000 + 25569;
+}
+
+const xmlEsc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+const colRef = i => { let s = '', n = i; do { s = String.fromCharCode(65 + n % 26) + s;
+                      n = Math.floor(n / 26) - 1; } while (n >= 0); return s; };
+
+function sheetXml(header, rows) {
+  const cell = (r, c, v) => {
+    const ref = colRef(c) + r;
+    if (v == null || v === '') return '';
+    if (v.__date != null) return `<c r="${ref}" s="1"><v>${v.__date}</v></c>`;
+    if (typeof v === 'number') return `<c r="${ref}"><v>${v}</v></c>`;
+    return `<c r="${ref}" t="inlineStr"><is><t>${xmlEsc(v)}</t></is></c>`;
+  };
+  const head = `<row r="1">${header.map((h, c) =>
+    `<c r="${colRef(c)}1" t="inlineStr"><is><t>${xmlEsc(h)}</t></is></c>`).join('')}</row>`;
+  const body = rows.map((row, i) =>
+    `<row r="${i + 2}">${row.map((v, c) => cell(i + 2, c, v)).join('')}</row>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<cols><col min="1" max="1" width="18" customWidth="1"/><col min="2" max="2" width="16" customWidth="1"/>
+<col min="3" max="4" width="10" customWidth="1"/><col min="5" max="5" width="30" customWidth="1"/>
+<col min="6" max="11" width="13" customWidth="1"/></cols>
+<sheetData>${head}${body}</sheetData></worksheet>`;
+}
+
+function buildXlsx(header, rows, sheetName) {
+  const enc = new TextEncoder();
+  const F = (name, str) => ({ name, bytes: enc.encode(str) });
+  return zipStore([
+    F('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>`),
+    F('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`),
+    F('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="${xmlEsc(sheetName).slice(0, 31)}" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+    F('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`),
+    // cellXfs[1] uses numFmtId 22 (m/d/yy h:mm) — the When column
+    F('xl/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+<fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+<borders count="1"><border/></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+<xf numFmtId="22" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`),
+    F('xl/worksheets/sheet1.xml', sheetXml(header, rows)),
+  ]);
+}
+
+// Exports what you're looking at — the current week, or everything — as a real
+// .xlsx, sorted oldest trade first so the sheet reads as a chronological record.
 function exportTrades() {
-  const rows = [['when','account','action','ticker','size_mode','size',
-                 'pct_of_position','pct_of_book','price','value_pct','realized_pct']];
+  const entries = [];
   doc.portfolios.forEach(p => {
     const s = replay(p.trades);
-    s.ordered.forEach(t => { if (!t.opening) rows.push([t.ts, p.name, t.side, t.sym, t.mode, t.amt,
-      t._pctPos != null ? t._pctPos.toFixed(2) : '', t._pctBook != null ? t._pctBook.toFixed(2) : '', t.price,
-      t._units != null ? t._units.toFixed(4) : '', t._gain != null ? t._gain.toFixed(4) : '']); });
+    s.ordered.forEach(t => { if (!t.opening) entries.push({ t, acct: p.name }); });
   });
-  const csv = rows.map(r => r.map(c => {
-    const s = String(c ?? '');
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  }).join(',')).join('\n');
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+
+  const wkStart = weekStartTs();
+  const scoped = logView === 'week'
+    ? entries.filter(e => (e.t.ts || '') >= wkStart)
+    : entries;
+  if (!scoped.length) return say('Nothing to export in this view.', 'warn');
+
+  // oldest → newest by trade date
+  scoped.sort((a, b) => (a.t.ts || '').localeCompare(b.t.ts || '') ||
+                        (a.t.id || '').localeCompare(b.t.id || ''));
+
+  const header = ['Date', 'Account', 'Action', 'Ticker', 'Size', 'Price',
+                  '% of position', '% of book', 'Value (% of book)', 'Realized (%)', 'Note'];
+  const num = v => (v == null || v === '' || isNaN(v)) ? '' : +(+v).toFixed(4);
+  const rows = scoped.map(({ t, acct }) => {
+    const serial = excelSerial(t.ts);
+    return [
+      serial == null ? (t.ts || '') : { __date: serial },
+      acct,
+      t.side === 'buy' ? 'Buy' : 'Sell',
+      t.sym,
+      t.side === 'buy' ? `${(+t.amt).toFixed(2)}% of book`
+        : t.mode === 'all' ? 'Closed out'
+        : t.mode === 'frac' ? `${(+t.amt).toFixed(0)}% of position`
+        : `${(+t.amt).toFixed(2)}% of book`,
+      num(t.price),
+      num(t._pctPos), num(t._pctBook), num(t._units), num(t._gain),
+      (t.note || ''),
+    ];
+  });
+
+  const label = logView === 'week' ? 'Week of ' + wkStart.slice(0, 10) : 'All trades';
+  const blob = buildXlsx(header, rows, logView === 'week' ? 'This week' : 'All trades');
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'all-trades.csv';
+  a.download = (logView === 'week' ? `trades-week-${wkStart.slice(0, 10)}` : 'trades-all') + '.xlsx';
   a.click();
   URL.revokeObjectURL(url);
+  say(`Exported ${rows.length} trade${rows.length === 1 ? '' : 's'} — ${label}.`, 'ok');
 }
 
 // ── performance chart ────────────────────────────────────────────────────────
