@@ -600,7 +600,8 @@ function render(opts) {
     <div class="stat"><div class="stat-label">Positions</div>
       <div class="stat-value">${st.rows.length}</div></div>
     <div class="stat"><div class="stat-label">Cash</div>
-      <div class="stat-value ${st.cash < 0 ? 'down' : 'dim'}">${u(st.cash)}</div></div>
+      <div class="stat-value ${st.cash < 0 ? 'down' : 'dim'}">${
+        u(st.total > 0 ? st.cash / st.total * 100 : 0)}</div></div>
     <div class="stat"><div class="stat-label">Trades</div>
       <div class="stat-value">${pf().trades.filter(t => !t.opening).length}</div></div>`;
 
