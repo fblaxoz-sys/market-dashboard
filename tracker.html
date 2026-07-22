@@ -649,41 +649,45 @@ function render(opts) {
       </tbody>`;
   }
 
-  // trade log — newest first. Opening/owned holdings are NOT trades, so they're kept
-  // out of here; they show only in Positions. This log is buys and sells you log.
-  const log = st.ordered.filter(t => !t.opening).reverse();
-  if (!log.length) {
+  // trade log — a UNIVERSAL log: every buy/sell across ALL accounts, newest first,
+  // tagged with the account it went into. Opening/owned holdings aren't trades, so
+  // they stay out; they show only in Positions.
+  const allLog = [];
+  doc.portfolios.forEach((p, pi) => {
+    const s = replay(p.trades);   // computes _units/_gain on each trade + notes by id
+    s.ordered.forEach(t => { if (!t.opening) allLog.push({ t, pi, pname: p.name, note: s.notes[t.id] }); });
+  });
+  allLog.sort((a, b) =>
+    (b.t.ts || '').localeCompare(a.t.ts || '') || (b.t.id || '').localeCompare(a.t.id || ''));
+
+  if (!allLog.length) {
     $('log-tbl').innerHTML = '<tbody><tr><td class="empty">' +
       'No buys or sells logged yet — your holdings are in Positions above.</td></tr></tbody>';
   } else {
     $('log-tbl').innerHTML = `
       <thead><tr>
-        <th>When</th><th>Action</th><th>Ticker</th><th class="r">Size</th>
+        <th>When</th><th>Account</th><th>Action</th><th>Ticker</th><th class="r">Size</th>
         <th class="r">Price</th><th class="r">Value</th><th class="r">Realized</th><th></th>
       </tr></thead>
-      <tbody>${log.map(t => {
-        const warn = st.notes[t.id];
-        // An opening position is a reconstruction of something already owned, not
-        // a trade that happened — say so rather than showing a solved entry weight
-        // the user never typed.
-        const size = t.opening        ? 'opening position'
-                   : t.side === 'buy' ? (+t.amt).toFixed(2) + '% of book'
+      <tbody>${allLog.map(({ t, pi, pname, note }) => {
+        const size = t.side === 'buy' ? (+t.amt).toFixed(2) + '% of book'
                    : t.mode === 'all'  ? 'closed out'
                    : t.mode === 'frac' ? (+t.amt).toFixed(0) + '% of position'
                    :                     (+t.amt).toFixed(2) + '% of book';
-        const tag = t.opening ? ['open', 'OPEN'] : t.side === 'buy' ? ['buy', 'BUY'] : ['sell', 'SELL'];
+        const tag = t.side === 'buy' ? ['buy', 'BUY'] : ['sell', 'SELL'];
         return `
         <tr>
           <td class="dim">${esc(fmtTs(t.ts))}</td>
+          <td>${esc(pname)}</td>
           <td><span class="tag tag-${tag[0]}">${tag[1]}</span>${
-              warn ? ` <span class="dim" title="${esc(warn)}">⚠</span>` : ''}</td>
+              note ? ` <span class="dim" title="${esc(note)}">⚠</span>` : ''}</td>
           <td class="sym">${esc(t.sym)}</td>
           <td class="r dim">${esc(size)}</td>
           <td class="r">${usd(+t.price)}</td>
           <td class="r dim">${t._units != null ? u(t._units) : '&mdash;'}</td>
           <td class="r ${t._gain != null ? sgn(t._gain) : 'dim'}">${t._gain != null ? pct(t._gain) : '&mdash;'}</td>
           <td class="r"><button class="btn btn-sm btn-danger"
-              onclick="delTrade('${esc(t.id)}')">&times;</button></td>
+              onclick="delLogTrade(${pi}, '${esc(t.id)}')">&times;</button></td>
         </tr>`; }).join('')}
       </tbody>`;
   }
@@ -792,6 +796,17 @@ async function delTrade(id) {
   if (!t) return;
   if (!confirm(`Delete this ${t.side} of ${t.sym}? The portfolio will be recalculated without it.`)) return;
   await mutate(() => { pf().trades = pf().trades.filter(x => x.id !== id); });
+}
+
+// Delete one trade from a specific account — the universal log spans every account,
+// so the row carries its portfolio index rather than assuming the active one.
+async function delLogTrade(pi, id) {
+  const p = doc.portfolios[pi];
+  if (!p) return;
+  const t = p.trades.find(x => x.id === id);
+  if (!t) return;
+  if (!confirm(`Delete this ${t.side} of ${t.sym} in “${p.name}”? That account will be recalculated without it.`)) return;
+  await mutate(() => { p.trades = p.trades.filter(x => x.id !== id); });
 }
 
 // Remove a whole holding from the Positions table — deletes every entry for that
@@ -1048,10 +1063,12 @@ async function doImport() {
 }
 
 function exportTrades() {
-  const st = replay(pf().trades);
-  const rows = [['when','action','ticker','size_mode','size','price','value_pct','realized_pct']];
-  st.ordered.forEach(t => rows.push([t.ts, t.side, t.sym, t.mode, t.amt, t.price,
-    t._units != null ? t._units.toFixed(4) : '', t._gain != null ? t._gain.toFixed(4) : '']));
+  const rows = [['when','account','action','ticker','size_mode','size','price','value_pct','realized_pct']];
+  doc.portfolios.forEach(p => {
+    const s = replay(p.trades);
+    s.ordered.forEach(t => { if (!t.opening) rows.push([t.ts, p.name, t.side, t.sym, t.mode, t.amt, t.price,
+      t._units != null ? t._units.toFixed(4) : '', t._gain != null ? t._gain.toFixed(4) : '']); });
+  });
   const csv = rows.map(r => r.map(c => {
     const s = String(c ?? '');
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
@@ -1059,7 +1076,7 @@ function exportTrades() {
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
   const a = document.createElement('a');
   a.href = url;
-  a.download = pf().name.replace(/[^\w.-]+/g, '_') + '-trades.csv';
+  a.download = 'all-trades.csv';
   a.click();
   URL.revokeObjectURL(url);
 }
