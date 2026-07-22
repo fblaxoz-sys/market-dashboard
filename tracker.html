@@ -174,7 +174,7 @@ th.sortable:hover{color:var(--accent)}
       </div>
       <div style="flex:1;min-width:100px">
         <label for="t-sym">Ticker</label>
-        <input id="t-sym" placeholder="AAPL" maxlength="12"
+        <input id="t-sym" maxlength="12"
                onkeydown="if(event.key==='Enter')logTrade()" />
       </div>
       <div id="wrap-mode" style="flex:0 0 168px" class="hide">
@@ -187,12 +187,12 @@ th.sortable:hover{color:var(--accent)}
       </div>
       <div id="wrap-amt" style="flex:1;min-width:100px">
         <label for="t-amt" id="lbl-amt">Percent of book</label>
-        <input id="t-amt" type="number" step="0.01" min="0" placeholder="2"
+        <input id="t-amt" type="number" step="0.01" min="0"
                onkeydown="if(event.key==='Enter')logTrade()" />
       </div>
       <div style="flex:1;min-width:100px">
         <label for="t-price">Price</label>
-        <input id="t-price" type="number" step="0.0001" min="0" placeholder="182.50"
+        <input id="t-price" type="number" step="0.0001" min="0"
                onkeydown="if(event.key==='Enter')logTrade()" />
       </div>
       <div style="flex:1.3;min-width:190px">
