@@ -75,17 +75,26 @@ That's what makes correcting a mistyped trade correct the whole portfolio.
 
 This is the core. Read it before touching anything numeric.
 
-The book is **100 units, all cash at the start.** Percentages are of that fixed
-base — *not* of the book's current value. See `DECISIONS.md` §8; this was a
-deliberate choice by the owner and it is load-bearing.
+The book is **100 units, all cash at the start.** A trade's `amt` is a **% of the
+book at the time it was logged**, carried on the trade as `t.base` (the account's
+total value snapshotted by `logTrade`/`doImport`). Replay converts it to units,
+`units = amt/100 × base`, so the trade lands at `amt`% of the book and cash → the
+position keeps the total flat. See `DECISIONS.md` §8 (this **reversed** the original
+fixed-100-base model on 2026-07-22).
+
+**No `base` → fixed units.** Owned-holding seeds (`solveOpening`) and `migrate`d
+legacy holdings store `amt` already in units and carry no `base`, so replay uses
+`amt` directly. A fresh book has total 100, so `base = 100` and `units = amt` there
+too — the fixed-base behaviour is the special case, not the rule.
 
 ```
 cash = 100, realized = 0, pos = {}
+u(t) = t.base > 0 ? t.amt/100 * t.base : t.amt      # % of book at log time → units
 
 for each trade, sorted by ts (ties broken by id):
 
   BUY:
-    units   = amt                      # 2% buy spends exactly 2 units, always
+    units   = u(t)                     # e.g. 0.5% of a 128 book = 0.64 units
     shares += units / price
     cost   += units
     cash   -= units
@@ -93,7 +102,7 @@ for each trade, sorted by ts (ties broken by id):
   SELL:
     mode 'all'  → shares = everything held
     mode 'frac' → shares = held * (amt / 100)
-    mode 'pct'  → shares = amt / price
+    mode 'pct'  → shares = u(t) / price
     shares = min(shares, held)                       # capped, warning emitted
     avg       = cost / held                          # weighted average cost
     realized += shares * (price - avg)

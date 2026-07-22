@@ -68,25 +68,37 @@ A version check costs one integer and turns silent data loss into a visible "som
 else saved first, here's their version." See the trap described in
 `ARCHITECTURE.md` — this has already been got wrong once.
 
-## 8. Fixed-base percentages — **owner's choice, against the recommendation**
+## 8. "% of book" measured at log time — **reversed 2026-07-22 at the owner's request**
 
 The question: you buy 2% Apple. A year later the book is up 50%. You buy 2% more.
 Is the second purchase the same size, or 50% bigger?
 
-- **Recommended:** 2% of the book *as it stands*, so the second buy deploys more
-  money. Self-correcting as the account grows. Would have required historical price
-  lookups at each trade date to compute the book's value at that moment — feasible,
-  since `/etf-chart` returns 5 years of daily closes.
-- **Chosen by the owner:** 2% of a **fixed 100-unit base**. Every 2% is the same
-  size whenever it happens.
+- **Original choice:** 2% of a **fixed 100-unit base**. Every 2% is the same size
+  whenever it happens (predictable, needs no historical prices).
+- **Current choice:** 2% of the **book as it stands when you log the trade**.
 
-The tradeoff, recorded so it isn't rediscovered as a bug: as the account grows, a
-"2%" trade stays the same absolute size, so later trades become proportionally
-smaller bets without the user noticing. The owner was told this and chose it anyway
-for predictability. **This is not a bug. Don't "fix" it without asking.**
+**Why it changed.** With the fixed-base model, once a book's holdings had gained, its
+total value exceeded 100, so a logged "0.5%" (0.5 units of the 100 base) showed up as
+less than 0.5% of the book — e.g. 0.39% on a book worth 128. The owner reported this
+as a bug: logging 0.5% should put 0.5% of the book into the position, funded from
+cash, with the book total unchanged.
 
-Switching later means replaying the log against historical book values — the trade
-data is sufficient to do it, no information is lost by having chosen this.
+**How it works now (see `ARCHITECTURE.md` § "% of book" trades).** It is measured at
+*log* time, not by replaying against historical prices: `logTrade` (and the paste
+importer) snapshot the account's current total value onto the trade as `t.base`, and
+`replay` spends `amt/100 × base` units. So the buy lands at `amt`% of the book right
+then, and cash → position keeps the total flat. `amt` still stores the entered
+percent, so the log reads "0.50% of book".
+
+- **Backward compatible.** Trades without a `base` (owned-holding seeds from
+  `solveOpening`, `migrate`d legacy holdings) were already sized in fixed-base units,
+  so `replay` uses `amt` directly for them — untouched.
+- Applies to buys and to "% of book" sells; "part of position" and "close out" sells
+  are unaffected. A fresh/empty book has total 100, so `base = 100` and small books
+  behave exactly as before.
+- Rejected the *replay-against-historical-book-values* alternative: it needs a price
+  lookup at every trade's date and makes earlier trades' sizes shift as you add
+  later ones. Snapshotting `base` at log time is stable and needs no history.
 
 ## 9. Trades are the source of truth; positions are derived
 

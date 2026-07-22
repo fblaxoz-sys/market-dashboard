@@ -527,12 +527,16 @@ function replay(trades) {
     const p = pos[t.sym] || (pos[t.sym] = { shares: 0, cost: 0 });
 
     if (t.side === 'buy') {
-      const units = +t.amt;
-      if (!(units > 0)) { notes.push([t.id, 'bad size']); continue; }
+      if (!(+t.amt > 0)) { notes.push([t.id, 'bad size']); continue; }
+      // amt is a % of the book AT LOG TIME (t.base): spending that % of the book's
+      // value on the position, funded from cash, so it lands at that % of the book.
+      // Trades with no base (owned-holding seeds, legacy) were sized in fixed-base
+      // units already, so units = amt.
+      const units = t.base > 0 ? (+t.amt) / 100 * t.base : +t.amt;
       p.shares += units / price;
       p.cost   += units;
       cash     -= units;
-      t._units = units;
+      t._units = +t.amt;   // Value column shows the % of book that was entered
       continue;
     }
 
@@ -540,7 +544,7 @@ function replay(trades) {
     let shares;
     if (t.mode === 'all')       shares = p.shares;
     else if (t.mode === 'frac') shares = p.shares * (+t.amt / 100);
-    else                        shares = (+t.amt) / price;
+    else                        shares = (t.base > 0 ? (+t.amt) / 100 * t.base : +t.amt) / price;
 
     if (!(shares > 0)) { notes.push([t.id, 'nothing to sell']); t._units = 0; continue; }
     if (shares > p.shares + 1e-12) {
@@ -778,11 +782,20 @@ async function logTrade() {
   ['t-sym', 't-amt', 't-price'].forEach(id => $(id).value = '');
   $('t-when').value = localNow();
 
-  // "% of book" is per-account: 5% into three accounts is 5% of each own base,
-  // not 5% split across them. Each account gets its own trade with a fresh id.
+  // Price each target account's holdings so "% of book" is against the real current
+  // book value, not a cost-basis fallback for anything not yet fetched.
+  const acctSyms = [...new Set(applyTo.flatMap(i => doc.portfolios[i].trades.map(x => x.sym)))];
+  await Promise.allSettled(acctSyms.filter(s => !prices[s]).map(fetchPrice));
+
+  // "% of book" is per-account and measured against THAT account's value now: 0.5%
+  // lands as 0.5% of the book (funded from cash), not 0.5 units of the fixed 100 base.
+  // Each account gets its own trade with a fresh id and its own base snapshot.
   await mutate(() => {
-    applyTo.forEach(i => doc.portfolios[i].trades.push({
-      id: newId(), ts: when, side, sym, mode, price, amt: mode === 'all' ? 0 : amt }));
+    applyTo.forEach(i => {
+      const t = { id: newId(), ts: when, side, sym, mode, price, amt: mode === 'all' ? 0 : amt };
+      if (mode === 'pct') t.base = replay(doc.portfolios[i].trades).total;
+      doc.portfolios[i].trades.push(t);
+    });
   });
   await loadPrices();
   render();
@@ -1058,9 +1071,15 @@ async function doImport() {
     : [...tradeAccts].filter(i => doc.portfolios[i]).sort((a, b) => a - b);
   if (!targets.length) return impErr('Pick at least one account.');
 
+  // price the target accounts so "% of book" is against the real book value
+  const impSyms = [...new Set(targets.flatMap(i => doc.portfolios[i].trades.map(x => x.sym)))];
+  await Promise.allSettled(impSyms.filter(s => !prices[s]).map(fetchPrice));
   closeImport();
   await mutate(() => {
-    targets.forEach(i => parsed.forEach(t => doc.portfolios[i].trades.push({ id: newId(), ...t })));
+    targets.forEach(i => {
+      const base = replay(doc.portfolios[i].trades).total;   // this account's value now
+      parsed.forEach(t => doc.portfolios[i].trades.push({ id: newId(), base, ...t }));
+    });
   });
   await loadPrices();
   render();
