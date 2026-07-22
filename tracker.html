@@ -770,6 +770,24 @@ function localNow() {
   return d.toISOString().slice(0, 16);
 }
 
+// Keep the "When" field on the current minute so a trade logged after the page has
+// been open a while is still stamped "now". forceWhenNow() resets it (unlock / after
+// logging); the clock only advances it while it still holds the auto value and isn't
+// being hand-edited — a time you typed is left alone.
+let whenAuto = '';
+function forceWhenNow() { const el = $('t-when'); if (!el) return; el.value = localNow(); whenAuto = el.value; }
+function setWhenNow() {
+  const el = $('t-when');
+  if (!el || el === document.activeElement) return;
+  if (el.value === '' || el.value === whenAuto) { el.value = localNow(); whenAuto = el.value; }
+}
+let whenTimer = null;
+function startWhenClock() {
+  if (whenTimer) return;                                       // a single clock
+  const loop = () => { setWhenNow(); whenTimer = setTimeout(loop, 60000 - (Date.now() % 60000)); };
+  loop();                                                      // fires again on each minute boundary
+}
+
 function onSideChange() {
   const sell = $('t-side').value === 'sell';
   $('wrap-mode').classList.toggle('hide', !sell);
@@ -835,7 +853,7 @@ async function logTrade() {
   }
 
   ['t-sym', 't-amt', 't-price'].forEach(id => $(id).value = '');
-  $('t-when').value = localNow();
+  forceWhenNow();
 
   // Price each target account's holdings so "% of book" is against the real current
   // book value, not a cost-basis fallback for anything not yet fetched.
@@ -1642,7 +1660,8 @@ async function unlock() {
 
     $('gate').classList.add('hide');
     $('app').classList.remove('hide');
-    $('t-when').value = localNow();
+    forceWhenNow();
+    startWhenClock();
     onSideChange();
     render();
     await loadPrices();      // no-op now; everything is already cached
