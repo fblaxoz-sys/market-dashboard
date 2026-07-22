@@ -139,7 +139,6 @@ th.sortable:hover{color:var(--accent)}
     <div>
       <span class="logo logo-hd" role="img" aria-label="Christopher Edwards Financial Associates"></span>
       <h1>Shared Portfolio Tracker</h1>
-      <p class="sub">Log a trade &mdash; the portfolio updates itself &middot; everyone with the passcode sees the same book</p>
     </div>
     <div class="row">
       <button class="btn" onclick="refreshAll()"><span id="ref-ico">&#8635;</span> Refresh</button>
@@ -151,23 +150,6 @@ th.sortable:hover{color:var(--accent)}
   <div id="mem-warn" class="banner banner-warn">
     <strong>Not saving permanently.</strong> The server has no database configured
     (<code>DATABASE_URL</code>), so changes are lost when it restarts.
-  </div>
-
-  <!-- portfolio picker -->
-  <div class="card">
-    <div class="row">
-      <div style="flex:1;min-width:200px">
-        <label for="pf-pick">Portfolio</label>
-        <select id="pf-pick" onchange="pickPf(this.value)"></select>
-      </div>
-      <div style="align-self:flex-end" class="row">
-        <button class="btn btn-sm" onclick="newPf()">+ Empty</button>
-        <button class="btn btn-sm" onclick="openExisting()">+ From what I own</button>
-        <button class="btn btn-sm" onclick="renamePf()">Rename</button>
-        <button class="btn btn-sm btn-danger" onclick="delPf()">Delete</button>
-      </div>
-    </div>
-    <div id="saved-note" class="sub" style="margin-top:12px"></div>
   </div>
 
   <!-- log a trade -->
@@ -215,28 +197,42 @@ th.sortable:hover{color:var(--accent)}
       <span class="sub" style="margin-right:2px">ACCOUNTS</span>
       <span id="t-accts" class="row" style="gap:6px"></span>
     </div>
-    <p class="sub" id="t-hint" style="margin-top:10px"></p>
-  </div>
-
-  <!-- positions -->
-  <div class="card" style="padding:0;overflow:hidden">
-    <div style="padding:16px 18px 0"><h2 style="margin-bottom:0">Positions</h2>
-      <p class="sub" style="margin-bottom:12px">Everything you hold &mdash; owned holdings and logged trades. Use &times; to remove one.</p></div>
-    <div class="table-wrap"><table id="pos-tbl">
-      <tbody><tr><td class="empty">No trades yet — log one above.</td></tr></tbody>
-    </table></div>
   </div>
 
   <!-- trade log -->
   <div class="card" style="padding:0;overflow:hidden">
     <div class="spread" style="padding:16px 18px 12px">
-      <div><h2 style="margin-bottom:0">Trade log</h2>
-        <p class="sub">Every trade, newest first</p></div>
+      <div><h2 style="margin-bottom:0">Trade log</h2></div>
       <button class="btn btn-sm" onclick="exportTrades()">Export CSV</button>
     </div>
     <div class="table-wrap"><table id="log-tbl">
       <tbody><tr><td class="empty">Nothing logged yet.</td></tr></tbody>
     </table></div>
+  </div>
+
+  <!-- positions -->
+  <div class="card" style="padding:0;overflow:hidden">
+    <div style="padding:16px 18px 12px"><h2 style="margin-bottom:0">Positions</h2></div>
+    <div class="table-wrap"><table id="pos-tbl">
+      <tbody><tr><td class="empty">No trades yet — log one above.</td></tr></tbody>
+    </table></div>
+  </div>
+
+  <!-- portfolio picker -->
+  <div class="card">
+    <div class="row">
+      <div style="flex:1;min-width:200px">
+        <label for="pf-pick">Portfolio</label>
+        <select id="pf-pick" onchange="pickPf(this.value)"></select>
+      </div>
+      <div style="align-self:flex-end" class="row">
+        <button class="btn btn-sm" onclick="newPf()">+ Empty</button>
+        <button class="btn btn-sm" onclick="openExisting()">+ From what I own</button>
+        <button class="btn btn-sm" onclick="renamePf()">Rename</button>
+        <button class="btn btn-sm btn-danger" onclick="delPf()">Delete</button>
+      </div>
+    </div>
+    <div id="saved-note" class="sub" style="margin-top:12px"></div>
   </div>
 
   <!-- totals -->
@@ -245,8 +241,7 @@ th.sortable:hover{color:var(--accent)}
   <!-- performance -->
   <div class="card">
     <div class="spread" style="margin-bottom:12px">
-      <div><h2 style="margin-bottom:0">Performance</h2>
-        <p class="sub">Candles of the whole book &middot; compare portfolios &amp; the S&amp;P 500</p></div>
+      <div><h2 style="margin-bottom:0">Performance</h2></div>
       <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
         <div class="row" id="perf-periods"></div>
         <div class="row" id="perf-candles" style="gap:6px"></div>
@@ -257,11 +252,6 @@ th.sortable:hover{color:var(--accent)}
   </div>
 
   <p class="foot">
-    Everything runs off a base of 100 units. A 2% buy spends 2 units of cash, so
-    &ldquo;2%&rdquo; is the same size whichever year you trade it. Positions, cash and
-    weights are all replayed from the log, so correcting a trade corrects the portfolio.
-    Cost basis is the weighted average across your buys; realized P&amp;L is booked against
-    it when you sell.<br />
     Prices are delayed daily closes from Yahoo Finance. This is a tracking tool, not
     investment advice, and nothing here is a recommendation to buy or sell anything.
   </p>
@@ -720,11 +710,6 @@ function onModeChange() {
   const mode = $('t-mode').value;
   $('wrap-amt').classList.toggle('hide', sell && mode === 'all');
   $('lbl-amt').textContent = (sell && mode === 'frac') ? 'Percent of position' : 'Percent of book';
-  $('t-hint').textContent =
-    !sell                ? 'Spends that % of the 100% base. Buying 2% at $180 costs 2 units.'
-    : mode === 'all'     ? 'Sells the entire position at the price you enter.'
-    : mode === 'frac'    ? 'Sells that share of the position — 50 means half of what you hold.'
-    :                      'Sells that % of the base out of the position.';
 }
 
 // Which accounts a new trade lands in. Chips, one per portfolio — a native
