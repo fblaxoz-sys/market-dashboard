@@ -541,16 +541,22 @@ function replay(trades) {
     }
 
     // sell — resolve however it was expressed into a share count
+    const heldBefore = p.shares;
     let shares;
     if (t.mode === 'all')       shares = p.shares;
     else if (t.mode === 'frac') shares = p.shares * (+t.amt / 100);
     else                        shares = (t.base > 0 ? (+t.amt) / 100 * t.base : +t.amt) / price;
 
-    if (!(shares > 0)) { notes.push([t.id, 'nothing to sell']); t._units = 0; continue; }
+    if (!(shares > 0)) { notes.push([t.id, 'nothing to sell']); t._units = 0; t._pctPos = 0; t._pctBook = 0; continue; }
     if (shares > p.shares + 1e-12) {
       notes.push([t.id, 'more than held — capped']);
       shares = p.shares;
     }
+    // Book value right before the sell (in units; current prices, cost-basis
+    // fallback). Lets every sell report BOTH how much of the position and how much
+    // of the whole book it was, no matter which way it was entered.
+    let bookVal = cash;
+    for (const s in pos) { const q = prices[s]; bookVal += q ? pos[s].shares * q.cur : pos[s].cost; }
     const avg      = p.shares > 0 ? p.cost / p.shares : 0;
     const proceeds = shares * price;
     realized += shares * (price - avg);
@@ -559,6 +565,8 @@ function replay(trades) {
     cash     += proceeds;
     t._units  = proceeds;
     t._gain   = shares * (price - avg);
+    t._pctPos  = heldBefore > 0 ? shares / heldBefore * 100 : 0;
+    t._pctBook = bookVal   > 0 ? proceeds / bookVal * 100 : 0;
   }
 
   const rows = [];
@@ -674,10 +682,10 @@ function render(opts) {
         <th class="r">Price</th><th class="r">Value</th><th class="r">Realized</th><th></th>
       </tr></thead>
       <tbody>${allLog.map(({ t, pi, pname, note }) => {
-        const size = t.side === 'buy' ? (+t.amt).toFixed(2) + '% of book'
-                   : t.mode === 'all'  ? 'closed out'
-                   : t.mode === 'frac' ? (+t.amt).toFixed(0) + '% of position'
-                   :                     (+t.amt).toFixed(2) + '% of book';
+        // Sells always report both measures; buys are additions, so "% of book" only.
+        const size = t.side === 'buy'
+          ? (+t.amt).toFixed(2) + '% of book'
+          : `${+((t._pctPos ?? 0).toFixed(1))}% of position · ${(t._pctBook ?? 0).toFixed(2)}% of book`;
         const tag = t.side === 'buy' ? ['buy', 'BUY'] : ['sell', 'SELL'];
         return `
         <tr>
@@ -1089,10 +1097,12 @@ async function doImport() {
 }
 
 function exportTrades() {
-  const rows = [['when','account','action','ticker','size_mode','size','price','value_pct','realized_pct']];
+  const rows = [['when','account','action','ticker','size_mode','size',
+                 'pct_of_position','pct_of_book','price','value_pct','realized_pct']];
   doc.portfolios.forEach(p => {
     const s = replay(p.trades);
-    s.ordered.forEach(t => { if (!t.opening) rows.push([t.ts, p.name, t.side, t.sym, t.mode, t.amt, t.price,
+    s.ordered.forEach(t => { if (!t.opening) rows.push([t.ts, p.name, t.side, t.sym, t.mode, t.amt,
+      t._pctPos != null ? t._pctPos.toFixed(2) : '', t._pctBook != null ? t._pctBook.toFixed(2) : '', t.price,
       t._units != null ? t._units.toFixed(4) : '', t._gain != null ? t._gain.toFixed(4) : '']); });
   });
   const csv = rows.map(r => r.map(c => {
