@@ -317,7 +317,60 @@ with extra trades on top shows only the real BUY/SELL rows in the trade log, the
 Trades stat counts only those, and every Positions row has an `×` (`delHolding`)
 that removes the whole holding — seed and trades — after a confirm.
 
-## 12. Production smoke test
+## 12. Weekly log, notes, and the xlsx export
+
+**Weekly scope.** Seed trades on both sides of the most recent Monday. Then:
+
+| Check | Expected |
+|---|---|
+| Default view | `week`; header reads "Week of Mon, \<date\> · N trades (M all time)" |
+| A trade timestamped exactly Monday 00:00+ | **included** (boundary is inclusive) |
+| "All time" | shows every trade; header switches to "Every trade ever logged · M total" |
+| Empty week with older trades | message names the count and points at the toggle |
+
+Observed 2026-07-22 (a Wednesday): week start `2026-07-20T00:00`, 3 of 5 trades in
+the week.
+
+**Notes.** Log a trade with a note → `t.note` set, the input clears, the Note cell
+shows it. Click the Note cell → edit modal opens pre-filled. Clear the box and save
+→ the key is deleted. Notes appear in the export.
+
+> Gotcha when testing: after a save, `mutate` → `adopt` **replaces `doc`**, so any
+> trade object you captured beforehand is stale. Always re-find the trade by id in
+> the current `doc`, or a passing change looks like a failure. This produced two
+> false negatives the first time through.
+
+**XSS.** Set a note to `<b>x</b> <script>window.__X=1</script>`, view it in All time:
+it must render as literal text, `window.__X` stays undefined, and
+`querySelectorAll('#log-tbl .note-cell b, ... script').length === 0`.
+
+**The xlsx is real.** Don't eyeball the download — validate the bytes:
+
+```js
+// in the page console: build the workbook and dump base64
+const buf = await buildXlsx(header, rows, 'All trades').arrayBuffer();
+let bin=''; const b=new Uint8Array(buf);
+for (let i=0;i<b.length;i++) bin+=String.fromCharCode(b[i]);
+btoa(bin)
+```
+
+```python
+# then, locally
+import base64, zipfile, datetime, openpyxl
+open('t.xlsx','wb').write(base64.b64decode(open('b64.txt').read().strip()))
+z = zipfile.ZipFile('t.xlsx'); assert z.testzip() is None      # CRCs valid
+ws = openpyxl.load_workbook('t.xlsx').active
+dates = [r[0] for r in ws.iter_rows(min_row=2, values_only=True)]
+assert all(isinstance(d, datetime.datetime) for d in dates)    # real dates, not text
+assert dates == sorted(dates)                                  # oldest first
+```
+
+**Expected:** 6 parts in the zip, all CRCs valid, every Date cell a `datetime`,
+ascending, and wall-clock times identical to what was logged (a timezone bug would
+shift them by hours or a day). Also confirm the export respects the current view —
+week view exports only the week's rows.
+
+## 13. Production smoke test
 
 After any deploy:
 
