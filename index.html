@@ -2304,13 +2304,16 @@ async function renderPortfolio() {
   // retry, so a big portfolio no longer trips Yahoo's rate limit and drops names.
   const syms = [...new Set(pf.holdings.map(h=>h.sym))], price = {}, divsBy = {}, lastDt = {}, prevClose = {};
   let spyNow = null, spyOhlc = null, spyDivs = [];
-  await mapPool(['SPY', ...syms], 6, async s => {
+  // SPY is deduped: it is always fetched for the benchmark and may ALSO be a
+  // holding. Capture the benchmark series without returning early — the early
+  // return meant a SPY position never got a price and rendered blank.
+  await mapPool([...new Set(['SPY', ...syms])], 6, async s => {
     try {
       const o = await getOHLC(s); const last = o.ohlc[o.ohlc.length-1];
-      if (s === 'SPY') { spyOhlc = o.ohlc; spyNow = last[4]; spyDivs = o.divs || []; return; }
+      if (s === 'SPY') { spyOhlc = o.ohlc; spyNow = last[4]; spyDivs = o.divs || []; }
       price[s] = last[4]; lastDt[s] = last[0]; divsBy[s] = o.divs;
       prevClose[s] = o.ohlc.length > 1 ? o.ohlc[o.ohlc.length-2][4] : null;
-    } catch(e){ if (s !== 'SPY') { price[s] = null; divsBy[s] = []; } }
+    } catch(e){ price[s] = null; divsBy[s] = []; }
   });
   // SPY dividends per share since a date — the benchmark must be TOTAL return,
   // because the portfolio side already counts its own dividends (as cash).
