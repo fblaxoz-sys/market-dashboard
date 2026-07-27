@@ -1409,6 +1409,7 @@ def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d"):
         raise last_err or RuntimeError('yahoo fetch failed')
     res = d['chart']['result'][0]; q = res['indicators']['quote'][0]
     ts = res['timestamp']
+    adj = ((res.get('indicators', {}).get('adjclose') or [{}])[0]).get('adjclose') or []
     # Daily bars key by date; intraday bars need the time too. UTC keeps the
     # strings sortable and, for the US regular session, on the same calendar
     # date as Eastern time.
@@ -1417,8 +1418,19 @@ def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d"):
     else:
         stamp = lambda t: _dt.datetime.fromtimestamp(t, _dt.timezone.utc).strftime('%Y-%m-%dT%H:%M')
     rows = []
-    for t, o, h, l, c, v in zip(ts, q['open'], q['high'], q['low'], q['close'], q['volume']):
-        if None in (o, h, l, c, v): continue
+    for i, t in enumerate(ts):
+        o, h, l, c, v = q['open'][i], q['high'][i], q['low'][i], q['close'][i], q['volume'][i]
+        # Yahoo intermittently nulls the volume (or raw close) of the MOST RECENT
+        # settled daily bar for datacenter IPs like Render's. Dropping the whole
+        # bar made "previous close" a session too old and flipped the portfolio
+        # Day column's sign. Keep the bar whenever a price is recoverable (raw
+        # close, else adjclose); backfill the rest rather than discard the day.
+        if c is None and i < len(adj): c = adj[i]
+        if c is None: continue
+        o = c if o is None else o
+        h = c if h is None else h
+        l = c if l is None else l
+        v = 0 if v is None else v
         rows.append((stamp(t), o, h, l, c, v))
     if not divs:
         return rows
