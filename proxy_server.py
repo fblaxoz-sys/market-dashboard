@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'tailrepair-3'   # bumped per deploy so /healthz confirms which code is live
+_BUILD = 'rebuild-4'   # bumped per deploy so /healthz confirms which code is live
 _DROPPED = []       # recent null-close daily bars Yahoo sent (see /etf-chart dbg)
 _CHART_CACHE = {}   # "chart:SYM:interval" -> (fetched_at, payload_bytes) — see /etf-chart
 _YAHOO_SEM = threading.BoundedSemaphore(4)   # cap concurrent Yahoo hits (throttle-avoidance)
@@ -1462,6 +1462,29 @@ def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d", days=None):
     dv.sort()
     return rows, dv
 
+def _yahoo_prev_close(sym):
+    """(previous settled close, live price) straight from the chart response's
+    meta block. Requesting a window that starts today makes Yahoo's
+    chartPreviousClose the PRIOR session's close — and meta stays correct even
+    when that session's bar comes back null, which is how Render lost whole
+    sessions from the daily array. Returns (None, None) on failure."""
+    import urllib.request, json as _json, datetime as _dt
+    try:
+        t = _dt.date.today()
+        p1 = int(time.mktime(_dt.datetime(t.year, t.month, t.day).timetuple()))
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym.replace('^','%5E')}"
+               f"?period1={p1}&period2={int(time.time())+86400}&interval=1d")
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with _YAHOO_SEM:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                m = _json.load(r)['chart']['result'][0]['meta']
+        pc, lp = m.get('chartPreviousClose'), m.get('regularMarketPrice')
+        return (round(float(pc), 4) if pc else None,
+                round(float(lp), 4) if lp else None)
+    except Exception as e:
+        print(f"  [prevclose] {sym}: {e}")
+        return None, None
+
 def _atr_series(highs, lows, closes, p=14):
     import numpy as np
     n = len(closes); tr = [highs[0]-lows[0]]
@@ -2507,13 +2530,31 @@ class Handler(SimpleHTTPRequestHandler):
                         # `dbg` is echoed in the payload so production behaviour is
                         # observable without server-log access.
                         try:
+                            del _DROPPED[:]
                             have = {r[0] for r in rows}
                             fresh = _yahoo_ohlc(sym, days=15)
                             extra = [r for r in fresh if r[0] not in have]
                             if extra:
                                 rows = sorted(rows + extra, key=lambda r: r[0])
-                            dbg = (f"repair:+{len(extra)} of {len(fresh)}"
-                                   f" dropped={_DROPPED[-6:]}")
+                            dbg = f"repair:+{len(extra)}/{len(fresh)}"
+                            # Yahoo can send a settled session as an entirely empty
+                            # bar (raw close AND adjclose null) to datacenter IPs, so
+                            # no refetch recovers it from the bar array. meta's
+                            # chartPreviousClose IS reliable, so rebuild the lost
+                            # session from it: request a window starting today and
+                            # the "previous close" is by definition the prior
+                            # session's — the close the Day column needs.
+                            gap = sorted({d.split(':', 1)[1] for d in _DROPPED
+                                          if d.startswith(sym + ':')}
+                                         - {r[0] for r in rows})
+                            gap = [g for g in gap if len(rows) > 1 and rows[0][0] < g < rows[-1][0]]
+                            if gap:
+                                pc, lp = _yahoo_prev_close(sym)
+                                dbg += f" gap={gap[-1]} pc={pc}"
+                                if pc:
+                                    rows = sorted(rows + [(gap[-1], pc, pc, pc, pc, 0)],
+                                                  key=lambda r: r[0])
+                                    dbg += " REBUILT"
                         except Exception as e:
                             dbg = f"repair-failed:{type(e).__name__}:{e}"[:120]
                             print(f"  [chart] tail-repair failed for {sym}: {e}")
