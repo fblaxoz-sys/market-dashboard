@@ -442,13 +442,19 @@ Data: `/etf-chart?sym=X&interval=15m|60m|1d` (see § Prices). Client caches:
 `series` (daily closes, shared with quotes) and `intraday['15m'|'60m']`. A sort
 click re-renders tables only (`render({skipChart:true})`).
 
-### Trade log: weekly scope, notes, and the xlsx export
+### Trade log: scope views, notes, and the xlsx export
 
-**Weekly view** (`logView`, default `'week'`). `weekStartTs()` returns the most
-recent Monday 00:00 **local** as `YYYY-MM-DDT00:00` — the same shape as `t.ts`, so
-the cutoff is a plain string compare. This is strictly a **filter**: no trade is
-ever moved or archived, so "All time" cannot have lost anything and a weekly reset
-is not destructive. An empty week says so and points at the toggle rather than
+**Scope views** (`logView`, default `'week'`). Three chips: **This week / This
+month / All time**. `logScopeStart(view)` is the single source of truth for the
+cutoff — `weekStartTs()` (most recent Monday 00:00 local), `monthStartTs()` (the
+1st, 00:00 local), or `null` for all-time — and `inLogScope(entry, cut)` applies
+it. The table, the header label and the export all go through those two, so they
+can't disagree about what a view means. Cutoffs are `YYYY-MM-DDT00:00`, the same
+shape as `t.ts`, so comparison is a plain string compare. Month is a **calendar**
+month (since the 1st), deliberately mirroring the calendar week (since Monday),
+not a trailing 30 days. Every view is strictly a **filter** — no trade is ever
+moved or archived, so "All time" can't have lost anything and no reset is
+destructive. An empty scoped view says so and points at the toggle rather than
 showing the generic empty state.
 
 **Notes** (`t.note`, optional, ≤280 chars). Entered with the trade (applies to
