@@ -9,6 +9,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
+_BUILD = 'tailrepair-1'   # bumped per deploy so /healthz confirms which code is live
 _CHART_CACHE = {}   # "chart:SYM:interval" -> (fetched_at, payload_bytes) — see /etf-chart
 _YAHOO_SEM = threading.BoundedSemaphore(4)   # cap concurrent Yahoo hits (throttle-avoidance)
 
@@ -2250,7 +2251,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            self.wfile.write(b'{"ok":true}')
+            self.wfile.write(('{"ok":true,"build":"%s"}' % _BUILD).encode())
             return
 
         # Shared portfolio tracker (tracker.html) — read the shared document.
@@ -2476,6 +2477,19 @@ class Handler(SimpleHTTPRequestHandler):
                     rng, cap = IV[iv]
                     if iv == '1d':
                         rows, divs = _yahoo_ohlc(sym, rng, divs=True)   # multi-year entries + dividends
+                        # Yahoo intermittently truncates the most recent settled
+                        # session on the long-range feed for datacenter IPs
+                        # (Render's), which made the portfolio Day column compare
+                        # today against a session-old close. Backfill any missing
+                        # recent bars from a short-range fetch (more reliable tail);
+                        # scoped to this endpoint so the bulk scanner is untouched.
+                        try:
+                            have = {r[0] for r in rows}
+                            extra = [r for r in _yahoo_ohlc(sym, '1mo') if r[0] not in have]
+                            if extra:
+                                rows = sorted(rows + extra, key=lambda r: r[0])
+                        except Exception as e:
+                            print(f"  [chart] tail-repair failed for {sym}: {e}")
                     else:
                         rows, divs = _yahoo_ohlc(sym, rng, divs=False, interval=iv), []
                     ohlc = [[r[0], round(r[1],2), round(r[2],2), round(r[3],2), round(r[4],2)] for r in rows[-cap:]]
