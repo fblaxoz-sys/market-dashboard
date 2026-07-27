@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'tailrepair-1'   # bumped per deploy so /healthz confirms which code is live
+_BUILD = 'tailrepair-2'   # bumped per deploy so /healthz confirms which code is live
 _CHART_CACHE = {}   # "chart:SYM:interval" -> (fetched_at, payload_bytes) — see /etf-chart
 _YAHOO_SEM = threading.BoundedSemaphore(4)   # cap concurrent Yahoo hits (throttle-avoidance)
 
@@ -1379,14 +1379,26 @@ QUAD_PLAYBOOK = {
         'etfs': ['TLT','IEF','AGG','BND','LQD','VCIT','VCSH','MUB','XLU','VPU','XLP','VDC','XLV','VHT','USMV','SPLV','QUAL','SCHD','VYM','VIG','HDV','DVY','SDY','NOBL','DGRO','SPHD','GLD','GLDM','IAU','SGOL']},
 }
 
-def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d"):
+def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d", days=None):
     import urllib.request, json as _json, datetime as _dt
     # Yahoo intermittently 429s/5xxes bursts from shared datacenter IPs like
     # Render's — the classic "no price for X, fine on the next load". Retry
     # across both query hosts with a short backoff, and cap concurrent Yahoo
     # calls (semaphore) so a prefetch burst doesn't trigger the throttle at all.
-    qs = (f"/v8/finance/chart/{sym.replace('^','%5E')}"
-          f"?range={rng}&interval={interval}" + ("&events=div" if divs else ""))
+    #
+    # `days`: request an explicit period1/period2 window instead of range=.
+    # Yahoo's long `range=` responses are edge-cached and can come back to
+    # datacenter IPs missing the most recent settled session (history chunk
+    # ends Thursday, live quote appended as Monday, Friday lost in between).
+    # The explicit-epoch URL is a different cache key and returns a fresh tail.
+    if days:
+        now = int(time.time())
+        qs = (f"/v8/finance/chart/{sym.replace('^','%5E')}"
+              f"?period1={now - days*86400}&period2={now + 86400}"
+              f"&interval={interval}" + ("&events=div" if divs else ""))
+    else:
+        qs = (f"/v8/finance/chart/{sym.replace('^','%5E')}"
+              f"?range={rng}&interval={interval}" + ("&events=div" if divs else ""))
     last_err = None
     d = None
     for attempt, host in enumerate(['query1.finance.yahoo.com',
@@ -2475,26 +2487,33 @@ class Handler(SimpleHTTPRequestHandler):
                     payload = hit[1]
                 else:
                     rng, cap = IV[iv]
+                    dbg = ''
                     if iv == '1d':
                         rows, divs = _yahoo_ohlc(sym, rng, divs=True)   # multi-year entries + dividends
-                        # Yahoo intermittently truncates the most recent settled
-                        # session on the long-range feed for datacenter IPs
-                        # (Render's), which made the portfolio Day column compare
-                        # today against a session-old close. Backfill any missing
-                        # recent bars from a short-range fetch (more reliable tail);
-                        # scoped to this endpoint so the bulk scanner is untouched.
+                        # Yahoo's edge-cached long-range feed can reach datacenter
+                        # IPs (Render's) missing the most recent settled session,
+                        # which made the portfolio Day column compare today against
+                        # a session-old close (INTC read -9% instead of -1.5%).
+                        # Re-request the last ~15 days by explicit epoch — a
+                        # different cache key that returns a fresh tail — and merge.
+                        # `dbg` is echoed in the payload so production behaviour is
+                        # observable without server-log access.
                         try:
                             have = {r[0] for r in rows}
-                            extra = [r for r in _yahoo_ohlc(sym, '1mo') if r[0] not in have]
+                            fresh = _yahoo_ohlc(sym, days=15)
+                            extra = [r for r in fresh if r[0] not in have]
                             if extra:
                                 rows = sorted(rows + extra, key=lambda r: r[0])
+                            dbg = f"repair:+{len(extra)} of {len(fresh)}"
                         except Exception as e:
+                            dbg = f"repair-failed:{type(e).__name__}:{e}"[:120]
                             print(f"  [chart] tail-repair failed for {sym}: {e}")
                     else:
                         rows, divs = _yahoo_ohlc(sym, rng, divs=False, interval=iv), []
                     ohlc = [[r[0], round(r[1],2), round(r[2],2), round(r[3],2), round(r[4],2)] for r in rows[-cap:]]
                     payload = json.dumps({'sym': sym, 'interval': iv, 'ohlc': ohlc,
-                                          'divs': [[d, round(a, 4)] for d, a in divs]}).encode()
+                                          'divs': [[d, round(a, 4)] for d, a in divs],
+                                          'dbg': dbg}).encode()
                     _CHART_CACHE[key] = (now, payload)
                     if len(_CHART_CACHE) > 300:          # bound memory on the 512MB tier
                         for k, _ in sorted(_CHART_CACHE.items(), key=lambda x: x[1][0])[:150]:
