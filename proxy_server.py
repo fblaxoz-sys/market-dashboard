@@ -9,7 +9,8 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'tailrepair-2'   # bumped per deploy so /healthz confirms which code is live
+_BUILD = 'tailrepair-3'   # bumped per deploy so /healthz confirms which code is live
+_DROPPED = []       # recent null-close daily bars Yahoo sent (see /etf-chart dbg)
 _CHART_CACHE = {}   # "chart:SYM:interval" -> (fetched_at, payload_bytes) — see /etf-chart
 _YAHOO_SEM = threading.BoundedSemaphore(4)   # cap concurrent Yahoo hits (throttle-avoidance)
 
@@ -1391,14 +1392,18 @@ def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d", days=None):
     # datacenter IPs missing the most recent settled session (history chunk
     # ends Thursday, live quote appended as Monday, Friday lost in between).
     # The explicit-epoch URL is a different cache key and returns a fresh tail.
+    # includeAdjustedClose: Yahoo omits the adjclose array unless asked, and it
+    # is the only recoverable price when a bar's raw close comes back null (which
+    # is how Render lost whole settled sessions from the daily series).
+    extra_qs = "&includeAdjustedClose=true" + ("&events=div" if divs else "")
     if days:
         now = int(time.time())
         qs = (f"/v8/finance/chart/{sym.replace('^','%5E')}"
               f"?period1={now - days*86400}&period2={now + 86400}"
-              f"&interval={interval}" + ("&events=div" if divs else ""))
+              f"&interval={interval}" + extra_qs)
     else:
         qs = (f"/v8/finance/chart/{sym.replace('^','%5E')}"
-              f"?range={rng}&interval={interval}" + ("&events=div" if divs else ""))
+              f"?range={rng}&interval={interval}" + extra_qs)
     last_err = None
     d = None
     for attempt, host in enumerate(['query1.finance.yahoo.com',
@@ -1439,7 +1444,10 @@ def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d", days=None):
         # Day column's sign. Keep the bar whenever a price is recoverable (raw
         # close, else adjclose); backfill the rest rather than discard the day.
         if c is None and i < len(adj): c = adj[i]
-        if c is None: continue
+        if c is None:
+            _DROPPED.append(f"{sym}:{stamp(t)}")   # visible via /etf-chart dbg
+            del _DROPPED[:-40]
+            continue
         o = c if o is None else o
         h = c if h is None else h
         l = c if l is None else l
@@ -2504,7 +2512,8 @@ class Handler(SimpleHTTPRequestHandler):
                             extra = [r for r in fresh if r[0] not in have]
                             if extra:
                                 rows = sorted(rows + extra, key=lambda r: r[0])
-                            dbg = f"repair:+{len(extra)} of {len(fresh)}"
+                            dbg = (f"repair:+{len(extra)} of {len(fresh)}"
+                                   f" dropped={_DROPPED[-6:]}")
                         except Exception as e:
                             dbg = f"repair-failed:{type(e).__name__}:{e}"[:120]
                             print(f"  [chart] tail-repair failed for {sym}: {e}")
