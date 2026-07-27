@@ -9,8 +9,14 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'rebuild-4'   # bumped per deploy so /healthz confirms which code is live
-_DROPPED = []       # recent null-close daily bars Yahoo sent (see /etf-chart dbg)
+_BUILD = 'rebuild-5'   # bumped per deploy so /healthz confirms which code is live
+# Null-close daily bars Yahoo sent, tracked PER THREAD: ThreadingHTTPServer runs
+# a thread per request and the portfolio fetches symbols in parallel, so a shared
+# list let one request clear another's dropped dates and silently skip a rebuild.
+_DROP_TL = threading.local()
+def _drop_reset(): _DROP_TL.dates = []
+def _drop_add(x):  _DROP_TL.dates = (getattr(_DROP_TL, 'dates', []) + [x])[-40:]
+def _drop_get():   return getattr(_DROP_TL, 'dates', [])
 _CHART_CACHE = {}   # "chart:SYM:interval" -> (fetched_at, payload_bytes) — see /etf-chart
 _YAHOO_SEM = threading.BoundedSemaphore(4)   # cap concurrent Yahoo hits (throttle-avoidance)
 
@@ -1445,8 +1451,7 @@ def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d", days=None):
         # close, else adjclose); backfill the rest rather than discard the day.
         if c is None and i < len(adj): c = adj[i]
         if c is None:
-            _DROPPED.append(f"{sym}:{stamp(t)}")   # visible via /etf-chart dbg
-            del _DROPPED[:-40]
+            _drop_add(f"{sym}:{stamp(t)}")   # visible via /etf-chart dbg
             continue
         o = c if o is None else o
         h = c if h is None else h
@@ -2530,7 +2535,7 @@ class Handler(SimpleHTTPRequestHandler):
                         # `dbg` is echoed in the payload so production behaviour is
                         # observable without server-log access.
                         try:
-                            del _DROPPED[:]
+                            _drop_reset()
                             have = {r[0] for r in rows}
                             fresh = _yahoo_ohlc(sym, days=15)
                             extra = [r for r in fresh if r[0] not in have]
@@ -2544,7 +2549,7 @@ class Handler(SimpleHTTPRequestHandler):
                             # session from it: request a window starting today and
                             # the "previous close" is by definition the prior
                             # session's — the close the Day column needs.
-                            gap = sorted({d.split(':', 1)[1] for d in _DROPPED
+                            gap = sorted({d.split(':', 1)[1] for d in _drop_get()
                                           if d.startswith(sym + ':')}
                                          - {r[0] for r in rows})
                             gap = [g for g in gap if len(rows) > 1 and rows[0][0] < g < rows[-1][0]]
