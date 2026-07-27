@@ -224,8 +224,9 @@ th.sortable:hover{color:var(--accent)}
       <div><h2 style="margin-bottom:0">Trade log</h2>
         <p class="sub" id="log-range" style="margin-top:4px"></p></div>
       <div class="row" style="gap:6px">
-        <span class="chip" id="log-chip-week" onclick="setLogView('week')">This week</span>
-        <span class="chip" id="log-chip-all"  onclick="setLogView('all')">All time</span>
+        <span class="chip" id="log-chip-week"  onclick="setLogView('week')">This week</span>
+        <span class="chip" id="log-chip-month" onclick="setLogView('month')">This month</span>
+        <span class="chip" id="log-chip-all"   onclick="setLogView('all')">All time</span>
         <button class="btn btn-sm" onclick="exportTrades()">Export Excel</button>
       </div>
     </div>
@@ -385,7 +386,7 @@ let doc        = { portfolios: [] };
 let version    = 0;
 let active     = 0;
 let tradeAccts = new Set();   // portfolio indices a new trade is logged into (see the trade form)
-let logView    = 'week';      // trade log scope: 'week' (since Monday) | 'all' (everything ever)
+let logView    = 'week';      // trade log scope: 'week' (since Monday) | 'month' (since the 1st) | 'all'
 let prices     = {};      // sym -> {cur, prev}
 let series     = {};      // sym -> [[dateStr, close], ...]  full daily history for the chart
 let intraday   = { '15m': {}, '60m': {} };   // interval -> sym -> [[isoTs, close], ...]
@@ -742,15 +743,16 @@ function render(opts) {
 
   // Weekly view is a filter, never a move: the full history always stays in the
   // document, so switching to "All time" can't have lost anything.
-  const wkStart = weekStartTs();
-  const shown = logView === 'week' ? allLog.filter(e => (e.t.ts || '') >= wkStart) : allLog;
+  const cut = logScopeStart();
+  const shown = allLog.filter(e => inLogScope(e, cut));
   renderLogControls(allLog.length, shown.length);
 
   if (!shown.length) {
     $('log-tbl').innerHTML = '<tbody><tr><td class="empty">' + (
-      logView === 'week' && allLog.length
-        ? 'Nothing logged since Monday — switch to <strong>All time</strong> for the ' +
-          allLog.length + ' earlier trade' + (allLog.length === 1 ? '' : 's') + '.'
+      cut && allLog.length
+        ? `Nothing logged ${logView === 'week' ? 'since Monday' : 'this month'} — switch to ` +
+          `<strong>All time</strong> for the ${allLog.length} earlier trade` +
+          (allLog.length === 1 ? '' : 's') + '.'
         : 'No buys or sells logged yet — your holdings are in Positions above.'
     ) + '</td></tr></tbody>';
   } else {
@@ -1266,25 +1268,45 @@ async function doImport() {
 // The week runs Monday 00:00 → now, in your local time. Trade timestamps are
 // stored as local wall-clock strings ('YYYY-MM-DDTHH:MM'), so a cutoff in the
 // same shape compares correctly with a plain string compare.
+const tsStamp = x => {
+  const p = n => String(n).padStart(2, '0');
+  return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}T00:00`;
+};
 function weekStartTs(d) {
   const x = d ? new Date(d) : new Date();
   x.setHours(0, 0, 0, 0);
   x.setDate(x.getDate() - ((x.getDay() + 6) % 7));   // back up to Monday
-  const p = n => String(n).padStart(2, '0');
-  return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}T00:00`;
+  return tsStamp(x);
 }
+// Calendar month, mirroring the calendar week — the 1st, not a trailing 30 days.
+function monthStartTs(d) {
+  const x = d ? new Date(d) : new Date();
+  x.setHours(0, 0, 0, 0);
+  x.setDate(1);
+  return tsStamp(x);
+}
+// One place that decides the cutoff, so the table, the header and the export
+// can never disagree about what "this month" means.
+function logScopeStart(view) {
+  const v = view || logView;
+  return v === 'week' ? weekStartTs() : v === 'month' ? monthStartTs() : null;
+}
+const inLogScope = (e, cut) => cut == null || (e.t.ts || '') >= cut;
 
 function renderLogControls(totalCount, shownCount) {
-  const wk = $('log-chip-week'), all = $('log-chip-all'), lbl = $('log-range');
-  if (!wk || !all) return;
-  wk.className  = 'chip ' + (logView === 'week' ? 'on' : 'off');
-  all.className = 'chip ' + (logView === 'all'  ? 'on' : 'off');
+  const lbl = $('log-range');
+  ['week', 'month', 'all'].forEach(v => {
+    const c = $('log-chip-' + v);
+    if (c) c.className = 'chip ' + (logView === v ? 'on' : 'off');
+  });
   if (!lbl) return;
+  const tail = ` · ${shownCount} trade${shownCount === 1 ? '' : 's'} (${totalCount} all time)`;
   if (logView === 'week') {
-    const mon = new Date(weekStartTs() + ':00');
-    lbl.textContent = 'Week of ' + mon.toLocaleDateString('en-US',
-      { weekday: 'short', month: 'short', day: 'numeric' }) +
-      ` · ${shownCount} trade${shownCount === 1 ? '' : 's'} (${totalCount} all time)`;
+    lbl.textContent = 'Week of ' + new Date(weekStartTs() + ':00').toLocaleDateString('en-US',
+      { weekday: 'short', month: 'short', day: 'numeric' }) + tail;
+  } else if (logView === 'month') {
+    lbl.textContent = new Date(monthStartTs() + ':00').toLocaleDateString('en-US',
+      { month: 'long', year: 'numeric' }) + tail;
   } else {
     lbl.textContent = `Every trade ever logged · ${totalCount} total`;
   }
@@ -1420,10 +1442,8 @@ function exportTrades() {
     s.ordered.forEach(t => { if (!t.opening) entries.push({ t, acct: p.name }); });
   });
 
-  const wkStart = weekStartTs();
-  const scoped = logView === 'week'
-    ? entries.filter(e => (e.t.ts || '') >= wkStart)
-    : entries;
+  const cut = logScopeStart();
+  const scoped = entries.filter(e => inLogScope(e, cut));
   if (!scoped.length) return say('Nothing to export in this view.', 'warn');
 
   // oldest → newest by trade date
@@ -1450,12 +1470,17 @@ function exportTrades() {
     ];
   });
 
-  const label = logView === 'week' ? 'Week of ' + wkStart.slice(0, 10) : 'All trades';
-  const blob = buildXlsx(header, rows, logView === 'week' ? 'This week' : 'All trades');
-  const url = URL.createObjectURL(blob);
+  const label = logView === 'week'  ? 'Week of ' + cut.slice(0, 10)
+              : logView === 'month' ? 'Month of ' + cut.slice(0, 7)
+              :                       'All trades';
+  const sheet = logView === 'week' ? 'This week' : logView === 'month' ? 'This month' : 'All trades';
+  const file  = logView === 'week'  ? `trades-week-${cut.slice(0, 10)}`
+              : logView === 'month' ? `trades-month-${cut.slice(0, 7)}`
+              :                       'trades-all';
+  const url = URL.createObjectURL(buildXlsx(header, rows, sheet));
   const a = document.createElement('a');
   a.href = url;
-  a.download = (logView === 'week' ? `trades-week-${wkStart.slice(0, 10)}` : 'trades-all') + '.xlsx';
+  a.download = file + '.xlsx';
   a.click();
   URL.revokeObjectURL(url);
   say(`Exported ${rows.length} trade${rows.length === 1 ? '' : 's'} — ${label}.`, 'ok');
