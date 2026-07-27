@@ -2043,7 +2043,22 @@ let portfolios = JSON.parse(localStorage.getItem('portfolios') || 'null') || [];
 if (!portfolios.length) portfolios = [{ name:'My Portfolio', start:new Date().toISOString().slice(0,10), cash:0, holdings:[] }];
 let pfActive = Math.min(Math.max(0, parseInt(localStorage.getItem('pf_active')||'0',10)||0), portfolios.length-1);
 function savePortfolios(){ localStorage.setItem('portfolios', JSON.stringify(portfolios)); localStorage.setItem('pf_active', String(pfActive)); }
-function curPf(){ return portfolios[pfActive]; }
+// "All portfolios" — a virtual combined account (pfActive = -1): every dollar
+// (shares) portfolio concatenated. Lots stay SEPARATE per account (a merged
+// row would inherit the earliest date and accrue dividends the dateless
+// shares never earned — the combined total must equal the sum of the parts
+// to the cent). Read-only; shown when ≥2 dollar portfolios exist.
+function combinedPf(){
+  const ds = portfolios.filter(pfSharesMode);
+  return { name: 'All portfolios', _virtual: true,
+           start: ds.map(p=>p.start).filter(Boolean).sort()[0] || '',
+           cash: ds.reduce((a,p)=>a+(+p.cash||0),0),
+           holdings: ds.flatMap(p => p.holdings.map(h => ({ ...h, _acct: p.name }))) };
+}
+function canCombine(){ return portfolios.filter(pfSharesMode).length >= 2; }
+// The combined view is read-only — block mutations while it's selected.
+function pfGuard(){ if (curPf()._virtual) { toast('“All portfolios” is read-only — pick a specific portfolio to edit'); return true; } return false; }
+function curPf(){ return (pfActive === -1 && canCombine()) ? combinedPf() : portfolios[Math.max(0, pfActive)]; }
 // A portfolio runs in DOLLAR mode when every holding has a share count —
 // then cost ($ = shares × buy) doubles as the weight, cash is in dollars,
 // and the table shows Value / Day / P&L in real money. Legacy weight-%
@@ -2067,13 +2082,14 @@ function newPortfolio(){
   portfolios.push({ name:n, start:new Date().toISOString().slice(0,10), cash:0, holdings:[] });
   pfActive = portfolios.length-1; savePortfolios(); renderPortfolio();
 }
-function renamePortfolio(){ const n=(prompt('Rename portfolio:', curPf().name)||'').trim(); if(!n) return; curPf().name=n; savePortfolios(); renderPortfolio(); }
+function renamePortfolio(){ if (pfGuard()) return; const n=(prompt('Rename portfolio:', curPf().name)||'').trim(); if(!n) return; curPf().name=n; savePortfolios(); renderPortfolio(); }
 function deletePortfolio(){
+  if (pfGuard()) return;
   if (portfolios.length===1){ toast('Keep at least one portfolio'); return; }
   if (!confirm('Delete "'+curPf().name+'"?')) return;
   portfolios.splice(pfActive,1); pfActive = Math.max(0, pfActive-1); savePortfolios(); renderPortfolio();
 }
-function setPortfolioStart(v){ curPf().start = v; savePortfolios(); renderPortfolio(); }
+function setPortfolioStart(v){ if (pfGuard()) return; curPf().start = v; savePortfolios(); renderPortfolio(); }
 // Cash is derived (100% − sum of holding weights), not entered — see renderPortfolio.
 // Normalize a date to YYYY-MM-DD (accepts 2025-05-29 or 5/29/2025); '' if unparseable.
 function normDate(s){
@@ -2091,6 +2107,7 @@ function fmtBought(d){
   return `${mo} '${p[0].slice(2)}`;
 }
 function addHolding(){
+  if (pfGuard()) return;
   const sym = document.getElementById('pf-sym').value.trim().toUpperCase();
   const qty = parseFloat(document.getElementById('pf-weight').value);
   const buy = parseFloat(document.getElementById('pf-buy').value);
@@ -2106,14 +2123,15 @@ function addHolding(){
   renderPortfolio();
 }
 function setPortfolioCashDollars(v){   // dollar-mode portfolios: cash is entered in $
+  if (pfGuard()) return;
   if (!pfSharesMode(curPf())) return;
   curPf().cash = Math.max(0, parseFloat(v) || 0); savePortfolios(); renderPortfolio();
 }
-function removeHolding(i){ curPf().holdings.splice(i,1); savePortfolios(); renderPortfolio(); }
+function removeHolding(i){ if (pfGuard()) return; curPf().holdings.splice(i,1); savePortfolios(); renderPortfolio(); }
 
 // ── Bulk import: paste "TICKER, weight%, buyPrice" lines (+ optional "CASH, %") ──
 function openPfImport(){
-  document.getElementById('pf-import-name').value = curPf().name;
+  document.getElementById('pf-import-name').value = curPf()._virtual ? '' : curPf().name;
   document.getElementById('pf-import-text').value = '';
   document.getElementById('pf-import-modal').style.display = 'flex';
   document.getElementById('pf-import-text').focus();
@@ -2200,14 +2218,36 @@ function trackFromScan(sym, btn) {
   toast(`Set ${sym}'s weight %, then Add it to "${curPf().name}"`);
 }
 
-async function getOHLC(sym) {
+// Retry per symbol: a burst of 50 parallel fetches gets Yahoo-rate-limited, so
+// some used to return empty and show n/a until a manual refresh. Retry on BOTH
+// a network error AND an empty/error body (the rate-limit case), with backoff.
+async function getOHLC(sym, tries = 3) {
   if (posOhlcCache[sym]) return posOhlcCache[sym];
-  const res = await fetch(`/etf-chart?sym=${encodeURIComponent(sym)}`);
-  const d = await res.json();
-  if (d.error || !d.ohlc) throw new Error('no data');
-  const data = { ohlc: d.ohlc, divs: d.divs || [] };
-  posOhlcCache[sym] = data;
-  return data;
+  let lastErr;
+  for (let a = 0; a < tries; a++) {
+    try {
+      const res = await fetch(`/etf-chart?sym=${encodeURIComponent(sym)}`);
+      const d = await res.json();
+      if (!d.error && d.ohlc && d.ohlc.length) {
+        const data = { ohlc: d.ohlc, divs: d.divs || [] };
+        posOhlcCache[sym] = data;
+        return data;
+      }
+      lastErr = new Error(d.error || 'no data');
+    } catch (e) { lastErr = e; }
+    if (a < tries - 1) await sleep(500 * (a + 1));   // 0.5s, then 1s
+  }
+  throw lastErr || new Error('no data');
+}
+
+// Bounded-concurrency map — run at most `limit` fetches at once so a 50-symbol
+// portfolio doesn't hammer Yahoo (via the proxy) all at once and get throttled.
+async function mapPool(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  const worker = async () => { while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 // Close on or just before a date (for the S&P benchmark over the portfolio's period)
@@ -2219,13 +2259,17 @@ function closeOnOrBefore(ohlc, date) {
 
 function renderPfSelect() {
   const sel = document.getElementById('pf-select');
-  sel.innerHTML = portfolios.map((p,i)=>`<option value="${i}"${i===pfActive?' selected':''}>${p.name}</option>`).join('');
-  document.getElementById('pf-start').value = curPf().start || '';
+  const allOpt = canCombine() ? `<option value="-1"${pfActive===-1?' selected':''}>⭐ All portfolios</option>` : '';
+  sel.innerHTML = allOpt + portfolios.map((p,i)=>`<option value="${i}"${i===pfActive?' selected':''}>${p.name}</option>`).join('');
+  const virtual = !!curPf()._virtual;
+  const startEl = document.getElementById('pf-start');
+  startEl.value = curPf().start || '';
+  startEl.disabled = virtual;
   const cashEl = document.getElementById('pf-cash'), lbl = document.getElementById('pf-cash-label');
   if (pfSharesMode(curPf())) {                 // dollar mode: cash is entered, in $
-    cashEl.readOnly = false; cashEl.style.opacity = '1'; cashEl.style.cursor = '';
+    cashEl.readOnly = virtual; cashEl.style.opacity = virtual ? '.7' : '1'; cashEl.style.cursor = virtual ? 'not-allowed' : '';
     cashEl.value = +(curPf().cash || 0).toFixed(2);
-    cashEl.title = 'Cash in the account, in dollars (editable)';
+    cashEl.title = virtual ? 'Combined cash across all portfolios (edit in each account)' : 'Cash in the account, in dollars (editable)';
     if (lbl) lbl.textContent = 'CASH $';
   } else {                                     // legacy weight mode: derived leftover %
     cashEl.readOnly = true; cashEl.style.opacity = '.7'; cashEl.style.cursor = 'not-allowed';
@@ -2256,15 +2300,18 @@ async function renderPortfolio() {
   if (pf.holdings.some(h=>!posOhlcCache[h.sym]) || !posOhlcCache['SPY'])
     tb.innerHTML = '<div class="empty-state">Loading prices…</div>';   // skip flash when re-sorting cached data
   // Current price + dividend history for each holding; SPY for the benchmark.
+  // Fetch SPY + all symbols through a bounded pool (max 6 at once) with per-symbol
+  // retry, so a big portfolio no longer trips Yahoo's rate limit and drops names.
   const syms = [...new Set(pf.holdings.map(h=>h.sym))], price = {}, divsBy = {}, lastDt = {}, prevClose = {};
-  await Promise.all(syms.map(async s => {
-    try { const o = await getOHLC(s); const last = o.ohlc[o.ohlc.length-1];
-      price[s] = last[4]; lastDt[s] = last[0]; divsBy[s] = o.divs;
-      prevClose[s] = o.ohlc.length > 1 ? o.ohlc[o.ohlc.length-2][4] : null; }
-    catch(e){ price[s] = null; divsBy[s] = []; }
-  }));
   let spyNow = null, spyOhlc = null, spyDivs = [];
-  try { const spy = await getOHLC('SPY'); spyOhlc = spy.ohlc; spyNow = spyOhlc[spyOhlc.length-1][4]; spyDivs = spy.divs || []; } catch(e){}
+  await mapPool(['SPY', ...syms], 6, async s => {
+    try {
+      const o = await getOHLC(s); const last = o.ohlc[o.ohlc.length-1];
+      if (s === 'SPY') { spyOhlc = o.ohlc; spyNow = last[4]; spyDivs = o.divs || []; return; }
+      price[s] = last[4]; lastDt[s] = last[0]; divsBy[s] = o.divs;
+      prevClose[s] = o.ohlc.length > 1 ? o.ohlc[o.ohlc.length-2][4] : null;
+    } catch(e){ if (s !== 'SPY') { price[s] = null; divsBy[s] = []; } }
+  });
   // SPY dividends per share since a date — the benchmark must be TOTAL return,
   // because the portfolio side already counts its own dividends (as cash).
   // Price-only SPY was flattering alpha by ~1.3pp/yr.
@@ -2343,8 +2390,9 @@ async function renderPortfolio() {
       <td class="r c-muted">${(+r.shares.toFixed(3)).toLocaleString()}</td>
       <td class="r">${r.val!=null ? fmtUsd(r.val) : '&#8212;'}</td>
       <td class="r ${r.dayUsd==null?'c-muted':r.dayUsd>=0?'c-green':'c-red'}"${r.dayPct!=null?` title="vs previous close"`:''}>${r.dayUsd!=null ? `${r.dayUsd>=0?'+':''}${fmtUsd(r.dayUsd).replace('$-','-$')} (${r.dayPct>=0?'+':''}${r.dayPct.toFixed(2)}%)` : '&#8212;'}</td>` : '';
+    const acctTag = r._acct ? ` <span class="c-muted" style="font-size:9px;font-weight:400">${r._acct}</span>` : '';
     return `<tr>
-      <td class="ticker-cell">${r.sym}</td>
+      <td class="ticker-cell">${r.sym}${acctTag}</td>
       <td class="r c-muted" style="white-space:nowrap">${fmtBought(r.date)}</td>${dollarTds}
       <td class="r">${r.curPct!=null ? r.curPct.toFixed(2)+'%' : '&#8212;'}</td>
       <td class="r c-muted">$${r.buy.toFixed(2)}</td>
