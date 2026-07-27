@@ -208,7 +208,7 @@ th.sortable:hover{color:var(--accent)}
     <div class="row" style="margin-top:10px">
       <div style="flex:1;min-width:220px">
         <label for="t-note">Note <span style="text-transform:none;letter-spacing:0">— optional, why you made this trade</span></label>
-        <input id="t-note" maxlength="280" placeholder="e.g. trimming after the run-up; rebalancing into value"
+        <input id="t-note" maxlength="280"
                onkeydown="if(event.key==='Enter')logTrade()" />
       </div>
     </div>
@@ -523,10 +523,27 @@ async function fetchChartJson(url) {
       if (d.error || !d.ohlc || !d.ohlc.length) throw new Error(d.error || 'no data');
       return d;
     } catch (e) {
-      if (attempt >= 1) throw e;
-      await new Promise(r => setTimeout(r, 800));
+      if (attempt >= 2) throw e;                                 // up to 3 tries
+      await new Promise(r => setTimeout(r, 600 * (attempt + 1))); // 600ms, then 1200ms
     }
   }
+}
+
+// Run fn over items a few at a time. Yahoo (behind the proxy) throttles bursts and
+// the proxy caps its own Yahoo concurrency at ~4, so firing all ~50 tickers at once
+// just yields failures. Returns allSettled-shaped results in input order.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  const worker = async () => {
+    while (i < items.length) {
+      const idx = i++;
+      try { out[idx] = { status: 'fulfilled', value: await fn(items[idx]) }; }
+      catch (e) { out[idx] = { status: 'rejected', reason: e }; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) || 1 }, worker));
+  return out;
 }
 
 function fetchPrice(sym) {
@@ -542,7 +559,7 @@ async function loadPrices() {
   const syms = [...new Set(pf().trades.map(t => t.sym))];
   const missing = syms.filter(s => !prices[s]);
   if (!missing.length) return;
-  const results = await Promise.allSettled(missing.map(fetchPrice));
+  const results = await mapLimit(missing, 5, fetchPrice);
   const failed = [];
   results.forEach((r, i) => {
     if (r.status === 'fulfilled') prices[missing[i]] = r.value;
@@ -898,7 +915,7 @@ async function logTrade() {
   // Price each target account's holdings so "% of book" is against the real current
   // book value, not a cost-basis fallback for anything not yet fetched.
   const acctSyms = [...new Set(applyTo.flatMap(i => doc.portfolios[i].trades.map(x => x.sym)))];
-  await Promise.allSettled(acctSyms.filter(s => !prices[s]).map(fetchPrice));
+  await mapLimit(acctSyms.filter(s => !prices[s]), 5, fetchPrice);
 
   // "% of book" is per-account and measured against THAT account's value now: 0.5%
   // lands as 0.5% of the book (funded from cash), not 0.5 units of the fixed 100 base.
@@ -1149,7 +1166,7 @@ async function doExisting() {
   btn.disabled = true;
   btn.innerHTML = '<span class="spin"></span> Pricing…';
   try {
-    const results = await Promise.allSettled(parsed.map(r => fetchPrice(r.sym)));
+    const results = await mapLimit(parsed.map(r => r.sym), 5, fetchPrice);
     const noData = [], flat = [];
     results.forEach((res, i) => {
       if (res.status === 'fulfilled') prices[parsed[i].sym] = res.value;
@@ -1170,7 +1187,7 @@ async function doExisting() {
     if (toExisting) {
       const need = [...new Set(targetPf.trades.map(t => t.sym))].filter(s => !prices[s]);
       if (need.length) {
-        const r2 = await Promise.allSettled(need.map(fetchPrice));
+        const r2 = await mapLimit(need, 5, fetchPrice);
         r2.forEach((res, i) => { if (res.status === 'fulfilled') prices[need[i]] = res.value; });
       }
       base = replay(targetPf.trades).total;
@@ -1249,7 +1266,7 @@ async function doImport() {
 
   // price the target accounts so "% of book" is against the real book value
   const impSyms = [...new Set(targets.flatMap(i => doc.portfolios[i].trades.map(x => x.sym)))];
-  await Promise.allSettled(impSyms.filter(s => !prices[s]).map(fetchPrice));
+  await mapLimit(impSyms.filter(s => !prices[s]), 5, fetchPrice);
   closeImport();
   await mutate(() => {
     targets.forEach(i => {
@@ -1552,7 +1569,15 @@ async function prefetchAll(onProgress) {
   // that without the client ever being the bottleneck.
   await Promise.all(Array.from({ length: 6 }, worker));
 }
-const prefetchSoon = () => setTimeout(() => { prefetchAll(); }, 400);
+// As the background warm-up fills in prices, re-render (throttled, plus once at the
+// end) so tickers that missed the first pass appear on their own — no manual refresh.
+const prefetchSoon = () => setTimeout(() => {
+  let last = 0;
+  prefetchAll((done, total) => {
+    const now = Date.now();
+    if (done >= total || now - last > 1500) { last = now; render(); }
+  });
+}, 400);
 
 async function ensureBars(api, syms) {
   const need = [...new Set(syms)].filter(s => s && !getBars(api, s));
