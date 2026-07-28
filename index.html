@@ -1734,7 +1734,8 @@ async function runETFScan() {
     document.getElementById('etf-prog-fill').style.width = '100%';
     renderETFTables();
     document.getElementById('etf-updated').textContent =
-      `Scanned ${d.scanned} ETFs · ${d.approaching.length} approaching, ${d.breakouts.length} broke out`;
+      `Scanned ${d.scanned}${d.universe?'/'+d.universe:''} ETFs · ${d.approaching.length} approaching, ${d.breakouts.length} broke out`
+      + (d.failed ? ` · ⚠ ${d.failed} didn't load (${(d.failed_syms||[]).slice(0,6).join(', ')}) — Rescan to retry` : '');
     // auto-show the top high-quality (beating-market, score≥60) setup
     const hq = d.approaching.filter(a => a.rs != null && a.rs > 0 && a.score >= 60);
     if (hq.length) showETFChart(hq[0].sym);
@@ -2657,7 +2658,8 @@ async function runStockScan() {
     stockData = d; lsSet('stock', d); document.getElementById('stock-prog-fill').style.width = '100%';
     renderStockTables();
     document.getElementById('stock-updated').textContent =
-      `Scanned ${d.scanned} stocks · ${d.approaching.length} approaching, ${d.breakouts.length} broke out`;
+      `Scanned ${d.scanned}${d.universe?'/'+d.universe:''} stocks · ${d.approaching.length} approaching, ${d.breakouts.length} broke out`
+      + (d.failed ? ` · ⚠ ${d.failed} didn't load (${(d.failed_syms||[]).slice(0,6).join(', ')}) — Rescan to retry` : '');
     const hq = d.approaching.filter(a => a.rs != null && a.rs > 0 && a.score >= 60);
     if (hq.length) showStockChart(hq[0].sym);
     else if (d.breakouts.length) showStockChart(d.breakouts[0].sym);

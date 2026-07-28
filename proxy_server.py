@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'rebuild-5'   # bumped per deploy so /healthz confirms which code is live
+_BUILD = 'scanfix-6'   # bumped per deploy so /healthz confirms which code is live
 # Null-close daily bars Yahoo sent, tracked PER THREAD: ThreadingHTTPServer runs
 # a thread per request and the portfolio fetches symbols in parallel, so a shared
 # list let one request clear another's dropped dates and silently skip a rebuild.
@@ -1331,7 +1331,7 @@ STOCK_UNIVERSE = {s: None for s in [
     # software / cloud / cyber
     'CRM','NOW','PANW','CRWD','SNOW','NET','DDOG','ZS','PLTR','MDB','SHOP','TEAM','WDAY','ADSK','INTU','FTNT','ANET','CSCO','IBM','UBER','ABNB',
     # fintech / financials
-    'JPM','BAC','WFC','GS','MS','C','BLK','SCHW','V','MA','AXP','PYPL','SQ','COIN','HOOD','SOFI','KKR',
+    'JPM','BAC','WFC','GS','MS','C','BLK','SCHW','V','MA','AXP','PYPL','XYZ','COIN','HOOD','SOFI','KKR',  # XYZ = Block, formerly SQ
     # healthcare
     'UNH','JNJ','LLY','PFE','MRK','ABBV','TMO','ABT','DHR','ISRG','AMGN','GILD','VRTX','REGN','BMY','MDT','BSX',
     # consumer / retail
@@ -1353,7 +1353,7 @@ _SECTOR_GROUPS = {
     'Technology':             'AAPL MSFT ORCL ADBE RBLX U ZM DOCU TTD UBER ANET CSCO IBM',
     'Semiconductors':         'NVDA AVGO AMD MU INTC QCOM TXN LRCX AMAT KLAC ARM SMCI MRVL ON MPWR ASML TSM',
     'Software':               'CRM NOW PANW CRWD SNOW NET DDOG ZS PLTR MDB SHOP TEAM WDAY ADSK INTU FTNT',
-    'Financials':             'JPM BAC WFC GS MS C BLK SCHW V MA AXP PYPL SQ COIN HOOD SOFI KKR AFRM',
+    'Financials':             'JPM BAC WFC GS MS C BLK SCHW V MA AXP PYPL XYZ COIN HOOD SOFI KKR AFRM',
     'Healthcare':             'UNH JNJ LLY PFE MRK ABBV TMO ABT DHR ISRG AMGN GILD VRTX REGN BMY MDT BSX',
     'Consumer Staples':       'WMT COST PG KO PEP MDLZ CELH',
     'Consumer Discretionary': 'AMZN TSLA HD MCD NKE SBUX TGT LOW BKNG CMG LULU ROST TJX ABNB DKNG CVNA DASH F GM RIVN LCID DAL UAL CCL RCL',
@@ -1466,6 +1466,32 @@ def _yahoo_ohlc(sym, rng="2y", divs=False, interval="1d", days=None):
         except Exception: pass
     dv.sort()
     return rows, dv
+
+def _fetch_many(syms, rng="2y"):
+    """Fetch OHLC for many symbols, returning ({sym: rows}, [failed]).
+
+    Scans used to fetch sequentially and swallow every error, so any symbol
+    Yahoo throttled just vanished from the results with no retry and no report —
+    the "not all stocks load" bug. _YAHOO_SEM still caps real concurrency, so the
+    pool paces requests; anything that fails all its in-fetch host retries gets a
+    second pass after a pause, which is what actually recovers throttled names.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    out = {}
+    def one(s):
+        try: return s, _yahoo_ohlc(s, rng)
+        except Exception: return s, None
+    todo = list(syms)
+    for attempt in range(2):
+        if not todo: break
+        if attempt: time.sleep(3)                       # let a throttle window pass
+        with ThreadPoolExecutor(max_workers=3 if attempt == 0 else 2) as ex:
+            for s, rows in ex.map(one, todo):
+                if rows: out[s] = rows
+        todo = [s for s in todo if s not in out]
+    if todo:
+        print(f"  [fetch] {len(todo)} symbol(s) failed after retry: {todo[:12]}")
+    return out, todo
 
 def _yahoo_prev_close(sym):
     """(previous settled close, live price) straight from the chart response's
@@ -1620,12 +1646,9 @@ def run_etf_scan(fmp_key=None, universe=None, is_stock=False):
         spy_ret = {21: 0.0, 63: 0.0, 126: 0.0}
 
     # Fetch all price history once so stocks can be cross-sectionally ranked (RS rating)
-    cache = {}
-    for sym, exp in universe.items():
-        if exp is not None and exp >= 1.0: continue       # net expense ratio < 1%
-        try: cache[sym] = _yahoo_ohlc(sym)
-        except Exception: pass
-        time.sleep(0.15)                                  # be gentle to Yahoo
+    want = [s for s, exp in universe.items()
+            if exp is None or exp < 1.0]                  # net expense ratio < 1%
+    cache, failed = _fetch_many(want)
     rs_ratings = {}
     if is_stock:                                          # IBD-style RS rating (stocks only)
         moms = {s: _wmom([r[4] for r in rw], len(rw)-1) for s, rw in cache.items()}
@@ -1647,9 +1670,14 @@ def run_etf_scan(fmp_key=None, universe=None, is_stock=False):
             try: a['rev'] = _revenue_summary(a['sym'])
             except Exception: a['rev'] = None
             time.sleep(0.03)
-    print(f"  [etf] {len(breakouts)} breakouts, {len(approaching)} approaching")
+    print(f"  [etf] {len(breakouts)} breakouts, {len(approaching)} approaching, "
+          f"{len(cache)}/{len(want)} fetched, {len(failed)} failed")
+    # `scanned` used to report the universe size even when symbols never loaded,
+    # so a throttled scan looked complete. Report what actually got prices.
     return {'breakouts': breakouts, 'approaching': approaching,
-            'scanned': len(universe), 'source': 'curated'}
+            'scanned': len(cache), 'universe': len(want),
+            'failed': len(failed), 'failed_syms': failed[:25],
+            'source': 'curated'}
 
 
 def run_etf_single(sym):
@@ -2525,37 +2553,26 @@ class Handler(SimpleHTTPRequestHandler):
                     rng, cap = IV[iv]
                     dbg = ''
                     if iv == '1d':
+                        # Reset BEFORE the fetch: this fetch is what records any
+                        # bar Yahoo sends empty, and the gap repair below reads it.
+                        _drop_reset()
                         rows, divs = _yahoo_ohlc(sym, rng, divs=True)   # multi-year entries + dividends
-                        # Yahoo's edge-cached long-range feed can reach datacenter
-                        # IPs (Render's) missing the most recent settled session,
-                        # which made the portfolio Day column compare today against
-                        # a session-old close (INTC read -9% instead of -1.5%).
-                        # Re-request the last ~15 days by explicit epoch — a
-                        # different cache key that returns a fresh tail — and merge.
-                        # `dbg` is echoed in the payload so production behaviour is
-                        # observable without server-log access.
                         try:
-                            _drop_reset()
-                            have = {r[0] for r in rows}
-                            fresh = _yahoo_ohlc(sym, days=15)
-                            extra = [r for r in fresh if r[0] not in have]
-                            if extra:
-                                rows = sorted(rows + extra, key=lambda r: r[0])
-                            dbg = f"repair:+{len(extra)}/{len(fresh)}"
                             # Yahoo can send a settled session as an entirely empty
                             # bar (raw close AND adjclose null) to datacenter IPs, so
-                            # no refetch recovers it from the bar array. meta's
-                            # chartPreviousClose IS reliable, so rebuild the lost
-                            # session from it: request a window starting today and
-                            # the "previous close" is by definition the prior
-                            # session's — the close the Day column needs.
+                            # no refetch recovers it from the bar array — an earlier
+                            # epoch-window refetch was measured returning +0 every
+                            # time and was removed (it only doubled Yahoo calls and
+                            # made throttling worse). meta's chartPreviousClose IS
+                            # reliable: request a window starting today and the
+                            # "previous close" is by definition the prior session's.
                             gap = sorted({d.split(':', 1)[1] for d in _drop_get()
                                           if d.startswith(sym + ':')}
                                          - {r[0] for r in rows})
                             gap = [g for g in gap if len(rows) > 1 and rows[0][0] < g < rows[-1][0]]
                             if gap:
                                 pc, lp = _yahoo_prev_close(sym)
-                                dbg += f" gap={gap[-1]} pc={pc}"
+                                dbg = f"gap={gap[-1]} pc={pc}"
                                 if pc:
                                     rows = sorted(rows + [(gap[-1], pc, pc, pc, pc, 0)],
                                                   key=lambda r: r[0])
