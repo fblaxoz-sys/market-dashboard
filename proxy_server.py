@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'bt-benchmark-7'   # bumped per deploy so /healthz confirms which code is live
+_BUILD = 'bt-parallel-8'   # bumped per deploy so /healthz confirms which code is live
 # Null-close daily bars Yahoo sent, tracked PER THREAD: ThreadingHTTPServer runs
 # a thread per request and the portfolio fetches symbols in parallel, so a shared
 # list let one request clear another's dropped dates and silently skip a rebuild.
@@ -1838,13 +1838,16 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None, is_stock=False):
             i += 1
 
     uni = universe if universe is not None else CURATED_ETFS
+    # Fetch through the shared pool rather than one-at-a-time with a sleep: the
+    # sequential version spent ~60s of a 5-year run just waiting on Yahoo (the
+    # backtest felt like it had hung) and silently dropped throttled symbols,
+    # the same defect already fixed in the scan.
+    want = [s for s, exp in uni.items() if is_stock or exp is None or exp < 1.0]
+    data, bt_failed = _fetch_many(want, rng)
+    if bt_failed:
+        print(f"  [etf-bt] {len(bt_failed)} symbol(s) unavailable: {bt_failed[:10]}")
     if is_stock:
-        # Pre-load all stocks once → build cross-sectional RS-rating ranks per date
-        data = {}
-        for sym, exp in uni.items():
-            try: data[sym] = _yahoo_ohlc(sym, rng)
-            except Exception: pass
-            time.sleep(0.1)
+        # Cross-sectional RS-rating ranks per date (needs the whole universe)
         mom_by_date = {}
         for sym, rows in data.items():
             closes = [r[4] for r in rows]; dts = [r[0] for r in rows]
@@ -1855,12 +1858,8 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None, is_stock=False):
         for sym, rows in data.items():
             run_one(sym, rows, rank_by_date)
     else:
-        for sym, exp in uni.items():
-            if exp is not None and exp >= 1.0: continue
-            try: rows = _yahoo_ohlc(sym, rng)
-            except Exception: continue
+        for sym, rows in data.items():
             run_one(sym, rows, {})
-            time.sleep(0.1)
 
     def agg(ts):
         rets = [t['ret'] for t in ts]
