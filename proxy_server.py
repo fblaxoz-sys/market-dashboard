@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'scanfix-6'   # bumped per deploy so /healthz confirms which code is live
+_BUILD = 'bt-benchmark-7'   # bumped per deploy so /healthz confirms which code is live
 # Null-close daily bars Yahoo sent, tracked PER THREAD: ThreadingHTTPServer runs
 # a thread per request and the portfolio fetches symbols in parallel, so a shared
 # list let one request clear another's dropped dates and silently skip a rebuild.
@@ -1812,16 +1812,28 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None, is_stock=False):
                 hh = max(hh, highs[i])
                 trail = max(trail, hh - atr_mult*atr[i])               # ratchet the stop up only
                 if closes[i] < trail or i == n-1:
-                    good_mom = (e_rating is not None and e_rating >= RS_RATING_MIN) if is_stock else (e_rs > 0)
+                    held = i - entry_i
+                    # Benchmark: the SAME symbol held for the same number of days,
+                    # averaged over every such window. Holding period and universe
+                    # are fixed, so the difference is purely entry timing — the
+                    # only honest read on whether the signal added anything.
+                    bh = None
+                    if 0 < held < len(closes):
+                        cc = closes
+                        bh = round(float(np.mean([cc[k+held]/cc[k]-1
+                                                  for k in range(0, len(cc)-held)]))*100, 2)
                     trades.append({'sym': sym, 'date': dates[entry_i], 'exit_date': dates[i],
                                    'level': round(lvl,2),
                                    'entry': round(entry,2), 'exit': round(closes[i],2),
                                    'ret': round((closes[i]/entry-1)*100, 2),
-                                   'days': i-entry_i,
+                                   'days': held,
                                    'why': 'open' if i == n-1 and closes[i] >= trail else 'trail-stop',
                                    'vol_ok': bool(e_vol), 'rs': round(e_rs,1),
-                                   'rs_rating': e_rating, 'score': e_score,
-                                   'hi': bool(e_vol and good_mom and e_score >= 60)})
+                                   'rs_rating': e_rating, 'score': e_score, 'bh': bh,
+                                   # RS>=70 dropped from the quality gate: over 20y it
+                                   # scored -7.64% edge (t=-4.38) and here it halves the
+                                   # trade count for no benchmark-relative gain.
+                                   'hi': bool(e_vol and e_score >= 60)})
                     in_pos = False
             i += 1
 
@@ -1854,6 +1866,16 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None, is_stock=False):
         rets = [t['ret'] for t in ts]
         wins = [r for r in rets if r > 0]; losses = [r for r in rets if r <= 0]
         n = len(rets); gains = sum(wins); pains = abs(sum(losses))
+        # Edge vs holding the same names the same length of time. Raw return is
+        # mostly market drift; this is the part the entry signal is responsible
+        # for. t<2 means the sample can't tell it apart from zero.
+        pairs = [(t['ret'], t['bh']) for t in ts if t.get('bh') is not None]
+        edge = t_stat = None
+        if len(pairs) > 1:
+            d = np.array([a-b for a, b in pairs], float)
+            se = d.std(ddof=1)/np.sqrt(len(d))
+            edge = round(float(d.mean()), 2)
+            t_stat = round(float(d.mean()/se), 2) if se else None
         return {
             'trades': n,
             'win_rate':   round(len(wins)/n*100) if n else 0,
@@ -1864,16 +1886,22 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None, is_stock=False):
             'best':  round(max(rets), 2) if n else 0,
             'worst': round(min(rets), 2) if n else 0,
             'avg_days': round(float(np.mean([t['days'] for t in ts])), 0) if n else 0,
+            'bh_edge': edge, 'bh_t': t_stat,
+            'open': sum(1 for t in ts if t.get('why') == 'open'),
             'rule': f'{atr_mult:g}× ATR trailing stop',
         }
 
     trades.sort(key=lambda t: t['date'])
     hi = [t for t in trades if t['hi']]
     stats_all, stats_hi = agg(trades), agg(hi)
-    print(f"  [etf-bt] ALL {stats_all['trades']} trades win {stats_all['win_rate']}% avg {stats_all['avg_ret']}% PF {stats_all['profit_factor']}")
-    print(f"  [etf-bt] HI  {stats_hi['trades']} trades win {stats_hi['win_rate']}% avg {stats_hi['avg_ret']}% PF {stats_hi['profit_factor']}")
+    for lab, s in (('ALL', stats_all), ('HI ', stats_hi)):
+        print(f"  [etf-bt] {lab} {s['trades']} trades win {s['win_rate']}% avg {s['avg_ret']}% "
+              f"PF {s['profit_factor']} vs-B&H {s['bh_edge']} (t {s['bh_t']}) open {s['open']}")
+    # Return EVERY trade (capped only to bound payload on the 512MB tier) so the
+    # table can show what the strategy actually did; the old [-120:] silently
+    # dropped trades AND disagreed with the stats above it.
     return {'stats': stats_all, 'stats_all': stats_all, 'stats_hi': stats_hi,
-            'years': years, 'trades': [t for t in trades if t['hi']][-120:]}
+            'years': years, 'trades': trades[-3000:], 'returned': min(len(trades), 3000)}
 
 
 def run_quad(fred_key):

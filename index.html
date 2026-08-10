@@ -240,7 +240,7 @@ td.r{text-align:right;}
   <!-- Backtest results — hidden until run -->
   <div id="etf-bt-section" style="display:none;margin-bottom:24px;">
     <div class="section-header">
-      <div class="section-title"><span class="dot dot-purple"></span><span id="etf-bt-title">Backtest</span> &mdash; high-quality breakouts</div>
+      <div class="section-title"><span class="dot dot-purple"></span><span id="etf-bt-title">Backtest</span> &mdash; every breakout, benchmarked</div>
       <div style="display:flex;gap:6px;">
         <button class="btn etf-bt-period" data-yr="1" onclick="runETFBacktest(1)">1 Year</button>
         <button class="btn etf-bt-period" data-yr="2" onclick="runETFBacktest(2)">2 Year</button>
@@ -307,7 +307,7 @@ td.r{text-align:right;}
 
   <div id="stock-bt-section" style="display:none;margin-bottom:24px;">
     <div class="section-header">
-      <div class="section-title"><span class="dot dot-purple"></span><span id="stock-bt-title">Backtest</span> &mdash; high-quality breakouts</div>
+      <div class="section-title"><span class="dot dot-purple"></span><span id="stock-bt-title">Backtest</span> &mdash; every breakout, benchmarked</div>
       <div style="display:flex;gap:6px;">
         <button class="btn stock-bt-period" data-yr="1" onclick="runStockBacktest(1)">1 Year</button>
         <button class="btn stock-bt-period" data-yr="2" onclick="runStockBacktest(2)">2 Year</button>
@@ -1769,19 +1769,10 @@ async function runETFBacktest(years) {
     const res = await fetch(`/etf-backtest?years=${years}`);
     const d = await res.json();
     if (d.error) throw new Error(d.error);
-    const H = d.stats_hi || d.stats;
-    const card = (cls,label,val,sub) => `<div class="stat-card ${cls}"><div class="stat-label">${label}</div><div class="stat-value">${val}</div><div class="stat-sub">${sub}</div></div>`;
-    document.getElementById('etf-bt-stats').innerHTML =
-      card('sc-blue','Trades', H.trades, `high-quality, ${years} yr`) +
-      card(H.win_rate>=50?'sc-green':'sc-red','Win rate', H.win_rate+'%', 'profitable') +
-      card(H.avg_ret>=0?'sc-green':'sc-red','Avg / trade', (H.avg_ret>=0?'+':'')+H.avg_ret+'%', `win +${H.avg_win}% · loss ${H.avg_loss}%`) +
-      card((H.profit_factor||0)>=1?'sc-green':'sc-amber','Profit factor', H.profit_factor ?? '—', 'wins ÷ losses') +
-      card('sc-purple','Best / Worst', H.best+'% / '+H.worst+'%', `${H.rule||'ATR trail'} · ~${H.avg_days||''}d avg`);
+    etfBtStats = {all: d.stats_all || d.stats, hi: d.stats_hi || d.stats, years};
     etfBtTrades = {}; d.trades.forEach(t => { etfBtTrades[t.sym + '|' + t.date] = t; });
     btTradesData = d.trades;
     renderBtTrades();
-    document.getElementById('etf-updated').textContent =
-      `${years}-yr backtest (high-quality): ${H.trades} trades · ${H.win_rate}% win · ${H.avg_ret>=0?'+':''}${H.avg_ret}%/trade · PF ${H.profit_factor ?? '—'}`;
   } catch(e) {
     document.getElementById('etf-bt-stats').innerHTML = `<div class="empty-state" style="grid-column:1/-1">Backtest failed: ${e.message.slice(0,140)}</div>`;
     console.error(e);
@@ -1791,19 +1782,67 @@ async function runETFBacktest(years) {
 }
 
 const BT_COLS = [['date','Entry date',''],['sym','Ticker',''],['entry','Buy','r'],['exit','Exit','r'],
-                 ['ret','Return','r'],['score','Score','r'],['rs','RS','r'],['days','Days','r'],['why','Exit','']];
-const BT_SORTV = {date:t=>t.date, sym:t=>t.sym, entry:t=>t.entry, exit:t=>t.exit, ret:t=>t.ret, score:t=>(t.score??0), rs:t=>t.rs, days:t=>t.days, why:t=>t.why};
+                 ['ret','Return','r'],['vs','vs B&H','r'],['score','Score','r'],['rs','RS','r'],['days','Days','r'],['why','Exit','']];
+const BT_SORTV = {date:t=>t.date, sym:t=>t.sym, entry:t=>t.entry, exit:t=>t.exit, ret:t=>t.ret,
+                  vs:t=>(t.bh==null?-999:t.ret-t.bh), score:t=>(t.score??0), rs:t=>t.rs, days:t=>t.days, why:t=>t.why};
+
+// The trades table used to show only `hi` trades, so most of what the strategy
+// did was invisible (and the row count disagreed with the stats above it).
+// Both tabs now hold every trade and filter at render time.
+let btShowAll = false, stockBtShowAll = false;
+let etfBtStats = null, stockBtStats = null;      // {all, hi} kept so toggling never refetches
+
+// "vs B&H" = this trade minus the same symbol held the same number of days.
+// It is the only column that isolates the signal from market drift.
+function btVsCell(t) {
+  if (t.bh == null) return '<td class="r c-muted">—</td>';
+  const v = +(t.ret - t.bh).toFixed(2);
+  return `<td class="r ${v>=0?'c-green':'c-red'}" title="held ${t.days}d: trade ${t.ret}% vs same-stock average ${t.bh}%">${v>=0?'+':''}${v}%</td>`;
+}
+function btCards(S, years, showAll) {
+  const card = (cls,l,v,s) => `<div class="stat-card ${cls}"><div class="stat-label">${l}</div><div class="stat-value">${v}</div><div class="stat-sub">${s}</div></div>`;
+  const e = S.bh_edge, tt = S.bh_t;
+  // Significance, not sign, decides the colour: |t|<2 means the sample cannot
+  // distinguish this edge from zero, however good the raw return looks.
+  const ecls = (e==null||tt==null) ? 'sc-purple' : (Math.abs(tt)<2 ? 'sc-amber' : (e>0?'sc-green':'sc-red'));
+  return card('sc-blue','Trades', S.trades, `${showAll?'all':'high-quality'}, ${years} yr${S.open?` · ${S.open} open`:''}`) +
+    card(S.win_rate>=50?'sc-green':'sc-red','Win rate', S.win_rate+'%', 'profitable') +
+    card(S.avg_ret>=0?'sc-green':'sc-red','Avg / trade', (S.avg_ret>=0?'+':'')+S.avg_ret+'%', `win +${S.avg_win}% · loss ${S.avg_loss}%`) +
+    card((S.profit_factor||0)>=1?'sc-green':'sc-amber','Profit factor', S.profit_factor ?? '—', 'wins ÷ losses') +
+    card(ecls,'vs buy & hold', e==null?'—':((e>=0?'+':'')+e+'%'),
+         tt==null?'same stock, same days':`t ${tt}${Math.abs(tt)<2?' · not significant':''}`) +
+    card('sc-purple','Best / Worst', S.best+'% / '+S.worst+'%', `${S.rule||'ATR trail'} · ~${S.avg_days||''}d avg`);
+}
+function btToggle(fn, showAll, nAll, nHi) {
+  const b = (on,lbl,n) => `<button class="btn ${on?'btn-primary':''}" style="padding:3px 10px;font-size:11px" onclick="${fn}">${lbl} (${n})</button>`;
+  return `<div style="display:flex;gap:6px;align-items:center;margin:6px 0 8px">
+    ${b(showAll,'All trades',nAll)}${b(!showAll,'High-quality',nHi)}
+    <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">high-quality = volume ≥1.5× + score ≥60</span></div>`;
+}
 function sortBt(k) { btSort = (btSort.k===k) ? {k,d:-btSort.d} : {k,d:(['sym','why','date'].includes(k)?1:-1)}; renderBtTrades(); }
+function toggleBtAll(v) { btShowAll = v; renderBtTrades(); }
 function renderBtTrades() {
-  if (!btTradesData.length) { document.getElementById('etf-bt-trades').innerHTML = '<div class="empty-state">No trades</div>'; return; }
+  const el = document.getElementById('etf-bt-trades');
+  if (!btTradesData.length) { el.innerHTML = '<div class="empty-state">No trades</div>'; return; }
+  const nAll = btTradesData.length, nHi = btTradesData.filter(t=>t.hi).length;
+  const rows = btShowAll ? btTradesData : btTradesData.filter(t=>t.hi);
+  if (etfBtStats) {
+    const S = btShowAll ? etfBtStats.all : etfBtStats.hi;
+    document.getElementById('etf-bt-stats').innerHTML = btCards(S, etfBtStats.years, btShowAll);
+    document.getElementById('etf-updated').textContent =
+      `${etfBtStats.years}-yr backtest (${btShowAll?'all':'high-quality'}): ${S.trades} trades · ${S.win_rate}% win · `
+      + `${S.avg_ret>=0?'+':''}${S.avg_ret}%/trade · PF ${S.profit_factor ?? '—'} · vs B&H ${S.bh_edge==null?'—':(S.bh_edge>=0?'+':'')+S.bh_edge+'%'}`;
+  }
   const f = BT_SORTV[btSort.k] || BT_SORTV.date;
-  const sorted = [...btTradesData].sort((a,b)=>{ const x=f(a),y=f(b); return typeof x==='string'? btSort.d*x.localeCompare(y): btSort.d*(x-y); });
+  const sorted = [...rows].sort((a,b)=>{ const x=f(a),y=f(b); return typeof x==='string'? btSort.d*x.localeCompare(y): btSort.d*(x-y); });
   const head = '<thead><tr>'+BT_COLS.map(([k,lbl,al])=>{const ar=btSort.k===k?(btSort.d<0?' ▾':' ▴'):''; return `<th class="${al}" style="cursor:pointer;white-space:nowrap" onclick="sortBt('${k}')">${lbl}${ar}</th>`;}).join('')+'</tr></thead>';
-  document.getElementById('etf-bt-trades').innerHTML = `<table>${head}<tbody>${sorted.map(t=>`
+  el.innerHTML = btToggle('toggleBtAll(!btShowAll)', btShowAll, nAll, nHi)
+    + `<table>${head}<tbody>${sorted.map(t=>`
     <tr style="cursor:pointer" onclick="showTradeChart('${t.sym}','${t.date}')">
-      <td>${t.date}</td><td class="ticker-cell">${t.sym}</td>
+      <td>${t.date}</td><td class="ticker-cell">${t.sym}${t.hi?'':' <span class="c-muted" style="font-size:9px" title="did not meet the high-quality gate">·</span>'}</td>
       <td class="r c-muted">$${t.entry}</td><td class="r c-muted">$${t.exit}</td>
       <td class="r ${t.ret>=0?'c-green':'c-red'}">${t.ret>=0?'+':''}${t.ret}%</td>
+      ${btVsCell(t)}
       <td class="r c-muted">${t.score ?? '—'}</td>
       <td class="r ${t.rs>0?'c-green':'c-muted'}">${t.rs>0?'+':''}${t.rs}%</td>
       <td class="r c-muted">${t.days}</td><td class="c-muted">${t.why}</td></tr>`).join('')}</tbody></table>`;
@@ -2690,34 +2729,38 @@ async function runStockBacktest(years) {
   try {
     const d = await (await fetch(`/stock-backtest?years=${years}`)).json();
     if (d.error) throw new Error(d.error);
-    const H = d.stats_hi || d.stats;
-    const card = (cls,l,v,s) => `<div class="stat-card ${cls}"><div class="stat-label">${l}</div><div class="stat-value">${v}</div><div class="stat-sub">${s}</div></div>`;
-    document.getElementById('stock-bt-stats').innerHTML =
-      card('sc-blue','Trades', H.trades, `high-quality, ${years} yr`) +
-      card(H.win_rate>=50?'sc-green':'sc-red','Win rate', H.win_rate+'%', 'profitable') +
-      card(H.avg_ret>=0?'sc-green':'sc-red','Avg / trade', (H.avg_ret>=0?'+':'')+H.avg_ret+'%', `win +${H.avg_win}% · loss ${H.avg_loss}%`) +
-      card((H.profit_factor||0)>=1?'sc-green':'sc-amber','Profit factor', H.profit_factor ?? '—', 'wins ÷ losses') +
-      card('sc-purple','Best / Worst', H.best+'% / '+H.worst+'%', `${H.rule||'ATR trail'} · ~${H.avg_days||''}d avg`);
+    stockBtStats = {all: d.stats_all || d.stats, hi: d.stats_hi || d.stats, years};
     stockBtTrades = {}; d.trades.forEach(t => { stockBtTrades[t.sym + '|' + t.date] = t; });
     stockBtData = d.trades; renderStockBt();
-    document.getElementById('stock-updated').textContent =
-      `${years}-yr backtest: ${H.trades} trades · ${H.win_rate}% win · ${H.avg_ret>=0?'+':''}${H.avg_ret}%/trade · PF ${H.profit_factor ?? '—'}`;
   } catch(e) {
     document.getElementById('stock-bt-stats').innerHTML = `<div class="empty-state" style="grid-column:1/-1">Backtest failed: ${e.message.slice(0,140)}</div>`;
   }
   btn.disabled = false; document.getElementById('stock-bt-icon').textContent = '🧪';
 }
 function sortStockBt(k) { stockBtSort = (stockBtSort.k===k) ? {k,d:-stockBtSort.d} : {k,d:(['sym','why','date'].includes(k)?1:-1)}; renderStockBt(); }
+function toggleStockBtAll(v) { stockBtShowAll = v; renderStockBt(); }
 function renderStockBt() {
-  if (!stockBtData.length) { document.getElementById('stock-bt-trades').innerHTML='<div class="empty-state">No trades</div>'; return; }
+  const el = document.getElementById('stock-bt-trades');
+  if (!stockBtData.length) { el.innerHTML='<div class="empty-state">No trades</div>'; return; }
+  const nAll = stockBtData.length, nHi = stockBtData.filter(t=>t.hi).length;
+  const rows = stockBtShowAll ? stockBtData : stockBtData.filter(t=>t.hi);
+  if (stockBtStats) {
+    const S = stockBtShowAll ? stockBtStats.all : stockBtStats.hi;
+    document.getElementById('stock-bt-stats').innerHTML = btCards(S, stockBtStats.years, stockBtShowAll);
+    document.getElementById('stock-updated').textContent =
+      `${stockBtStats.years}-yr backtest (${stockBtShowAll?'all':'high-quality'}): ${S.trades} trades · ${S.win_rate}% win · `
+      + `${S.avg_ret>=0?'+':''}${S.avg_ret}%/trade · PF ${S.profit_factor ?? '—'} · vs B&H ${S.bh_edge==null?'—':(S.bh_edge>=0?'+':'')+S.bh_edge+'%'}`;
+  }
   const f = BT_SORTV[stockBtSort.k] || BT_SORTV.date;
-  const sorted = [...stockBtData].sort((a,b)=>{const x=f(a),y=f(b); return typeof x==='string'? stockBtSort.d*x.localeCompare(y): stockBtSort.d*(x-y);});
+  const sorted = [...rows].sort((a,b)=>{const x=f(a),y=f(b); return typeof x==='string'? stockBtSort.d*x.localeCompare(y): stockBtSort.d*(x-y);});
   const head = '<thead><tr>'+BT_COLS.map(([k,lbl,al])=>{const ar=stockBtSort.k===k?(stockBtSort.d<0?' ▾':' ▴'):''; return `<th class="${al}" style="cursor:pointer;white-space:nowrap" onclick="sortStockBt('${k}')">${lbl}${ar}</th>`;}).join('')+'</tr></thead>';
-  document.getElementById('stock-bt-trades').innerHTML = `<table>${head}<tbody>${sorted.map(t=>`
+  el.innerHTML = btToggle('toggleStockBtAll(!stockBtShowAll)', stockBtShowAll, nAll, nHi)
+    + `<table>${head}<tbody>${sorted.map(t=>`
     <tr style="cursor:pointer" onclick="showStockTradeChart('${t.sym}','${t.date}')">
-      <td>${t.date}</td><td class="ticker-cell">${t.sym}</td>
+      <td>${t.date}</td><td class="ticker-cell">${t.sym}${t.hi?'':' <span class="c-muted" style="font-size:9px" title="did not meet the high-quality gate">·</span>'}</td>
       <td class="r c-muted">$${t.entry}</td><td class="r c-muted">$${t.exit}</td>
       <td class="r ${t.ret>=0?'c-green':'c-red'}">${t.ret>=0?'+':''}${t.ret}%</td>
+      ${btVsCell(t)}
       <td class="r c-muted">${t.score ?? '—'}</td>
       <td class="r ${t.rs>0?'c-green':'c-muted'}">${t.rs>0?'+':''}${t.rs}%</td>
       <td class="r c-muted">${t.days}</td><td class="c-muted">${t.why}</td></tr>`).join('')}</tbody></table>`;
