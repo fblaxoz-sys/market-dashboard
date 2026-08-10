@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'bt-fast-9'   # bumped per deploy so /healthz confirms which code is live
+_BUILD = 'bt-clustered-10'   # bumped per deploy so /healthz confirms which code is live
 # Null-close daily bars Yahoo sent, tracked PER THREAD: ThreadingHTTPServer runs
 # a thread per request and the portfolio fetches symbols in parallel, so a shared
 # list let one request clear another's dropped dates and silently skip a rebuild.
@@ -1876,10 +1876,19 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None, is_stock=False):
         # Edge vs holding the same names the same length of time. Raw return is
         # mostly market drift; this is the part the entry signal is responsible
         # for. t<2 means the sample can't tell it apart from zero.
-        pairs = [(t['ret'], t['bh']) for t in ts if t.get('bh') is not None]
+        # Clustered BY ENTRY DATE. Dozens of names break out on the same
+        # market-wide day, so per-trade t-stats treat correlated bets as
+        # independent draws and overstate significance badly: the ETF 5y
+        # high-quality set read +5.2% (t 3.26) per-trade but -2.7% (t -1.80)
+        # once clustered, because a handful of same-day semi/miner breakouts
+        # supplied most of the total.
+        by_date = {}
+        for t in ts:
+            if t.get('bh') is not None:
+                by_date.setdefault(t['date'], []).append(t['ret'] - t['bh'])
         edge = t_stat = None
-        if len(pairs) > 1:
-            d = np.array([a-b for a, b in pairs], float)
+        if len(by_date) > 1:
+            d = np.array([float(np.mean(v)) for v in by_date.values()], float)
             se = d.std(ddof=1)/np.sqrt(len(d))
             edge = round(float(d.mean()), 2)
             t_stat = round(float(d.mean()/se), 2) if se else None
