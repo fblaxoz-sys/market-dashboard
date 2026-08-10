@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'bt-parallel-8'   # bumped per deploy so /healthz confirms which code is live
+_BUILD = 'bt-fast-9'   # bumped per deploy so /healthz confirms which code is live
 # Null-close daily bars Yahoo sent, tracked PER THREAD: ThreadingHTTPServer runs
 # a thread per request and the portfolio fetches symbols in parallel, so a shared
 # list let one request clear another's dropped dates and silently skip a rebuild.
@@ -1783,10 +1783,18 @@ def run_etf_backtest(atr_mult=ATR_MULT, years=1, universe=None, is_stock=False):
         e_vol = False; e_rs = 0.0; e_rating = None; e_score = 0.0
         hh = trail = 0.0
         i = start
+        n_conf = -1; levels = []
         while i < n:
             if not in_pos:
-                conf = [highs[p] for p in ph if p <= i-W]            # confirmed-by-now pivots
-                levels = [(m, c) for m, c in cl(conf) if c >= 2]
+                # Resistance levels only change when a NEW pivot becomes confirmed,
+                # so recluster on that event instead of on every bar. cl() is
+                # O(pivots^2) and this loop runs ~1260 times for a 5-year window —
+                # it was the bulk of the backtest's CPU on Render's free tier.
+                # Identical output, just not recomputed needlessly.
+                k = sum(1 for p in ph if p <= i-W)                   # confirmed-by-now pivots
+                if k != n_conf:
+                    levels = [(m, c) for m, c in cl([highs[p] for p in ph if p <= i-W]) if c >= 2]
+                    n_conf = k
                 for m, c in levels:
                     if m <= 0: continue
                     below = any(closes[j] < m*0.995 for j in range(max(0, i-40), i))
