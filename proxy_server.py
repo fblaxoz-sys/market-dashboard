@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'bt-clustered-10'   # bumped per deploy so /healthz confirms which code is live
+_BUILD = 'clev-month-11'   # bumped per deploy so /healthz confirms which code is live
 # Null-close daily bars Yahoo sent, tracked PER THREAD: ThreadingHTTPServer runs
 # a thread per request and the portfolio fetches symbols in parallel, so a shared
 # list let one request clear another's dropped dates and silently skip a rebuild.
@@ -1063,8 +1063,17 @@ def run_inflation_nowcast(fred_key, bt_months=24, target_id='CPIAUCSL'):
             mem_pred['Cleveland'] = cpreds; mem_names.append('Cleveland')
         lv = clev_all['live'].get(target_id)
         fc_month = (df.index[-1] + pd.DateOffset(months=1)).strftime('%Y-%m')
-        if lv and lv[0] == fc_month:
-            clev_now = float(lv[1])             # their current nowcast for OUR forecast month
+        # Cleveland publishes a nowcast for the unreleased month AND the month
+        # after it; 'live' only holds the furthest-out one. Matching that alone
+        # silently dropped the heaviest member (≈40% weight) from the live blend
+        # whenever they were a month ahead of us, pulling the printed number
+        # below every other forecaster. Look our own forecast month up directly;
+        # cmap holds the same final-vintage value the member is scored on.
+        cn = cmap.get(fc_month)
+        if cn is not None:
+            clev_now = float(cn)                # their nowcast for OUR forecast month
+        elif lv and lv[0] == fc_month:
+            clev_now = float(lv[1])
 
     # Per-member overall RMSE (for display + final-forecast eligibility)
     _act = np.array([a for (_, a, _) in wf_meta])
