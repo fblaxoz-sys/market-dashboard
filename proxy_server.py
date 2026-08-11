@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import urllib.request, urllib.parse, json, os, traceback, time, threading, collections, gzip
 import shared_store
 
-_BUILD = 'clev-month-11'   # bumped per deploy so /healthz confirms which code is live
+_BUILD = 'gdpnow-quarter-12'   # bumped per deploy so /healthz confirms which code is live
 # Null-close daily bars Yahoo sent, tracked PER THREAD: ThreadingHTTPServer runs
 # a thread per request and the portfolio fetches symbols in parallel, so a shared
 # list let one request clear another's dropped dates and silently skip a rebuild.
@@ -647,8 +647,17 @@ def run_gdp_nowcast(fred_key, bt_quarters=12):
             mem_pred['GDPNow'] = gpreds; mem_names.append('GDPNow')
         lv = gn.get('live')
         nc_q = gdpc1.index[-1] + pd.DateOffset(months=3)
-        if lv and lv[0] == nc_q.strftime('%Y-%m'):
-            v = _saar_to_yoy(nc_q, lv[1])
+        qs = nc_q.strftime('%Y-%m')
+        # Look OUR nowcast quarter up directly. 'live' is only max(final), the
+        # furthest-out quarter Atlanta publishes, so requiring it to equal our
+        # quarter drops GDPNow silently whenever they roll forward before FRED
+        # posts the prior quarter — the same defect fixed for Cleveland in
+        # e5e8a57, which had left the heaviest member out of the printed number.
+        saar = gn['final'].get(qs)
+        if saar is None and lv and lv[0] == qs:
+            saar = lv[1]
+        if saar is not None:
+            v = _saar_to_yoy(nc_q, saar)
             gdpnow_now = float(v) if v == v else None
 
     # Per-member out-of-sample RMSE → inverse-RMSE² weights (best model dominates)
